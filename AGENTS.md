@@ -93,7 +93,7 @@ These are invariants. A violation is a regression even when tests pass.
 
 ## Two unrelated things are called "hooks"
 
-- `hooks/claude-code/vigil-hook.sh` — **Vigil's own product feature.** Agents run
+- `hooks/vigil-hook.sh` — **Vigil's own product feature.** Agents run
   it on lifecycle events; it posts to Vigil's socket. Ordinary app code.
 - `.claude/` — **Claude Code's config**, for people using Claude Code to develop
   Vigil. Different mechanism, same word. Don't conflate them.

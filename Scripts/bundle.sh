@@ -42,7 +42,7 @@ cp "Resources/$APP_NAME.icns" "$APP/Contents/Resources/"
 
 # The hook script ships inside the bundle; the installer copies it out to
 # ~/.vigil/hooks so a moved or replaced app doesn't break an installed hook.
-cp hooks/claude-code/vigil-hook.sh "$APP/Contents/Resources/"
+cp hooks/vigil-hook.sh "$APP/Contents/Resources/"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # --- sign, innermost first ---

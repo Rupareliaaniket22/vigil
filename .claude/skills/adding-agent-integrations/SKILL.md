@@ -20,7 +20,7 @@ mapping is baked into the installed command (`vigil-hook.sh <agent> <event>
 A hook runs inside the user's coding agent, on their critical path. If it hangs,
 their agent hangs. If it errors loudly, they blame the agent, not us.
 
-So `hooks/claude-code/vigil-hook.sh` ends in `exit 0` unconditionally, bails
+So `hooks/vigil-hook.sh` ends in `exit 0` unconditionally, bails
 immediately when the socket is absent, and caps curl at
 `--connect-timeout 0.25 --max-time 1`. Those aren't stylistic choices — they're
 the difference between a utility and a liability. Keep them in any new hook.
