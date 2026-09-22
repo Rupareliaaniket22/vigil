@@ -102,6 +102,9 @@ final class AppModel {
   /// Surfaced in the panel rather than logged, so a failed setup is visible.
   private(set) var setupError: String?
 
+  /// Why agent events are not arriving, when they are not.
+  private(set) var bridgeError: String?
+
   // MARK: - Collaborators
 
   private var store = SessionStore()
@@ -120,7 +123,16 @@ final class AppModel {
     clamshell.installSignalHandlers()
     Task { await clamshell.restoreOnLaunch() }
 
-    bridge = EventBridge { [weak self] event in self?.handle(event) }
+    bridge = EventBridge(
+      onEvent: { [weak self] event in self?.handle(event) },
+      onStatusChange: { [weak self] status in
+        switch status {
+        case .listening: self?.bridgeError = nil
+        case .failed(let reason): self?.bridgeError = reason
+        case .starting: break
+        }
+      }
+    )
     bridge?.start()
     refreshInstalledAgents()
 

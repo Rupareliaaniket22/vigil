@@ -25,11 +25,34 @@ private let maximumBodyBytes = 64 * 1024
 @MainActor
 final class EventBridge {
 
+  /// Whether the bridge is actually listening.
+  ///
+  /// Reported rather than only logged: an app that is running but silently
+  /// receiving nothing looks identical to one that is working, right up until
+  /// someone's overnight run dies.
+  enum Status: Equatable {
+    case starting
+    case listening(path: String)
+    case failed(reason: String)
+  }
+
+  private(set) var status: Status = .starting
+
   private var task: Task<Void, Never>?
   private let onEvent: @MainActor (AgentEvent) -> Void
+  private let onStatusChange: @MainActor (Status) -> Void
 
-  init(onEvent: @escaping @MainActor (AgentEvent) -> Void) {
+  init(
+    onEvent: @escaping @MainActor (AgentEvent) -> Void,
+    onStatusChange: @escaping @MainActor (Status) -> Void = { _ in }
+  ) {
     self.onEvent = onEvent
+    self.onStatusChange = onStatusChange
+  }
+
+  private func report(_ status: Status) {
+    self.status = status
+    onStatusChange(status)
   }
 
   func start() {
@@ -39,11 +62,13 @@ final class EventBridge {
     } catch {
       log.error(
         "could not prepare socket directory: \(error.localizedDescription, privacy: .public)")
+      report(.failed(reason: error.localizedDescription))
       return
     }
 
     let server = HTTPServer(address: sockaddr_un.unix(path: path))
     let handle = onEvent
+    let statusChanged = onStatusChange
 
     Task {
       await server.appendRoute("POST /event") { (request: HTTPRequest) in
@@ -86,9 +111,13 @@ final class EventBridge {
 
       do {
         log.info("bridge listening at \(path, privacy: .public)")
+        await MainActor.run { statusChanged(.listening(path: path)) }
         try await server.run()
+        // A clean return means we were cancelled on quit, not that we failed.
       } catch {
         log.error("bridge stopped: \(error.localizedDescription, privacy: .public)")
+        let reason = error.localizedDescription
+        await MainActor.run { statusChanged(.failed(reason: reason)) }
       }
     }
     .store(in: &task)

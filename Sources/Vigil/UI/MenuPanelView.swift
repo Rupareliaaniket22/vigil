@@ -61,6 +61,18 @@ struct MenuPanelView: View {
       }
     }
 
+    if let error = model.bridgeError {
+      VStack(alignment: .leading, spacing: Theme.Metrics.tight) {
+        Text("Vigil isn't receiving agent events.")
+          .font(Theme.Text.body)
+          .foregroundStyle(.vigilAmber)
+        Text(error)
+          .font(Theme.Text.detail)
+          .foregroundStyle(.vigilSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+
     if let error = model.setupError {
       Text(error)
         .font(Theme.Text.detail)
