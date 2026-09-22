@@ -32,6 +32,10 @@ sed -e "s/__MARKETING_VERSION__/$MARKETING_VERSION/" \
     Resources/Info.plist > "$APP/Contents/Info.plist"
 
 [[ -f "Resources/$APP_NAME.icns" ]] && cp "Resources/$APP_NAME.icns" "$APP/Contents/Resources/"
+
+# The hook script ships inside the bundle; the installer copies it out to
+# ~/.vigil/hooks so a moved or replaced app doesn't break an installed hook.
+cp hooks/claude-code/vigil-hook.sh "$APP/Contents/Resources/"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # --- sign, innermost first ---
