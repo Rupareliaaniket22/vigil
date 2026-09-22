@@ -1,0 +1,44 @@
+#!/bin/bash
+#
+# Vigil's clamshell helper. Runs as root via a scoped sudoers rule.
+#
+# This is the only part of Vigil that runs with privilege, so it does exactly
+# one thing and validates its input strictly. It takes precisely one argument,
+# "on" or "off", and rejects everything else. There is no path through it that
+# runs a command built from its input.
+#
+# Installed by Scripts/install-clamshell.sh to /usr/local/libexec/vigil-clamshell,
+# owned by root, mode 0755.
+
+set -euo pipefail
+IFS=$'\n\t'
+
+readonly PMSET=/usr/bin/pmset
+
+# Exactly one argument. No flags, no pass-through, no shifting.
+if [[ $# -ne 1 ]]; then
+  echo "usage: vigil-clamshell on|off" >&2
+  exit 64
+fi
+
+case "$1" in
+  on)  want=1 ;;
+  off) want=0 ;;
+  *)
+    echo "vigil-clamshell: expected 'on' or 'off', got '$1'" >&2
+    exit 64
+    ;;
+esac
+
+# pmset prints "must be run as root" and still exits 0, so its exit status
+# cannot be trusted. Apply the change, then read the value back and confirm.
+"$PMSET" -a disablesleep "$want" >/dev/null 2>&1 || true
+
+got="$("$PMSET" -g 2>/dev/null | /usr/bin/awk '/SleepDisabled/ {print $2; exit}')"
+
+if [[ "$got" != "$want" ]]; then
+  echo "vigil-clamshell: SleepDisabled is '${got:-unknown}', expected '$want'" >&2
+  exit 1
+fi
+
+exit 0

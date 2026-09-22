@@ -79,8 +79,12 @@ are reachable by every other user account on the machine.
 
 ## Not done yet
 
-- **Lid-closed operation.** The plumbing is in place behind a protocol, but
-  neither backend is implemented. Closing the lid still sleeps your Mac.
+- **Lid-closed operation — needs a one-time setup step.** Run
+  `sudo ./Scripts/install-clamshell.sh`, then turn on "Keep working with the
+  lid closed" in settings. It grants your user permission to run one specific
+  program with one of two fixed arguments; read
+  [SECURITY.md](SECURITY.md) before you do. Remove it with
+  `sudo ./Scripts/install-clamshell.sh --uninstall`.
 - **Notifications** when a run finishes or the battery floor is hit.
 - **A signed, notarized release.** Until then it is build-from-source only.
 - **Agents other than Claude Code.** Codex, Cursor, Gemini and OpenCode are

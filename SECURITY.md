@@ -30,9 +30,29 @@ Keeping the Mac awake with the lid shut requires clearing `SleepDisabled` on
 
 - **sudoers backend** — a root-owned helper at `/usr/local/libexec/vigil-clamshell`,
   permitted by a scoped `/etc/sudoers.d` rule to run exactly two fixed argument
-  vectors. No wildcards and no shell interpolation, because both turn a NOPASSWD
-  rule into a root shell. Vigil refuses to invoke the helper unless it is
-  root-owned and not group- or world-writable.
+  vectors. Specifically:
+
+  ```
+  <user> ALL=(root) NOPASSWD: /usr/local/libexec/vigil-clamshell on, \
+                              /usr/local/libexec/vigil-clamshell off
+  ```
+
+  The grant is deliberately narrow. No wildcard, because `vigil-clamshell *`
+  would let any argument through and the helper is only safe because its input
+  is fixed. The helper takes exactly one argument, accepts only `on` or `off`,
+  rejects everything else with exit 64, and never builds a command from its
+  input. It calls `pmset -a disablesleep` and nothing else.
+
+  The installer validates the generated rule with `visudo -cqf` before moving
+  it into place — a malformed file in `sudoers.d` can lock you out of `sudo`
+  entirely. It installs the helper root-owned and mode 0755, and Vigil refuses
+  to invoke a helper that is not root-owned or that is group- or
+  world-writable, since a NOPASSWD rule pointing at a writable file is a root
+  shell.
+
+  Note that `pmset` prints "must be run as root" and still exits 0, so the
+  helper reads `SleepDisabled` back and confirms it matches what was asked
+  rather than trusting the exit status.
 - **XPC helper backend** (v2) — an `SMAppService` daemon. Registration requires a
   matching Developer ID team, and the listener must set a code-signing
   requirement so arbitrary local processes cannot drive it.
