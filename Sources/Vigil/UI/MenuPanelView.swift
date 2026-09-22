@@ -105,17 +105,32 @@ struct MenuPanelView: View {
           .font(Theme.Text.section)
           .foregroundStyle(.vigilPrimary)
 
-        Text(otherNames)
-          .font(Theme.Text.detail)
-          .foregroundStyle(.vigilSecondary)
-          .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: Theme.Metrics.tight) {
+          ForEach(collapsedAssertions) { assertion in
+            HStack(alignment: .firstTextBaseline, spacing: Theme.Metrics.snug) {
+              Text(assertion.processName)
+                .font(Theme.Text.detail)
+                .foregroundStyle(.vigilSecondary)
+              Text(assertion.reason)
+                .font(Theme.Text.detail)
+                .foregroundStyle(.vigilTertiary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(assertion.processName): \(assertion.reason)")
+          }
+        }
       }
     }
   }
 
-  private var otherNames: String {
-    let names = Set(model.otherAssertions.map(\.processName)).sorted()
-    return names.joined(separator: ", ")
+  /// One row per process. A process holding several assertions is still one
+  /// answer to "what is keeping my Mac awake", and listing it repeatedly would
+  /// make a short list look alarming.
+  private var collapsedAssertions: [SystemAssertion] {
+    var seen = Set<String>()
+    return model.otherAssertions.filter { seen.insert($0.processName).inserted }
   }
 
   // MARK: - Controls

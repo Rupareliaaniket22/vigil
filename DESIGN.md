@@ -207,6 +207,11 @@ processes — is what turns this from a switch into an explanation. It is also
 honest: it shows when the reason your Mac is awake isn't Vigil at all. Don't
 hide it to save space.
 
+Each row names the process and the reason it gave, because "Music" alone still
+leaves you guessing. One row per process: something holding several assertions
+is still one answer to the question, and repeating it would make a short list
+look alarming.
+
 **The empty state is never blank.** Zero sessions reads "No agents running —
 your Mac can sleep normally", with the manual toggle still present, so there is
 always something to act on.
