@@ -8,8 +8,10 @@ keep-awake tools fix that by never letting your Mac sleep at all. Vigil holds a
 wake lock only while an agent is actually mid-task, and releases it as soon as
 the work finishes.
 
-> **Status: early.** The core wake logic, guardrails and packaging work and are
-> tested. The menu bar UI and the hook bridge are still being built.
+> **Status: early but usable.** The menu bar app runs, detects Claude Code
+> sessions, and holds and releases the wake lock correctly. Lid-closed support,
+> notifications and signed releases are not done yet — see
+> [Not done yet](#not-done-yet).
 
 ## Why not just use `caffeinate`?
 
@@ -28,13 +30,17 @@ by other apps, not just its own.
 
 ## Install
 
-Requires macOS 14 or later.
+Requires macOS 14 or later. There is no signed release yet, so build it:
 
 ```sh
 git clone https://github.com/AniketRuparelia22/vigil
 cd vigil
 make run
 ```
+
+Then open the menu bar icon and click **Set up Claude Code**. Vigil adds a hook
+to `~/.claude/settings.json`, keeping a backup alongside it, and leaves any
+other hooks you have in place.
 
 ## Build from source
 
@@ -70,6 +76,15 @@ that is opt-in and isolated behind a single protocol.
 
 A Unix socket is used rather than a localhost TCP port because loopback ports
 are reachable by every other user account on the machine.
+
+## Not done yet
+
+- **Lid-closed operation.** The plumbing is in place behind a protocol, but
+  neither backend is implemented. Closing the lid still sleeps your Mac.
+- **Notifications** when a run finishes or the battery floor is hit.
+- **A signed, notarized release.** Until then it is build-from-source only.
+- **Agents other than Claude Code.** Codex, Cursor, Gemini and OpenCode are
+  recognised if something posts events for them, but no hook ships for them yet.
 
 ## Contributing
 
