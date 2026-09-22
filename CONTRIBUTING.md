@@ -15,9 +15,15 @@ If you do have Xcode, everything still works; nothing here depends on it.
 ## Before opening a pull request
 
 ```sh
-make test     # must pass
-make lint     # must be clean
+make test         # must pass
+make lint         # must be clean
+make integration  # if you touched the bridge, model or policy
 ```
+
+`make integration` launches a real app and drives it through the whole loop,
+checking that macOS's power state actually follows. The unit tests cover the
+decision logic and `make smoke` covers the panel building; this covers the part
+neither can.
 
 Run `make format` to fix formatting automatically.
 

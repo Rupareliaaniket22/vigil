@@ -9,7 +9,7 @@ IDENTITY          ?= -
 
 export APP_NAME BUNDLE_ID MARKETING_VERSION IDENTITY
 
-.PHONY: help build test lint format bundle run smoke icon clean dmg release
+.PHONY: help build test lint format bundle run smoke integration icon clean dmg release
 
 help: ## Show this help
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -29,6 +29,9 @@ format: ## Reformat in place
 bundle: ## Build a universal, signed .app
 	@Scripts/build-universal.sh $(APP_NAME)
 	@Scripts/bundle.sh
+
+integration: bundle ## Drive a real app through its whole loop
+	@Scripts/integration-test.sh
 
 smoke: bundle ## Build the panel headlessly and check it lays out
 	@VIGIL_SMOKE=1 ./dist/$(APP_NAME).app/Contents/MacOS/$(APP_NAME)

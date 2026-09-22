@@ -21,9 +21,13 @@ not an oversight.
 | Check formatting    | `make lint`    |
 | Auto-fix formatting | `make format`  |
 | Universal signed app| `make bundle`  |
+| Panel lays out      | `make smoke`   |
+| Full loop, live     | `make integration` |
 | Build and launch    | `make run`     |
 
-`make test && make lint` must both pass before any commit. Run `make format`
+`make test && make lint` must both pass before any commit. `make integration`
+launches a real app and checks the power assertion actually follows hook events
+— run it when you touch the bridge, the model or the policy. Run `make format`
 rather than hand-fixing style; `.swift-format` is the only source of truth for
 formatting and its rules are deliberately not restated here.
 
