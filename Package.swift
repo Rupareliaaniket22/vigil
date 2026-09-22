@@ -15,7 +15,10 @@ let package = Package(
   ],
   targets: [
     // Pure logic. No AppKit, no IOKit, no I/O — so it is fully unit-testable.
-    .target(name: "VigilCore"),
+    .target(
+      name: "VigilCore",
+      swiftSettings: [.swiftLanguageMode(.v6)]
+    ),
 
     // The menu bar app.
     .executableTarget(
@@ -27,6 +30,10 @@ let package = Package(
       swiftSettings: [.swiftLanguageMode(.v6)]
     ),
 
-    .testTarget(name: "VigilCoreTests", dependencies: ["VigilCore"]),
+    .testTarget(
+      name: "VigilCoreTests",
+      dependencies: ["VigilCore"],
+      swiftSettings: [.swiftLanguageMode(.v6)]
+    ),
   ]
 )
