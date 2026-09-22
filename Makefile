@@ -9,7 +9,7 @@ IDENTITY          ?= -
 
 export APP_NAME BUNDLE_ID MARKETING_VERSION IDENTITY
 
-.PHONY: help build test lint format bundle run smoke clean dmg release
+.PHONY: help build test lint format bundle run smoke icon clean dmg release
 
 help: ## Show this help
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -39,6 +39,12 @@ run: bundle ## Build and launch
 
 clean: ## Remove build artefacts
 	rm -rf .build .build-arm64 .build-x86_64 dist
+	rm -rf Resources/$(APP_NAME).iconset Resources/$(APP_NAME).icns
+
+icon: ## Regenerate the app icon
+	@swift Scripts/make-icon.swift
+	@iconutil -c icns Resources/$(APP_NAME).iconset -o Resources/$(APP_NAME).icns
+	@echo "wrote Resources/$(APP_NAME).icns"
 
 dmg: bundle ## Package a DMG
 	@rm -f dist/$(APP_NAME).dmg

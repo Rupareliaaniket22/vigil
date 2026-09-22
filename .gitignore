@@ -6,3 +6,5 @@ dist/
 .DS_Store
 private_key.txt
 *.p12
+Resources/*.iconset/
+Resources/*.icns

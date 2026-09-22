@@ -31,7 +31,14 @@ sed -e "s/__MARKETING_VERSION__/$MARKETING_VERSION/" \
     -e "s/__BUILD_VERSION__/$BUILD_VERSION/" \
     Resources/Info.plist > "$APP/Contents/Info.plist"
 
-[[ -f "Resources/$APP_NAME.icns" ]] && cp "Resources/$APP_NAME.icns" "$APP/Contents/Resources/"
+# The icon is generated from Scripts/make-icon.swift rather than checked in,
+# so its design is reviewable in a diff instead of arriving as a binary blob.
+if [[ ! -f "Resources/$APP_NAME.icns" ]]; then
+  echo "==> generating icon"
+  swift Scripts/make-icon.swift >/dev/null
+  iconutil -c icns "Resources/$APP_NAME.iconset" -o "Resources/$APP_NAME.icns"
+fi
+cp "Resources/$APP_NAME.icns" "$APP/Contents/Resources/"
 
 # The hook script ships inside the bundle; the installer copies it out to
 # ~/.vigil/hooks so a moved or replaced app doesn't break an installed hook.
