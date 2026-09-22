@@ -14,7 +14,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Pluggable clamshell backend (sudoers now, `SMAppService` helper once signed)
 - Universal build, bundle and ad-hoc signing with Command Line Tools only
 - Menu bar panel, settings window, and one-click hook setup
-- Integrations for Claude Code, Codex and Gemini CLI
+- Integrations for Claude Code, Codex, Gemini CLI and Cursor
 - Notifications when a run finishes or a guardrail cuts one short
 - Lid-closed support behind a scoped sudoers helper
 - ⌥⌘L to toggle the manual hold from anywhere

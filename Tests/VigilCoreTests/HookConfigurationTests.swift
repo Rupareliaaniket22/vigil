@@ -19,12 +19,14 @@ private func existingSettings() -> [String: Any] {
   ]
 }
 
+/// Reads commands out of either entry shape a host might use.
 private func commands(_ settings: [String: Any], event: String) -> [String] {
   guard let hooks = settings["hooks"] as? [String: Any],
     let matchers = hooks[event] as? [[String: Any]]
   else { return [] }
-  return matchers.flatMap { matcher in
-    (matcher["hooks"] as? [[String: Any]] ?? []).compactMap { $0["command"] as? String }
+  return matchers.flatMap { matcher -> [String] in
+    if let flat = matcher["command"] as? String { return [flat] }
+    return (matcher["hooks"] as? [[String: Any]] ?? []).compactMap { $0["command"] as? String }
   }
 }
 
@@ -184,5 +186,64 @@ struct AgentIntegrationTests {
   func distinctSettingsPaths() {
     let paths = Set(AgentIntegration.all.map(\.settingsPath))
     #expect(paths.count == AgentIntegration.all.count)
+  }
+}
+
+@Suite("Hook entry shapes")
+struct HookEntryFormatTests {
+
+  @Test("Cursor gets the flat shape its config uses")
+  func cursorIsFlat() {
+    let result = HookConfiguration.install(into: [:], scriptPath: script, integration: .cursor)
+    let hooks = result["hooks"] as? [String: Any] ?? [:]
+    let matchers = hooks["stop"] as? [[String: Any]] ?? []
+
+    #expect(matchers.count == 1)
+    // Flat: the command sits directly on the entry, with no "hooks" wrapper.
+    #expect(matchers.first?["command"] as? String != nil)
+    #expect(matchers.first?["hooks"] == nil)
+  }
+
+  @Test("the others get the nested shape")
+  func othersAreNested() {
+    for integration in [AgentIntegration.claudeCode, .codex, .gemini] {
+      let result = HookConfiguration.install(
+        into: [:], scriptPath: script, integration: integration)
+      let hooks = result["hooks"] as? [String: Any] ?? [:]
+      let event = integration.allEvents[0]
+      let matchers = hooks[event] as? [[String: Any]] ?? []
+
+      #expect(matchers.first?["hooks"] != nil, "\(integration.displayName) should be nested")
+      #expect(matchers.first?["command"] == nil, "\(integration.displayName) should not be flat")
+    }
+  }
+
+  @Test("uninstall recognises our entries in both shapes")
+  func uninstallHandlesBothShapes() {
+    for integration in AgentIntegration.all {
+      let installed = HookConfiguration.install(
+        into: ["version": 1], scriptPath: script, integration: integration)
+      let removed = HookConfiguration.uninstall(from: installed, scriptPath: script)
+
+      #expect(removed["hooks"] == nil, "\(integration.displayName) left scaffolding behind")
+      #expect(removed["version"] as? Int == 1, "\(integration.displayName) dropped a settings key")
+    }
+  }
+
+  @Test("Cursor's foreign hooks survive, in their own shape")
+  func cursorPreservesForeignHooks() {
+    let existing: [String: Any] = [
+      "version": 1,
+      "hooks": ["stop": [["command": "/opt/other/their-hook.sh stop"]]],
+    ]
+    let installed = HookConfiguration.install(
+      into: existing, scriptPath: script, integration: .cursor)
+    let stop = commands(installed, event: "stop")
+
+    #expect(stop.contains("/opt/other/their-hook.sh stop"))
+    #expect(stop.contains { $0.hasPrefix(script) })
+
+    let removed = HookConfiguration.uninstall(from: installed, scriptPath: script)
+    #expect(commands(removed, event: "stop") == ["/opt/other/their-hook.sh stop"])
   }
 }

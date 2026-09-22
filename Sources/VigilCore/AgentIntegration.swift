@@ -1,5 +1,14 @@
 import Foundation
 
+/// How a host shapes a hook entry in its settings file.
+public enum HookEntryFormat: Sendable, Equatable {
+  /// `"event": [ { "hooks": [ { "type": "command", "command": "…" } ] } ]`
+  /// — Claude Code, Codex, Gemini CLI.
+  case nested
+  /// `"event": [ { "command": "…" } ]` — Cursor.
+  case flat
+}
+
 /// One agent Vigil knows how to wire itself into.
 ///
 /// Each host names its lifecycle events differently and keeps its settings
@@ -22,6 +31,8 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
   public let idleEvents: [String]
   /// Some hosts want a per-hook timeout in their config.
   public let timeoutMilliseconds: Int?
+  /// Hosts do not agree on the shape of a hook entry.
+  public let entryFormat: HookEntryFormat
 
   public var allEvents: [String] { workingEvents + waitingEvents + idleEvents }
 
@@ -44,7 +55,8 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
     workingEvents: [String],
     waitingEvents: [String] = [],
     idleEvents: [String],
-    timeoutMilliseconds: Int? = nil
+    timeoutMilliseconds: Int? = nil,
+    entryFormat: HookEntryFormat = .nested
   ) {
     self.id = id
     self.displayName = displayName
@@ -54,6 +66,7 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
     self.waitingEvents = waitingEvents
     self.idleEvents = idleEvents
     self.timeoutMilliseconds = timeoutMilliseconds
+    self.entryFormat = entryFormat
   }
 }
 
@@ -90,6 +103,21 @@ extension AgentIntegration {
     timeoutMilliseconds: 10_000
   )
 
+  public static let cursor = AgentIntegration(
+    id: .cursor,
+    displayName: "Cursor",
+    settingsPath: ".cursor/hooks.json",
+    scriptName: "vigil-hook",
+    workingEvents: [
+      "beforeSubmitPrompt", "beforeShellExecution", "afterShellExecution",
+      "beforeReadFile", "afterFileEdit", "beforeMCPExecution", "afterMCPExecution",
+      "afterAgentThought",
+    ],
+    // afterAgentResponse closes a turn, so it means the agent has stopped.
+    idleEvents: ["afterAgentResponse", "stop"],
+    entryFormat: .flat
+  )
+
   /// Every integration Vigil ships, in the order the settings window lists them.
-  public static let all: [AgentIntegration] = [.claudeCode, .codex, .gemini]
+  public static let all: [AgentIntegration] = [.claudeCode, .codex, .gemini, .cursor]
 }

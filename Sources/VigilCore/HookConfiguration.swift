@@ -34,6 +34,17 @@ public enum HookConfiguration {
     return command.contains(name)
   }
 
+  /// Whether a hook entry is one of ours, in either shape a host might use.
+  static func isOurs(_ matcher: [String: Any], scriptPath: String) -> Bool {
+    if let command = matcher["command"] as? String {
+      return isVigilHook(command, scriptPath: scriptPath)
+    }
+    guard let inner = matcher["hooks"] as? [[String: Any]] else { return false }
+    return inner.contains { entry in
+      (entry["command"] as? String).map { isVigilHook($0, scriptPath: scriptPath) } ?? false
+    }
+  }
+
   /// Add an agent's hooks to its settings, leaving everything else alone.
   ///
   /// The event-to-state mapping is baked into the command at install time
@@ -63,12 +74,18 @@ public enum HookConfiguration {
         }
       }
 
-      var entry: [String: Any] = [
-        "type": "command",
-        "command": "\(scriptPath) \(integration.id.rawValue) \(event) \(state.rawValue)",
-      ]
-      if let timeout = integration.timeoutMilliseconds { entry["timeout"] = timeout }
-      matchers.append(["hooks": [entry]])
+      let command = "\(scriptPath) \(integration.id.rawValue) \(event) \(state.rawValue)"
+
+      switch integration.entryFormat {
+      case .nested:
+        var entry: [String: Any] = ["type": "command", "command": command]
+        if let timeout = integration.timeoutMilliseconds { entry["timeout"] = timeout }
+        matchers.append(["hooks": [entry]])
+      case .flat:
+        var entry: [String: Any] = ["command": command]
+        if let timeout = integration.timeoutMilliseconds { entry["timeout"] = timeout }
+        matchers.append(entry)
+      }
       hooks[event] = matchers
     }
 
@@ -90,12 +107,7 @@ public enum HookConfiguration {
     for (event, value) in hooks {
       guard var matchers = value as? [[String: Any]] else { continue }
 
-      matchers = matchers.filter { matcher in
-        guard let inner = matcher["hooks"] as? [[String: Any]] else { return true }
-        return !inner.contains { entry in
-          (entry["command"] as? String).map { isVigilHook($0, scriptPath: scriptPath) } ?? false
-        }
-      }
+      matchers = matchers.filter { !isOurs($0, scriptPath: scriptPath) }
 
       if matchers.isEmpty {
         hooks.removeValue(forKey: event)
@@ -121,12 +133,7 @@ public enum HookConfiguration {
     guard let hooks = settings["hooks"] as? [String: Any] else { return false }
     return integration.allEvents.allSatisfy { event in
       guard let matchers = hooks[event] as? [[String: Any]] else { return false }
-      return matchers.contains { matcher in
-        guard let inner = matcher["hooks"] as? [[String: Any]] else { return false }
-        return inner.contains { entry in
-          (entry["command"] as? String).map { isVigilHook($0, scriptPath: scriptPath) } ?? false
-        }
-      }
+      return matchers.contains { isOurs($0, scriptPath: scriptPath) }
     }
   }
 }
