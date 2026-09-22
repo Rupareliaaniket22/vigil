@@ -27,9 +27,10 @@ not an oversight.
 rather than hand-fixing style; `.swift-format` is the only source of truth for
 formatting and its rules are deliberately not restated here.
 
-`make release` and `make dmg` reference `Scripts/release.sh`, which does not
-exist yet. Release tooling is unfinished — don't assume it works, and don't
-build it out unless asked.
+`make release` runs `Scripts/release.sh`, which needs a Developer ID and a
+stored notarytool profile. Nobody has run it end to end yet — it refuses
+without credentials rather than half-shipping, but treat its first real run as
+unproven. Signing happens locally, never in CI.
 
 ## Where code belongs
 

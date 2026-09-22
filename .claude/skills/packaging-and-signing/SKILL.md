@@ -61,11 +61,17 @@ thinks is newer than the update.
 Note that an ad-hoc signature has no Team ID, which is why `SMAppService` refuses
 to register the privileged helper in ad-hoc builds — that isn't a bug to debug.
 
-## Not built yet
+## Releasing
 
-`make release` and `make dmg` reference `Scripts/release.sh`, which does not
-exist. Notarization and appcast generation are unimplemented. Say so rather than
-inventing the steps, and re-check before assuming it's still true.
+`Scripts/release.sh` does the full path: universal build, inside-out signing,
+notarize the app, staple, build the DMG from the stapled app, notarize and
+staple that too. It notarizes both deliberately — stapling only the DMG leaves
+someone who drags the app out and launches it offline facing a Gatekeeper
+warning.
+
+It needs `IDENTITY` and a stored `NOTARY_PROFILE`, and refuses without them.
+No one has run it end to end yet, because the project has no Developer ID.
+Treat its first real run as unproven.
 
 CI runs `make bundle` unsigned on purpose, so no signing identity ever needs to
 exist there. Releases are signed locally. Don't move signing into CI.
