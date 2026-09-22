@@ -1,8 +1,7 @@
 # Vigil — Product Requirements
 
-*Draft, 23 September 2026. Written against research on the competitive field and
-the macOS platform constraints; two user-research threads were still open when
-this was drafted and may revise §2 and §7.*
+*Draft, 23 September 2026. Revised the same night after competitive research
+came back and showed §7 was wrong.*
 
 ---
 
@@ -55,6 +54,7 @@ excellent, and better at that.
 | R9 | Keep working with the lid closed | ✅ done — needs one-time setup |
 | R10 | Notify when a run finishes | ✅ done, delivery unverified |
 | R11 | Warn when a guardrail cuts a run short | ✅ done |
+| R11a | Release the hold when the Mac runs hot | ✅ done |
 | R12 | Mains-only and Low Power Mode respect | ✅ done |
 | R13 | Launch at login | ✅ done |
 | R14 | Support Codex, Cursor, Gemini, OpenCode | ⬜ recognised, no hooks shipped |
@@ -112,25 +112,72 @@ biggest risk to the premise.*
 and is well made. We are betting that a population who runs coding agents will
 prefer a tool they can read — particularly one asking for sudo. *Unvalidated.*
 
-## 7. Where we can genuinely win
+## 7. The competitive picture
 
-Honestly assessed, not as a pitch:
+The field is more crowded than it first appeared, and **the real competition is
+not the paid apps.** A free tool competes with better free tools, and two exist:
 
-- **The assertion ledger.** Showing every process holding the Mac awake, not
-  just ours, including when the answer isn't us. Nothing else does this, it is
-  ~30 lines, and it is the kind of honesty that earns trust.
-- **Auditability.** For a tool requesting a sudoers rule, being readable is a
-  feature, not a licence choice.
-- **Correct multi-agent behaviour.** The session model handles concurrent
-  agents properly. Several competitors are single-session toggles.
+| | Stars | Agents | Thermal | Battery floor | Ledger |
+| --- | --- | --- | --- | --- | --- |
+| **Adrafinil** (MIT) | 480 | 9, hooked | ✅ | ❌ | ❌ |
+| **coffee-bar** (Apache-2.0) | 13 | 1, hooks-only | ❌ | ✅ 15% | ❌ |
+| **Vigil** | 0 | 1 shipped | ✅ | ✅ 20% | ✅ |
+
+coffee-bar is close to an architectural twin — same licence, Unix-socket hook
+bridge, unprivileged assertion, session tracking. Adrafinil is three months
+ahead with nine agents, reference-counted sessions and an MCP surface.
+
+At least ten people independently built a version of this in 2026. Most got
+single-digit stars and went quiet within days.
+
+### Where we genuinely win
+
+- **The assertion ledger.** Checked against roughly twenty products, including
+  source-level reads of the two closest analogs. **Nothing else has it.**
+  Perked publishes a support page teaching users to run `pmset -g assertions`
+  in Terminal rather than shipping the feature. This is the product's reason to
+  exist, not a panel section.
+- **Guardrail completeness.** Thermal + battery floor + mains-only + Low Power
+  Mode together. Adrafinil, the 480-star leader, has thermal and none of the
+  other three.
+- **Reach.** macOS 14+ against Adrafinil's macOS 26+, and a Command-Line-Tools
+  build against its Xcode 26 requirement.
 
 ### Where we lose
 
-- **Polish and support.** A paid product with one owner will out-finish a
-  side project.
-- **Install experience.** Without a Developer ID it is eight steps past a
-  malware warning, and Homebrew banned unsigned casks in September 2026.
-- **Breadth today.** Hold My Lid ships thirteen agent integrations; we ship one.
+- **No signed release, no auto-update.** Every serious competitor gets a user
+  to a running app faster than we do.
+- **Agent breadth.** One shipped against Adrafinil's nine. An agent-agnostic
+  protocol is a design affordance, not a delivered feature.
+- **Zero users.** Against a field with a 480-star and a 184-star entrant.
+
+### The honest case against building this
+
+The strongest version: the core mechanism is well-understood enough that ten
+people built it this year, and two abandoned repos accumulated 57 and 62 stars
+respectively *despite being abandoned within hours of creation* — which
+suggests people are starring the idea, not adopting a tool.
+
+**Our two best differentiators would plausibly have more real-world impact as
+pull requests against coffee-bar** — same licence, already shipped, already has
+users — than as a nineteenth competing menu bar app starting from zero.
+
+The fair counter: nobody has the ledger, our guardrails are more complete than
+the category leader's, Adrafinil's macOS 26 floor is a real exclusion ours
+isn't, and the work is done and tested. As a well-engineered personal tool and
+a credible piece of public work, that is sufficient. As a bid for adoption, it
+is late.
+
+### If it proceeds, the position is narrow
+
+Not "the open-source agent-aware keep-awake app" — that is taken twice, by
+tools with more stars and more agents. Instead:
+
+> **The one that tells you the truth about why your Mac is awake, and that you
+> can audit before you give it root.**
+
+That means shipping a signed release before polishing anything else, and
+treating the ledger as the reason the product exists.
 
 ## 8. Success
 
@@ -151,3 +198,7 @@ a failure worth stopping for.
 3. Is the $99/year for a Developer ID worth it before knowing anyone wants this?
 4. Should the ledger let you *release* another app's assertion, or only show it?
    Showing is safe; acting on it is a much bigger product.
+5. Does an AC-to-battery transition while lid-closed is armed behave correctly?
+   Lidless has two open bugs about exactly this and Amphetamine shipped a whole
+   component to fix it, so it is a known-hard case we have not tested.
+6. Would these differentiators do more good as PRs to coffee-bar?
