@@ -21,7 +21,7 @@ enum ClamshellError: LocalizedError {
     switch self {
     case .notInstalled:
       "Lid-closed support is not installed. Open Settings → Advanced to set it up."
-    case let .commandFailed(status, message):
+    case .commandFailed(let status, let message):
       "Could not change the lid-close setting (exit \(status)): \(message)"
     }
   }

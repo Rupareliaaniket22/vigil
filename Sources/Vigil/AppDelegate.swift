@@ -76,13 +76,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   private var statusDescription: String {
     switch decision.reason {
-    case let .agentsWorking(count):
+    case .agentsWorking(let count):
       "awake — \(count) agent\(count == 1 ? "" : "s") working"
     case .manualOverride: "awake — kept awake manually"
-    case let .paused(until):
+    case .paused(let until):
       "paused until \(until.formatted(date: .omitted, time: .shortened))"
     case .noAgents: "Mac may sleep — no agents running"
-    case let .batteryBelowFloor(percent, floor):
+    case .batteryBelowFloor(let percent, let floor):
       "sleeping — battery \(percent)% is below the \(floor)% floor"
     case .onBatteryAndPluggedInRequired: "sleeping — set to run only on mains power"
     case .lowPowerMode: "sleeping — Low Power Mode is on"
