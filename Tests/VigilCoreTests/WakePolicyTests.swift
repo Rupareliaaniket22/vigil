@@ -211,3 +211,57 @@ struct ThermalGuardrailTests {
     #expect(ThermalState.serious < .critical)
   }
 }
+
+@Suite("Guardrail classification")
+struct GuardrailClassificationTests {
+
+  @Test(
+    "safety rules are guardrails",
+    arguments: [
+      WakeReason.batteryBelowFloor(percent: 10, floor: 20),
+      .onBatteryAndPluggedInRequired,
+      .lowPowerMode,
+      .tooHot(state: .serious),
+    ])
+  func safetyRulesAreGuardrails(reason: WakeReason) {
+    #expect(reason.isGuardrail)
+  }
+
+  @Test(
+    "ordinary states are not",
+    arguments: [
+      WakeReason.agentsWorking(count: 1),
+      .manualOverride,
+      .noAgents,
+    ])
+  func ordinaryStatesAreNot(reason: WakeReason) {
+    #expect(!reason.isGuardrail)
+  }
+
+  @Test("finishing work is not a guardrail")
+  func finishingIsNotAGuardrail() {
+    // This distinction decides whether we actively put the Mac to sleep.
+    // Getting it wrong either drains the battery or sleeps the machine while
+    // someone is using it.
+    let finished = WakePolicy.decide(
+      sessions: [], conditions: PowerConditions(), settings: WakeSettings())
+    #expect(!finished.holdIdleAssertion)
+    #expect(!finished.reason.isGuardrail)
+
+    let cutOff = WakePolicy.decide(
+      sessions: [session(.working)],
+      conditions: PowerConditions(batteryPercent: 5, isPluggedIn: false),
+      settings: WakeSettings())
+    #expect(!cutOff.holdIdleAssertion)
+    #expect(cutOff.reason.isGuardrail)
+  }
+
+  @Test("a pause is the user's choice, not a safety cutoff")
+  func pauseIsNotAGuardrail() {
+    let now = Date()
+    let paused = WakePolicy.decide(
+      sessions: [session(.working)], conditions: PowerConditions(), settings: WakeSettings(),
+      pausedUntil: now.addingTimeInterval(600), now: now)
+    #expect(!paused.reason.isGuardrail)
+  }
+}

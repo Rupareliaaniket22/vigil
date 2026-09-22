@@ -84,6 +84,16 @@ public enum WakeReason: Sendable, Equatable {
   case lowPowerMode
   case tooHot(state: ThermalState)
 
+  /// Whether a safety rule forced this, as opposed to there simply being no
+  /// work. The difference matters: a guardrail firing with the lid shut means
+  /// the Mac must be actively told to sleep, or it sits there draining.
+  public var isGuardrail: Bool {
+    switch self {
+    case .batteryBelowFloor, .onBatteryAndPluggedInRequired, .lowPowerMode, .tooHot: true
+    case .agentsWorking, .manualOverride, .paused, .noAgents: false
+    }
+  }
+
   public var holdsWake: Bool {
     switch self {
     case .agentsWorking, .manualOverride: true

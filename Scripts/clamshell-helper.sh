@@ -21,11 +21,17 @@ if [[ $# -ne 1 ]]; then
   exit 64
 fi
 
+# `sleep` exists because clearing the flag is not enough on its own. macOS only
+# re-evaluates clamshell sleep on a lid open/close event, so with the lid
+# already shut, restoring the flag leaves the Mac awake indefinitely — it is
+# merely *permitted* to sleep, and nothing asks it to. A battery cutoff that
+# only clears the flag drains the machine to empty anyway.
 case "$1" in
-  on)  want=1 ;;
-  off) want=0 ;;
+  on)    want=1; then_sleep=0 ;;
+  off)   want=0; then_sleep=0 ;;
+  sleep) want=0; then_sleep=1 ;;
   *)
-    echo "vigil-clamshell: expected 'on' or 'off', got '$1'" >&2
+    echo "vigil-clamshell: expected 'on', 'off' or 'sleep', got '$1'" >&2
     exit 64
     ;;
 esac
@@ -39,6 +45,10 @@ got="$("$PMSET" -g 2>/dev/null | /usr/bin/awk '/SleepDisabled/ {print $2; exit}'
 if [[ "$got" != "$want" ]]; then
   echo "vigil-clamshell: SleepDisabled is '${got:-unknown}', expected '$want'" >&2
   exit 1
+fi
+
+if [[ "$then_sleep" == "1" ]]; then
+  exec "$PMSET" sleepnow
 fi
 
 exit 0

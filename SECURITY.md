@@ -66,6 +66,14 @@ Lid-closed mode is off by default and must be explicitly enabled.
 A Mac left unable to sleep in a bag will drain its battery and run hot. Four
 things guard against it:
 
+- **Actually asking the Mac to sleep** when a guardrail fires. macOS only
+  re-evaluates clamshell sleep on a lid open or close event, so with the lid
+  already shut, clearing the flag leaves the machine merely *permitted* to
+  sleep with nothing asking it to — it keeps draining. A well-regarded project
+  with twenty thousand stars shipped exactly this bug and drained from 20% to
+  1%. Vigil's helper takes a `sleep` verb that restores the flag and requests
+  sleep in one step, used only when a safety rule forced the release and never
+  when work merely finished.
 - **A thermal ceiling**, checked before everything else and applied on mains
   power too. A plugged-in Mac held awake inside a closed bag is the hottest
   case there is, so heat outranks even a manual hold. Defaults to releasing at

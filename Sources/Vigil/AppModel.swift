@@ -249,7 +249,15 @@ final class AppModel {
       assertion.release()
     }
 
-    Task { await clamshell.setSleepDisabled(decision.disableClamshellSleep) }
+    // A guardrail releasing the override with the lid shut must actively ask
+    // for sleep. macOS only re-evaluates clamshell sleep on a lid event, so
+    // merely clearing the flag would leave the Mac awake and draining — the
+    // exact failure a battery floor exists to prevent.
+    let forcedOff = !decision.disableClamshellSleep && decision.reason.isGuardrail
+    Task {
+      await clamshell.setSleepDisabled(
+        decision.disableClamshellSleep, requestSleep: forcedOff)
+    }
 
     // Everything holding the Mac awake except us — ours is already the
     // headline, and listing it twice would read as a bug.

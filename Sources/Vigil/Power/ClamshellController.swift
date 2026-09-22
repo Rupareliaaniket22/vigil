@@ -11,7 +11,11 @@ protocol ClamshellBackend: Sendable {
   var isAvailable: Bool { get }
   /// Human-readable name, shown in Settings so the user knows what is installed.
   var displayName: String { get }
-  func setSleepDisabled(_ disabled: Bool) async throws
+  /// `requestSleep` asks the Mac to sleep immediately as well as restoring the
+  /// flag. Needed when a guardrail fires with the lid shut: macOS only
+  /// re-evaluates clamshell sleep on a lid event, so clearing the flag alone
+  /// leaves the machine awake and draining.
+  func setSleepDisabled(_ disabled: Bool, requestSleep: Bool) async throws
 }
 
 enum ClamshellError: LocalizedError {
@@ -51,12 +55,13 @@ struct SudoersClamshellBackend: ClamshellBackend {
     return true
   }
 
-  func setSleepDisabled(_ disabled: Bool) async throws {
+  func setSleepDisabled(_ disabled: Bool, requestSleep: Bool) async throws {
     guard isAvailable else { throw ClamshellError.notInstalled }
 
+    let verb = disabled ? "on" : (requestSleep ? "sleep" : "off")
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-    process.arguments = ["-n", Self.helperPath, disabled ? "on" : "off"]
+    process.arguments = ["-n", Self.helperPath, verb]
 
     let errPipe = Pipe()
     process.standardError = errPipe
@@ -85,7 +90,7 @@ struct XPCClamshellBackend: ClamshellBackend {
   var displayName: String { "privileged helper" }
   var isAvailable: Bool { false }  // TODO(v2): SMAppService registration + XPC client.
 
-  func setSleepDisabled(_: Bool) async throws {
+  func setSleepDisabled(_: Bool, requestSleep _: Bool) async throws {
     throw ClamshellError.notInstalled
   }
 }
@@ -137,7 +142,7 @@ final class ClamshellController {
   func restoreOnLaunch() async {
     guard let backend = activeBackend else { return }
     do {
-      try await backend.setSleepDisabled(false)
+      try await backend.setSleepDisabled(false, requestSleep: false)
       isDisabled = false
       Self.log.info("restored normal sleep at launch")
     } catch {
@@ -176,7 +181,7 @@ final class ClamshellController {
 
   var isSupported: Bool { activeBackend != nil }
 
-  func setSleepDisabled(_ disabled: Bool) async {
+  func setSleepDisabled(_ disabled: Bool, requestSleep: Bool = false) async {
     // Reconcile against the system rather than a cached belief. macOS can clear
     // this flag underneath us — a power-source change is the case other
     // implementations keep filing bugs about — and trusting our own last write
@@ -196,7 +201,7 @@ final class ClamshellController {
       return
     }
     do {
-      try await backend.setSleepDisabled(disabled)
+      try await backend.setSleepDisabled(disabled, requestSleep: requestSleep)
       isDisabled = disabled
       Self.log.info(
         "clamshell sleep \(disabled ? "disabled" : "restored", privacy: .public) via \(backend.displayName, privacy: .public)"
@@ -212,7 +217,7 @@ final class ClamshellController {
     guard isDisabled, let backend = activeBackend else { return }
     let sema = DispatchSemaphore(value: 0)
     Task.detached {
-      try? await backend.setSleepDisabled(false)
+      try? await backend.setSleepDisabled(false, requestSleep: false)
       sema.signal()
     }
     _ = sema.wait(timeout: .now() + 3)
