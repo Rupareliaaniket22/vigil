@@ -34,6 +34,12 @@ final class AppModel {
 
   private(set) var pausedUntil: Date?
 
+  /// Whether Claude Code is wired up to report to us. Until it is, Vigil can
+  /// only be driven by the manual toggle.
+  private(set) var hooksInstalled = false
+  /// Surfaced in the panel rather than logged, so a failed setup is visible.
+  private(set) var setupError: String?
+
   // MARK: - Collaborators
 
   private var store = SessionStore()
@@ -47,6 +53,7 @@ final class AppModel {
   func start() {
     bridge = EventBridge { [weak self] event in self?.handle(event) }
     bridge?.start()
+    hooksInstalled = HookInstaller.isInstalled
 
     tick = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
       Task { @MainActor in self?.reevaluate() }
@@ -81,6 +88,27 @@ final class AppModel {
   var isPaused: Bool {
     guard let until = pausedUntil else { return false }
     return until > Date()
+  }
+
+  /// Wire Claude Code up to report to us.
+  func installHooks() {
+    do {
+      try HookInstaller.install()
+      hooksInstalled = true
+      setupError = nil
+    } catch {
+      setupError = error.localizedDescription
+    }
+  }
+
+  func uninstallHooks() {
+    do {
+      try HookInstaller.uninstall()
+      hooksInstalled = false
+      setupError = nil
+    } catch {
+      setupError = error.localizedDescription
+    }
   }
 
   // MARK: - The loop

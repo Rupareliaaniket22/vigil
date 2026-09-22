@@ -10,6 +10,7 @@ struct MenuPanelView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: Theme.Metrics.loose) {
       header
+      setup
       sessions
       ledger
       controls
@@ -35,15 +36,48 @@ struct MenuPanelView: View {
     }
   }
 
+  // MARK: - Setup
+
+  /// Shown until Claude Code is reporting to us. The panel is the onboarding —
+  /// there is no separate wizard, and this disappears once it is done.
+  @ViewBuilder
+  private var setup: some View {
+    if !model.hooksInstalled {
+      VStack(alignment: .leading, spacing: Theme.Metrics.snug) {
+        Text("Claude Code isn't reporting to Vigil yet.")
+          .font(Theme.Text.body)
+          .foregroundStyle(.vigilPrimary)
+          .fixedSize(horizontal: false, vertical: true)
+
+        Text("Vigil will add a hook to your Claude Code settings and keep a backup.")
+          .font(Theme.Text.detail)
+          .foregroundStyle(.vigilSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+
+        Button("Set up Claude Code") { model.installHooks() }
+          .controlSize(.small)
+      }
+    }
+
+    if let error = model.setupError {
+      Text(error)
+        .font(Theme.Text.detail)
+        .foregroundStyle(.vigilAmber)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+  }
+
   // MARK: - Sessions
 
   @ViewBuilder
   private var sessions: some View {
     if model.sessions.isEmpty {
       // Never a blank panel: say what is true and leave an action in reach.
-      Text("Nothing is running. Vigil is out of the way.")
-        .font(Theme.Text.detail)
-        .foregroundStyle(.vigilSecondary)
+      if model.hooksInstalled {
+        Text("Nothing is running. Vigil is out of the way.")
+          .font(Theme.Text.detail)
+          .foregroundStyle(.vigilSecondary)
+      }
     } else {
       VStack(alignment: .leading, spacing: Theme.Metrics.snug) {
         Text("Sessions")
