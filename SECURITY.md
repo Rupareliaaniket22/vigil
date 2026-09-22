@@ -1,0 +1,46 @@
+# Security Policy
+
+## Reporting
+
+Report vulnerabilities through GitHub's private advisory reporting rather than a
+public issue.
+
+## Threat model
+
+Vigil's normal operation needs **no elevated privileges**. The wake lock uses
+`IOPMAssertionCreateWithName`, available to any user process.
+
+Two components deserve scrutiny:
+
+### The hook bridge
+
+Agent hooks post JSON to a Unix domain socket under
+`~/Library/Application Support/Vigil/`. A Unix socket is used deliberately
+instead of a localhost TCP port: loopback TCP is reachable by **any** local user
+account, while a socket file is constrained by filesystem permissions and gives
+us a kernel-verified peer uid via `getpeereid`.
+
+All payloads are treated as untrusted input. Malformed events are rejected
+rather than guessed at.
+
+### Lid-closed support (opt-in)
+
+Keeping the Mac awake with the lid shut requires clearing `SleepDisabled` on
+`IOPMrootDomain`, which needs root. Two backends exist:
+
+- **sudoers backend** — a root-owned helper at `/usr/local/libexec/vigil-clamshell`,
+  permitted by a scoped `/etc/sudoers.d` rule to run exactly two fixed argument
+  vectors. No wildcards and no shell interpolation, because both turn a NOPASSWD
+  rule into a root shell. Vigil refuses to invoke the helper unless it is
+  root-owned and not group- or world-writable.
+- **XPC helper backend** (v2) — an `SMAppService` daemon. Registration requires a
+  matching Developer ID team, and the listener must set a code-signing
+  requirement so arbitrary local processes cannot drive it.
+
+Lid-closed mode is off by default and must be explicitly enabled.
+
+### Failure mode we care most about
+
+A Mac left unable to sleep in a bag will drain its battery and run hot. Vigil
+restores normal sleep on quit, enforces a battery floor, and expires sessions
+that stop reporting.

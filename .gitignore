@@ -1,0 +1,8 @@
+.build/
+.build-arm64/
+.build-x86_64/
+dist/
+*.xcodeproj
+.DS_Store
+private_key.txt
+*.p12
