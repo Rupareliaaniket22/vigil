@@ -26,10 +26,13 @@ finish and verify in one sitting, and leaves the tree green.
 | 13 | Clamshell drift reconciliation | unprivileged IOPMrootDomain read verified |
 | 14 | Crash and signal safety | SIGTERM path verified |
 | 15 | `make integration` — 16 live checks | all passing |
+| 16 | Cursor integration (a different entry shape) | 56 unit tests |
+| 17 | Guardrail-forced sleep request | rules unit-tested; helper verified |
+| 18 | Bridge failure surfaced in the UI | recovery verified; error path not |
 
 ## Next
 
-### 16. Verify the things only a human can verify
+### 19. Verify the things only a human can verify
 
 Nothing here is code. It is the gap between "builds" and "works".
 
@@ -43,27 +46,28 @@ Nothing here is code. It is the gap between "builds" and "works".
 **Do this before building anything else.** Every step below assumes the core
 loop is sound, and that is currently an assumption.
 
-### 17. Cursor and OpenCode
+### 20. OpenCode
 
-The remaining two named agents. Now a constant in `AgentIntegration.swift`
-rather than a new file — see the skill. The blocker is finding their real event
-vocabularies, which means reading their own config or docs, not guessing.
+The one remaining named agent, and the awkward one: OpenCode uses a JavaScript
+plugin rather than shell hooks, so it needs a different delivery mechanism from
+the other four. Its event stream is `session.status`, `message.part.updated`
+and `session.deleted` rather than named lifecycle hooks.
 
-### 18. An AC-to-battery test with the lid shut
+### 21. An AC-to-battery test with the lid shut
 
 Two more mature implementations have open bugs here, so it is a known-hard
 case. Vigil reconciles against `IOPMrootDomain` rather than a cached belief,
 which should handle it, but that is reasoning, not evidence. Needs someone to
 unplug a laptop with the lid closed and an agent running.
 
-### 19. Display-off control
+### 22. Display-off control
 
 Let the screen sleep while the system stays up. This is the overnight case:
 people want the agent to keep working and the room to be dark. Currently the
 assertion already permits display sleep, so this is about making it explicit
 and configurable rather than incidental.
 
-### 20. Auto-update
+### 23. Auto-update
 
 Sparkle 2.10, EdDSA appcast on GitHub Pages. Only worth doing once there is a
 signed release to update *to* — until then it has nothing to install.
