@@ -24,6 +24,15 @@ final class AppModel {
   /// others so the user learns when the answer isn't us.
   private(set) var otherAssertions: [SystemAssertion] = []
 
+  /// The clock the panel renders elapsed times against.
+  ///
+  /// Only ticks while the panel is open. Reading `Date()` inside a row would
+  /// freeze the moment SwiftUI stopped re-rendering, and re-rendering on a
+  /// timer regardless of visibility is work a power utility has no business
+  /// doing when nobody is looking.
+  private(set) var now = Date()
+  private var clock: Timer?
+
   var settings = SettingsStore.load() {
     didSet {
       SettingsStore.save(settings)
@@ -84,6 +93,7 @@ final class AppModel {
   }
 
   func stop() {
+    clock?.invalidate()
     tick?.invalidate()
     bridge?.stop()
     assertion.release()
@@ -91,6 +101,20 @@ final class AppModel {
   }
 
   // MARK: - Actions
+
+  /// Start and stop the display clock with the panel, not with the app.
+  func panelBecameVisible() {
+    now = Date()
+    clock?.invalidate()
+    clock = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+      Task { @MainActor in self?.now = Date() }
+    }
+  }
+
+  func panelBecameHidden() {
+    clock?.invalidate()
+    clock = nil
+  }
 
   func handle(_ event: AgentEvent) {
     store.apply(event)
@@ -137,8 +161,14 @@ final class AppModel {
 
   func reevaluate() {
     store.prune()
-    sessions = store.all()
-    power = PowerMonitor.current()
+
+    // @Observable notifies on every assignment, equal or not, so guard each
+    // one. Without this the panel re-renders every five seconds forever.
+    let current = store.all()
+    if current != sessions { sessions = current }
+
+    let conditions = PowerMonitor.current()
+    if conditions != power { power = conditions }
 
     decision = WakePolicy.decide(
       sessions: sessions,
@@ -158,9 +188,10 @@ final class AppModel {
 
     // Everything holding the Mac awake except us — ours is already the
     // headline, and listing it twice would read as a bug.
-    otherAssertions =
+    let others =
       PowerAssertion.systemAssertions()
       .filter { $0.preventsSystemSleep && $0.pid != ProcessInfo.processInfo.processIdentifier }
+    if others != otherAssertions { otherAssertions = others }
 
     notifyIfWorthIt()
   }

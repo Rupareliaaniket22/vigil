@@ -86,7 +86,7 @@ struct MenuPanelView: View {
 
         VStack(alignment: .leading, spacing: Theme.Metrics.tight) {
           ForEach(model.sessions) { session in
-            SessionRow(session: session)
+            SessionRow(session: session, now: model.now)
           }
         }
       }
@@ -157,6 +157,7 @@ struct MenuPanelView: View {
 
 private struct SessionRow: View {
   let session: AgentSession
+  let now: Date
 
   var body: some View {
     HStack(spacing: Theme.Metrics.snug) {
@@ -195,7 +196,7 @@ private struct SessionRow: View {
   }
 
   private var elapsed: String {
-    let seconds = Int(Date().timeIntervalSince(session.lastSeen))
+    let seconds = Int(now.timeIntervalSince(session.lastSeen))
     if seconds < 60 { return "now" }
     let minutes = seconds / 60
     return minutes < 60 ? "\(minutes)m" : "\(minutes / 60)h"

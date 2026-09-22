@@ -9,6 +9,10 @@ import SwiftUI
 /// programmatically. DESIGN.md records this as a deliberate deviation.
 final class FloatingPanel: NSPanel {
 
+  /// Called whenever the panel goes away, including the click-outside path
+  /// that `resignKey` handles without anyone asking us to close.
+  var onDismiss: (() -> Void)?
+
   init(contentView: some View) {
     super.init(
       contentRect: NSRect(x: 0, y: 0, width: Theme.Metrics.panelWidth, height: 200),
@@ -75,6 +79,7 @@ final class FloatingPanel: NSPanel {
     super.resignKey()
     guard NSApp.modalWindow == nil else { return }
     orderOut(nil)
+    onDismiss?()
   }
 
   /// Position beneath a status item and show.

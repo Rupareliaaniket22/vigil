@@ -62,7 +62,7 @@ final class PowerAssertion {
 }
 
 /// One power assertion held somewhere on the system.
-struct SystemAssertion: Identifiable, Sendable {
+struct SystemAssertion: Identifiable, Sendable, Equatable {
   let id: String
   let pid: Int32
   let processName: String

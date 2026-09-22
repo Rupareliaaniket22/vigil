@@ -86,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   @objc private func togglePanel() {
     if let panel, panel.isVisible {
       panel.orderOut(nil)
+      model.panelBecameHidden()
       return
     }
     guard let button = statusItem.button else { return }
@@ -94,6 +95,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     let panel = panel ?? makePanel()
     self.panel = panel
+    // The panel dismisses itself on outside clicks, so the model needs telling
+    // either way — hence the callback rather than only stopping the clock here.
+    panel.onDismiss = { [weak self] in self?.model.panelBecameHidden() }
+    model.panelBecameVisible()
     panel.show(relativeTo: button)
   }
 
