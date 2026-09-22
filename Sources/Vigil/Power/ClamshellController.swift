@@ -158,14 +158,7 @@ final class ClamshellController {
   /// default disposition so the process still dies as expected.
   nonisolated func installSignalHandlers() {
     let restore: @convention(c) (Int32) -> Void = { signal in
-      let helper = SudoersClamshellBackend.helperPath
-      if FileManager.default.isExecutableFile(atPath: helper) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        process.arguments = ["-n", helper, "off"]
-        try? process.run()
-        process.waitUntilExit()
-      }
+      ClamshellController.restoreSynchronously()
       Foundation.signal(signal, SIG_DFL)
       raise(signal)
     }
@@ -214,12 +207,28 @@ final class ClamshellController {
   /// Restore normal sleep. Called on quit and from the watchdog — leaving a
   /// laptop unable to sleep in a bag is the worst failure this app can have.
   func restoreOnExit() {
-    guard isDisabled, let backend = activeBackend else { return }
-    let sema = DispatchSemaphore(value: 0)
-    Task.detached {
-      try? await backend.setSleepDisabled(false, requestSleep: false)
-      sema.signal()
-    }
-    _ = sema.wait(timeout: .now() + 3)
+    guard isDisabled else { return }
+    // Synchronous and direct, the same path the signal handler takes. Quit is
+    // not a moment to hand work to a task and block the main thread waiting on
+    // a semaphore — and the process may not outlive the await.
+    Self.restoreSynchronously()
+    isDisabled = false
+  }
+
+  /// Restore normal sleep with a blocking call and no concurrency machinery.
+  ///
+  /// Shared by the quit path and the signal handlers, which run in a context
+  /// where almost nothing else is safe to do.
+  nonisolated static func restoreSynchronously() {
+    let helper = SudoersClamshellBackend.helperPath
+    guard FileManager.default.isExecutableFile(atPath: helper) else { return }
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+    process.arguments = ["-n", helper, "off"]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try? process.run()
+    process.waitUntilExit()
   }
 }
