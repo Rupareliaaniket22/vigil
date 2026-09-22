@@ -81,6 +81,12 @@ things guard against it:
   every time it starts, and installs `SIGINT`/`SIGTERM`/`SIGHUP` handlers that
   restore it before dying.
 
+Vigil also reconciles against the system rather than its own cached belief:
+`SleepDisabled` is read back from `IOPMrootDomain` (which needs no privileges to
+read) before every change, so a flag cleared by macOS underneath us — a
+power-source change is the case other implementations keep filing bugs about —
+is noticed instead of silently disagreed with.
+
 One gap remains: if Vigil is killed with `SIGKILL` (which cannot be trapped) and
 never relaunched, lid-close sleep stays disabled until something restores it.
 Run `sudo ./Scripts/install-clamshell.sh --uninstall`, or

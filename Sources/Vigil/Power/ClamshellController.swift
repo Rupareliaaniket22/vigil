@@ -1,4 +1,5 @@
 import Foundation
+import IOKit
 import OSLog
 
 /// Keeping the Mac awake with the lid shut means clearing `SleepDisabled` on
@@ -89,6 +90,30 @@ struct XPCClamshellBackend: ClamshellBackend {
   }
 }
 
+/// Reads `SleepDisabled` from `IOPMrootDomain`.
+///
+/// Reading needs no privileges — only writing does. This is what makes it
+/// possible to detect drift rather than trusting what we last set.
+enum SleepDisabledFlag {
+  static func current() -> Bool? {
+    let service = IOServiceGetMatchingService(
+      kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+    guard service != IO_OBJECT_NULL else { return nil }
+    defer { IOObjectRelease(service) }
+
+    let property = IORegistryEntryCreateCFProperty(
+      service, "SleepDisabled" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue()
+
+    // The registry reports this as a number on some systems and a boolean on
+    // others; accept either rather than silently returning nil.
+    switch property {
+    case let flag as Bool: return flag
+    case let number as NSNumber: return number.boolValue
+    default: return nil
+    }
+  }
+}
+
 /// Picks the best backend available, preferring the signed helper when present.
 @MainActor
 final class ClamshellController {
@@ -152,6 +177,19 @@ final class ClamshellController {
   var isSupported: Bool { activeBackend != nil }
 
   func setSleepDisabled(_ disabled: Bool) async {
+    // Reconcile against the system rather than a cached belief. macOS can clear
+    // this flag underneath us — a power-source change is the case other
+    // implementations keep filing bugs about — and trusting our own last write
+    // means never noticing. Reading is unprivileged, so this is cheap.
+    if let actual = SleepDisabledFlag.current() {
+      if actual != isDisabled {
+        Self.log.notice(
+          "clamshell flag drifted: we believed \(self.isDisabled, privacy: .public), system says \(actual, privacy: .public)"
+        )
+      }
+      isDisabled = actual
+    }
+
     guard isDisabled != disabled else { return }
     guard let backend = activeBackend else {
       Self.log.notice("no clamshell backend available; lid-close will still sleep")
