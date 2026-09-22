@@ -75,7 +75,7 @@ final class AppModel {
   func start() {
     bridge = EventBridge { [weak self] event in self?.handle(event) }
     bridge?.start()
-    hooksInstalled = HookInstaller.isInstalled
+    hooksInstalled = HookInstaller.live.isInstalled
 
     tick = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
       Task { @MainActor in self?.reevaluate() }
@@ -115,7 +115,7 @@ final class AppModel {
   /// Wire Claude Code up to report to us.
   func installHooks() {
     do {
-      try HookInstaller.install()
+      try HookInstaller.live.install()
       hooksInstalled = true
       setupError = nil
     } catch {
@@ -125,7 +125,7 @@ final class AppModel {
 
   func uninstallHooks() {
     do {
-      try HookInstaller.uninstall()
+      try HookInstaller.live.uninstall()
       hooksInstalled = false
       setupError = nil
     } catch {

@@ -6,8 +6,19 @@ import VigilCore
 ///
 /// This edits a file the user did not ask us to touch, so it backs up first,
 /// writes atomically, and never rewrites anything it cannot parse.
-enum HookInstaller {
+struct HookInstaller {
   private static let log = Logger(subsystem: Vigil.subsystem, category: "installer")
+
+  /// Paths are injected so the whole install/uninstall cycle can be exercised
+  /// against a temporary directory. This code rewrites someone's editor
+  /// settings; it should not be the one part that is never run before shipping.
+  let scriptPath: String
+  let settingsPath: String
+
+  static let live = HookInstaller(
+    scriptPath: defaultScriptPath,
+    settingsPath: defaultSettingsPath
+  )
 
   enum InstallError: LocalizedError {
     case scriptMissingFromBundle
@@ -27,49 +38,49 @@ enum HookInstaller {
   ///
   /// Copied out of the bundle rather than referenced inside it, so moving or
   /// replacing the app doesn't break a hook Claude Code has already recorded.
-  static var scriptPath: String {
+  static var defaultScriptPath: String {
     FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent(".vigil/hooks/vigil-hook.sh")
       .path
   }
 
-  static var claudeSettingsPath: String {
+  static var defaultSettingsPath: String {
     FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent(".claude/settings.json")
       .path
   }
 
-  static var isInstalled: Bool {
+  var isInstalled: Bool {
     guard FileManager.default.isExecutableFile(atPath: scriptPath),
-      let settings = try? readSettings(at: claudeSettingsPath)
+      let settings = try? Self.readSettings(at: settingsPath)
     else { return false }
     return HookConfiguration.isInstalled(in: settings, scriptPath: scriptPath)
   }
 
   // MARK: - Install
 
-  static func install() throws {
+  func install() throws {
     try copyScript()
 
-    var settings = try readSettings(at: claudeSettingsPath)
+    var settings = try Self.readSettings(at: settingsPath)
     settings = HookConfiguration.install(into: settings, scriptPath: scriptPath)
-    try writeSettings(settings, to: claudeSettingsPath)
+    try Self.writeSettings(settings, to: settingsPath)
 
-    log.info("hooks installed into \(claudeSettingsPath, privacy: .public)")
+    Self.log.info("hooks installed into \(settingsPath, privacy: .public)")
   }
 
-  static func uninstall() throws {
-    var settings = try readSettings(at: claudeSettingsPath)
+  func uninstall() throws {
+    var settings = try Self.readSettings(at: settingsPath)
     settings = HookConfiguration.uninstall(from: settings, scriptPath: scriptPath)
-    try writeSettings(settings, to: claudeSettingsPath)
+    try Self.writeSettings(settings, to: settingsPath)
 
     try? FileManager.default.removeItem(atPath: scriptPath)
-    log.info("hooks removed")
+    Self.log.info("hooks removed")
   }
 
   // MARK: - Files
 
-  private static func copyScript() throws {
+  private func copyScript() throws {
     guard
       let source = Bundle.main.url(forResource: "vigil-hook", withExtension: "sh")
     else { throw InstallError.scriptMissingFromBundle }
@@ -118,9 +129,12 @@ enum HookInstaller {
       try? FileManager.default.copyItem(atPath: path, toPath: backup)
     }
 
+    // withoutEscapingSlashes matters: Foundation writes "\/Users\/..." by
+    // default, which is valid JSON but makes a hand-edited settings file uglier
+    // than we found it and produces noisy diffs for anyone versioning dotfiles.
     let data = try JSONSerialization.data(
       withJSONObject: settings,
-      options: [.prettyPrinted, .sortedKeys]
+      options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
     )
     // Atomic, so an interrupted write can't truncate their settings.
     try data.write(to: url, options: .atomic)
