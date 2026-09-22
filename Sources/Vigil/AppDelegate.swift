@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private let model = AppModel()
   private var statusItem: NSStatusItem!
   private var panel: FloatingPanel?
+  private var settingsWindow: SettingsWindowController?
 
   func applicationDidFinishLaunching(_: Notification) {
     NSApp.setActivationPolicy(.accessory)
@@ -119,7 +120,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   private func openSettings() {
     panel?.orderOut(nil)
-    // TODO: settings window. Until it exists, say so rather than doing nothing.
-    Self.log.notice("settings window not implemented yet")
+    let controller = settingsWindow ?? SettingsWindowController(model: model)
+    settingsWindow = controller
+    controller.present()
   }
 }

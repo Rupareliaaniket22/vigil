@@ -24,8 +24,28 @@ final class AppModel {
   /// others so the user learns when the answer isn't us.
   private(set) var otherAssertions: [SystemAssertion] = []
 
-  var settings = WakeSettings() {
-    didSet { reevaluate() }
+  var settings = SettingsStore.load() {
+    didSet {
+      SettingsStore.save(settings)
+      reevaluate()
+    }
+  }
+
+  /// Whether a privileged backend exists to disable clamshell sleep. Without
+  /// one the setting is offered but inert, so the UI disables it and says why.
+  var clamshellSupported: Bool { clamshell.isSupported }
+
+  /// Read through to `SMAppService` every time — the user can change this in
+  /// System Settings behind our back, and a stale switch is worse than none.
+  var launchAtLogin: Bool {
+    get { LoginItem.isEnabled }
+    set {
+      do {
+        try LoginItem.set(newValue)
+      } catch {
+        setupError = "Couldn't change the login item: \(error.localizedDescription)"
+      }
+    }
   }
 
   var manualOverride = false {
