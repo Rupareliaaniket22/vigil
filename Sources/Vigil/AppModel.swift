@@ -260,6 +260,10 @@ final class AppModel {
       "Sleeping - set to run only on mains power"
     case .lowPowerMode:
       "Sleeping - Low Power Mode is on"
+    case .tooHot(let state):
+      state == .critical
+        ? "Sleeping - your Mac is too hot to keep awake safely"
+        : "Sleeping - your Mac is running hot"
     }
   }
 

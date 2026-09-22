@@ -66,6 +66,11 @@ Lid-closed mode is off by default and must be explicitly enabled.
 A Mac left unable to sleep in a bag will drain its battery and run hot. Four
 things guard against it:
 
+- **A thermal ceiling**, checked before everything else and applied on mains
+  power too. A plugged-in Mac held awake inside a closed bag is the hottest
+  case there is, so heat outranks even a manual hold. Defaults to releasing at
+  macOS's "serious" thermal state rather than "critical" — by the time macOS
+  says critical it is already throttling hard.
 - **A battery floor**, checked before intent. No amount of agent activity or
   manual override beats it.
 - **Session expiry.** An agent that dies without reporting stops counting after

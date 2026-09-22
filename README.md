@@ -20,6 +20,7 @@ until you turn them off. Both fail the same way: you forget, and your laptop
 runs hot in a bag all night. Vigil ties the wake lock to observed agent activity
 and enforces guardrails you actually want:
 
+- Releases the hold when your Mac runs hot, on mains power too
 - Stops at a battery floor (default 20%)
 - Optional mains-power-only mode
 - Respects macOS Low Power Mode

@@ -1,10 +1,26 @@
 import Foundation
 
+/// How hot the machine is, as macOS reports it.
+///
+/// Mirrors `ProcessInfo.ThermalState` so `VigilCore` stays free of Foundation
+/// platform types and the policy can be tested at every level without one.
+public enum ThermalState: Int, Sendable, Equatable, Comparable, CaseIterable {
+  case nominal = 0
+  case fair = 1
+  case serious = 2
+  case critical = 3
+
+  public static func < (a: ThermalState, b: ThermalState) -> Bool {
+    a.rawValue < b.rawValue
+  }
+}
+
 /// Live power state, sampled from IOKit by the app layer.
 public struct PowerConditions: Sendable, Equatable {
   public var batteryPercent: Int
   public var isPluggedIn: Bool
   public var isLowPowerMode: Bool
+  public var thermalState: ThermalState
   /// Nil on desktops. Clamshell rules only apply to laptops.
   public var lidIsClosed: Bool?
 
@@ -12,11 +28,13 @@ public struct PowerConditions: Sendable, Equatable {
     batteryPercent: Int = 100,
     isPluggedIn: Bool = true,
     isLowPowerMode: Bool = false,
+    thermalState: ThermalState = .nominal,
     lidIsClosed: Bool? = nil
   ) {
     self.batteryPercent = batteryPercent
     self.isPluggedIn = isPluggedIn
     self.isLowPowerMode = isLowPowerMode
+    self.thermalState = thermalState
     self.lidIsClosed = lidIsClosed
   }
 }
@@ -32,17 +50,25 @@ public struct WakeSettings: Sendable, Equatable {
   public var respectLowPowerMode: Bool
   /// Whether the user wants lid-closed operation (needs elevated privileges).
   public var allowClamshell: Bool
+  /// Release the hold at or above this thermal state.
+  ///
+  /// `.serious` by default, not `.critical`: by the time macOS says critical it
+  /// is already throttling hard, and a machine held awake inside a closed bag
+  /// has nowhere to dump the heat.
+  public var thermalCeiling: ThermalState
 
   public init(
     batteryFloorPercent: Int = 20,
     onlyWhenPluggedIn: Bool = false,
     respectLowPowerMode: Bool = true,
-    allowClamshell: Bool = false
+    allowClamshell: Bool = false,
+    thermalCeiling: ThermalState = .serious
   ) {
     self.batteryFloorPercent = batteryFloorPercent
     self.onlyWhenPluggedIn = onlyWhenPluggedIn
     self.respectLowPowerMode = respectLowPowerMode
     self.allowClamshell = allowClamshell
+    self.thermalCeiling = thermalCeiling
   }
 }
 
@@ -56,11 +82,13 @@ public enum WakeReason: Sendable, Equatable {
   case batteryBelowFloor(percent: Int, floor: Int)
   case onBatteryAndPluggedInRequired
   case lowPowerMode
+  case tooHot(state: ThermalState)
 
   public var holdsWake: Bool {
     switch self {
     case .agentsWorking, .manualOverride: true
-    case .paused, .noAgents, .batteryBelowFloor, .onBatteryAndPluggedInRequired, .lowPowerMode:
+    case .paused, .noAgents, .batteryBelowFloor, .onBatteryAndPluggedInRequired, .lowPowerMode,
+      .tooHot:
       false
     }
   }
@@ -102,6 +130,13 @@ public enum WakePolicy {
     }
 
     // --- Guardrails first. These override everything. ---
+
+    // Heat outranks even the battery rules, and applies on mains power too: a
+    // plugged-in Mac held awake in a closed bag is the hottest case there is.
+    if conditions.thermalState >= settings.thermalCeiling {
+      return decision(.tooHot(state: conditions.thermalState))
+    }
+
     if !conditions.isPluggedIn {
       if settings.onlyWhenPluggedIn {
         return decision(.onBatteryAndPluggedInRequired)

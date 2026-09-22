@@ -138,3 +138,76 @@ struct WakePolicyTests {
     #expect(!d.disableClamshellSleep)
   }
 }
+
+@Suite("Thermal guardrail")
+struct ThermalGuardrailTests {
+
+  @Test("releases the hold when the machine gets hot")
+  func releasesWhenHot() {
+    let d = WakePolicy.decide(
+      sessions: [session(.working)],
+      conditions: PowerConditions(thermalState: .serious),
+      settings: WakeSettings()
+    )
+    #expect(!d.holdIdleAssertion)
+    #expect(d.reason == .tooHot(state: .serious))
+  }
+
+  @Test("heat outranks mains power")
+  func heatAppliesOnMains() {
+    // The hottest case there is: plugged in, working hard, lid shut, in a bag.
+    let d = WakePolicy.decide(
+      sessions: [session(.working)],
+      conditions: PowerConditions(
+        batteryPercent: 100, isPluggedIn: true, thermalState: .critical),
+      settings: WakeSettings(allowClamshell: true)
+    )
+    #expect(!d.holdIdleAssertion)
+    #expect(!d.disableClamshellSleep)
+  }
+
+  @Test("heat outranks a manual override")
+  func heatBeatsManualOverride() {
+    let d = WakePolicy.decide(
+      sessions: [],
+      conditions: PowerConditions(thermalState: .critical),
+      settings: WakeSettings(),
+      manualOverride: true
+    )
+    #expect(!d.holdIdleAssertion)
+  }
+
+  @Test("warm but below the ceiling still holds")
+  func fairIsFine() {
+    let d = WakePolicy.decide(
+      sessions: [session(.working)],
+      conditions: PowerConditions(thermalState: .fair),
+      settings: WakeSettings(thermalCeiling: .serious)
+    )
+    #expect(d.holdIdleAssertion)
+  }
+
+  @Test(
+    "the ceiling is configurable",
+    arguments: [
+      (ThermalState.fair, ThermalState.fair, false),
+      (ThermalState.fair, ThermalState.serious, true),
+      (ThermalState.serious, ThermalState.critical, true),
+      (ThermalState.critical, ThermalState.critical, false),
+    ])
+  func ceilingIsConfigurable(state: ThermalState, ceiling: ThermalState, shouldHold: Bool) {
+    let d = WakePolicy.decide(
+      sessions: [session(.working)],
+      conditions: PowerConditions(thermalState: state),
+      settings: WakeSettings(thermalCeiling: ceiling)
+    )
+    #expect(d.holdIdleAssertion == shouldHold)
+  }
+
+  @Test("thermal states order correctly")
+  func statesOrder() {
+    #expect(ThermalState.nominal < .fair)
+    #expect(ThermalState.fair < .serious)
+    #expect(ThermalState.serious < .critical)
+  }
+}

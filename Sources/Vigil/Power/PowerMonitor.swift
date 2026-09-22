@@ -6,13 +6,17 @@ import VigilCore
 /// mains at 100%, which makes every guardrail a no-op for them.
 enum PowerMonitor {
   static func current() -> PowerConditions {
+    let thermal = ThermalState(rawValue: ProcessInfo.processInfo.thermalState.rawValue) ?? .nominal
+
     guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
       let sources = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef],
       let first = sources.first,
       let description = IOPSGetPowerSourceDescription(blob, first)?.takeUnretainedValue()
         as? [String: Any]
     else {
-      return PowerConditions()
+      // No battery: a desktop. Every power guardrail is a no-op for it, but
+      // heat is not — a Mac mini under a desk can still cook.
+      return PowerConditions(thermalState: thermal)
     }
 
     let capacity = description[kIOPSCurrentCapacityKey] as? Int ?? 100
@@ -23,6 +27,7 @@ enum PowerMonitor {
       batteryPercent: max > 0 ? Int((Double(capacity) / Double(max) * 100).rounded()) : 100,
       isPluggedIn: state == kIOPSACPowerValue,
       isLowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
+      thermalState: thermal,
       lidIsClosed: nil
     )
   }

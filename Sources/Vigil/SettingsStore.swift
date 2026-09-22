@@ -13,6 +13,7 @@ enum SettingsStore {
     static let onlyWhenPluggedIn = "onlyWhenPluggedIn"
     static let respectLowPowerMode = "respectLowPowerMode"
     static let allowClamshell = "allowClamshell"
+    static let thermalCeiling = "thermalCeiling"
   }
 
   static func load() -> WakeSettings {
@@ -29,7 +30,9 @@ enum SettingsStore {
       respectLowPowerMode: defaults.object(forKey: Key.respectLowPowerMode) as? Bool
         ?? fallback.respectLowPowerMode,
       allowClamshell: defaults.object(forKey: Key.allowClamshell) as? Bool
-        ?? fallback.allowClamshell
+        ?? fallback.allowClamshell,
+      thermalCeiling: (defaults.object(forKey: Key.thermalCeiling) as? Int)
+        .flatMap(ThermalState.init(rawValue:)) ?? fallback.thermalCeiling
     )
   }
 
@@ -39,6 +42,7 @@ enum SettingsStore {
     defaults.set(settings.onlyWhenPluggedIn, forKey: Key.onlyWhenPluggedIn)
     defaults.set(settings.respectLowPowerMode, forKey: Key.respectLowPowerMode)
     defaults.set(settings.allowClamshell, forKey: Key.allowClamshell)
+    defaults.set(settings.thermalCeiling.rawValue, forKey: Key.thermalCeiling)
   }
 }
 

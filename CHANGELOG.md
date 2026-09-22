@@ -17,3 +17,4 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Notifications when a run finishes or a guardrail cuts one short
 - Lid-closed support behind a scoped sudoers helper
 - ⌥⌘L to toggle the manual hold from anywhere
+- Thermal ceiling: the hold is released when the Mac runs hot

@@ -28,6 +28,19 @@ struct SettingsView: View {
           .foregroundStyle(.vigilSecondary)
 
         Toggle("Respect Low Power Mode", isOn: $model.settings.respectLowPowerMode)
+
+        Picker("Stop when the Mac gets", selection: $model.settings.thermalCeiling) {
+          Text("Warm").tag(ThermalState.fair)
+          Text("Hot").tag(ThermalState.serious)
+          Text("Very hot").tag(ThermalState.critical)
+        }
+        Text(
+          "Heat overrides everything, including a manual hold. A Mac held awake "
+            + "inside a closed bag has nowhere to put the heat."
+        )
+        .font(Theme.Text.footnote)
+        .foregroundStyle(.vigilSecondary)
+        .fixedSize(horizontal: false, vertical: true)
       }
 
       Section("Lid closed") {
