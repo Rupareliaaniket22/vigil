@@ -20,10 +20,16 @@ finish and verify in one sitting, and leaves the tree green.
 | 7 | Lid-closed support via a scoped sudoers helper | hostile input rejected; needs sudo to run for real |
 | 8 | Universal build, ad-hoc signing, release script | `make bundle`; release script unproven |
 | 9 | Docs, skills, generated icon | — |
+| 10 | Thermal ceiling | unit tests; heat outranks every other rule |
+| 11 | Codex and Gemini CLI integrations | 48 unit tests; hook verified posting live |
+| 12 | Global shortcut (⌥⌘L) | registers without conflict |
+| 13 | Clamshell drift reconciliation | unprivileged IOPMrootDomain read verified |
+| 14 | Crash and signal safety | SIGTERM path verified |
+| 15 | `make integration` — 16 live checks | all passing |
 
 ## Next
 
-### 10. Verify the things only a human can verify
+### 16. Verify the things only a human can verify
 
 Nothing here is code. It is the gap between "builds" and "works".
 
@@ -37,29 +43,27 @@ Nothing here is code. It is the gap between "builds" and "works".
 **Do this before building anything else.** Every step below assumes the core
 loop is sound, and that is currently an assumption.
 
-### 11. A second agent integration
+### 17. Cursor and OpenCode
 
-Codex or Cursor. Follow `.claude/skills/adding-agent-integrations`. The
-blocker is research, not code: each agent exposes a different lifecycle
-vocabulary and it has to be read, not guessed.
+The remaining two named agents. Now a constant in `AgentIntegration.swift`
+rather than a new file — see the skill. The blocker is finding their real event
+vocabularies, which means reading their own config or docs, not guessing.
 
-Worth doing because "works with one agent" is a demo and "works with the ones I
-use" is a tool.
+### 18. An AC-to-battery test with the lid shut
 
-### 12. Global shortcut
+Two more mature implementations have open bugs here, so it is a known-hard
+case. Vigil reconciles against `IOPMrootDomain` rather than a cached belief,
+which should handle it, but that is reasoning, not evidence. Needs someone to
+unplug a laptop with the lid closed and an agent running.
 
-⌥⌘L to toggle the manual hold. Carbon's `RegisterEventHotKey` needs no
-Accessibility permission, which matters — a keep-awake utility asking for
-Accessibility would rightly make people suspicious.
-
-### 13. Display-off control
+### 19. Display-off control
 
 Let the screen sleep while the system stays up. This is the overnight case:
 people want the agent to keep working and the room to be dark. Currently the
 assertion already permits display sleep, so this is about making it explicit
 and configurable rather than incidental.
 
-### 14. Auto-update
+### 20. Auto-update
 
 Sparkle 2.10, EdDSA appcast on GitHub Pages. Only worth doing once there is a
 signed release to update *to* — until then it has nothing to install.
