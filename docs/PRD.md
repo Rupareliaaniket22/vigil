@@ -98,19 +98,35 @@ Everything testable is tested; everything privileged is isolated.
 
 ## 6. What we are betting on
 
-Three assumptions this product rests on. If any is wrong, it matters.
+**A. People actually hit this. — Confirmed, with a caveat.**
+The failure is documented in Claude Code's, Codex's, Cursor's and OpenCode's own
+trackers, with pmset-correlated timestamps, lost work, and batteries drained to
+0%. But engagement is modest — most threads sit under 40 reactions. This is a
+power-user problem, not a mass complaint. The strongest signal is behavioural:
+**at least nine developers independently shipped a tool for this in 2026.**
+People voting with code beats people voting with thumbs-up.
 
-**A. People actually hit this.** If macOS rarely sleeps mid-run in practice,
-there is no product. *Being checked.*
+**B. Claude Code's own `caffeinate` doesn't already solve it. — Confirmed.**
+This was the biggest risk to the premise and it resolved in our favour:
 
-**B. Claude Code's own `caffeinate` doesn't already solve it.** Claude Code runs
-a sleep inhibitor. If that covers most cases, Vigil's value narrows to
-lid-closed operation and multi-agent coverage. *Being checked — this is the
-biggest risk to the premise.*
+- It runs `caffeinate -i -t 300`, respawned every 240s by killing the old
+  process *before* spawning the replacement — a recurring window with no
+  assertion at all, invisible while the display is on.
+- It is scoped to a UI "busy" flag with a 30-second grace period, **not** to
+  whether a task is actually running.
+- No setting, no flag, no env var. Hardcoded on. An issue asking for an opt-out
+  has been open since January 2026.
+- It is battery-blind. A documented case drained to 0% and hard-shut-off,
+  losing the session.
 
-**C. Free and auditable beats polished and paid.** Hold My Lid is $9.99, works,
-and is well made. We are betting that a population who runs coding agents will
-prefer a tool they can read — particularly one asking for sudo. *Unvalidated.*
+Cursor's staff state plainly that their wakelock cannot override lid-close.
+Codex's own "Keep this Mac Awake" toggle has a report of failing with the
+setting on and AC connected. Six agents, three half-working bespoke fixes, no
+coordination — the fragmentation is itself the argument for a system-level tool.
+
+**C. Free and auditable beats polished and paid.** *Still unvalidated.* No
+public sentiment either way on the new paid tools' pricing — they are too new to
+have left a trail.
 
 ## 7. The competitive picture
 
@@ -150,6 +166,14 @@ single-digit stars and went quiet within days.
 - **Agent breadth.** One shipped against Adrafinil's nine. An agent-agnostic
   protocol is a design affordance, not a delivered feature.
 - **Zero users.** Against a field with a 480-star and a 184-star entrant.
+
+### One thing the research makes clear
+
+Guardrails are the hard part, not the wake lock. A project with twenty thousand
+stars shipped a battery cutoff that disarmed correctly and still drained the
+machine to 1%, because clearing the flag does not ask the Mac to sleep. Vigil
+had the same bug until this was found. The open ground is not "hold an
+assertion" — everyone can do that — it is getting the edges right.
 
 ### The honest case against building this
 
@@ -193,8 +217,11 @@ a failure worth stopping for.
 
 ## 9. Open questions
 
-1. Does Claude Code's built-in `caffeinate` already cover the common case?
-2. Is lid-closed the feature people actually want, or a niche want?
+1. ~~Does Claude Code's built-in caffeinate already cover the common case?~~
+   **Answered: no.** See §6B.
+2. Is lid-closed the feature people actually want? Evidence says yes and that it
+   *requires* a root helper — a userspace assertion provably does not survive a
+   closed lid, contradicting at least one competitor's marketing.
 3. Is the $99/year for a Developer ID worth it before knowing anyone wants this?
 4. Should the ledger let you *release* another app's assertion, or only show it?
    Showing is safe; acting on it is a much bigger product.
