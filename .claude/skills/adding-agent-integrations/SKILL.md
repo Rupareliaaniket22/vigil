@@ -6,9 +6,14 @@ when_to_use: Use when adding support for a new coding agent (Codex, Cursor, Gemi
 
 # Adding an agent integration
 
-`AgentKind` names five agents; only Claude Code has a working hook. Each new one
-is its own small research problem, because every agent exposes a different
-lifecycle vocabulary, and the failure modes are quiet ones.
+Claude Code, Codex and Gemini CLI ship. Adding another is mostly a research
+problem — every host names its lifecycle events differently — and then one
+constant.
+
+**You almost certainly do not need to write a shell script.** The event-to-state
+mapping is baked into the installed command (`vigil-hook.sh <agent> <event>
+<state>`), so one script serves every agent and the mapping lives in
+`AgentIntegration.swift` where it is typed and tested.
 
 ## The rule that matters most: the hook must never hurt its host
 
@@ -38,32 +43,40 @@ Those must map to `waiting`, not `working` — an agent sitting on a permission
 prompt could wait for hours, and holding the Mac awake through that is exactly
 the battery-drain behaviour Vigil exists to avoid.
 
-## 2. Write the hook
+A good place to find a host's real event names is its own config file on a
+machine where a competing tool has already integrated — `~/.codex/hooks.json`
+and `~/.gemini/settings.json` are how Codex's and Gemini's vocabularies were
+established, rather than by guessing.
 
-Copy `hooks/claude-code/vigil-hook.sh` and adapt it. The contract:
+## 2. Add the constant
 
-- Exit 0 on every path.
-- Return early unless the socket exists.
-- Parse the agent's payload with `plutil` — `jq` is not on a stock Mac.
-- Escape JSON by hand; a prompt containing a quote must not produce invalid JSON.
-- POST to `http://localhost/event` via `curl --unix-socket`, with the timeouts above.
+In `AgentIntegration.swift`, and append it to `.all`:
 
-The body must match `AgentEvent`'s `CodingKeys` — note `session_id`, not
-`sessionID`:
-
-```json
-{"agent":"codex","session_id":"…","state":"working",
- "event":"…","pid":123,"cwd":"…","title":"…"}
+```swift
+public static let cursor = AgentIntegration(
+  id: .cursor,
+  displayName: "Cursor",
+  settingsPath: ".cursor/hooks.json",
+  workingEvents: [...],
+  waitingEvents: [...],   // blocked on the user
+  idleEvents: [...],
+  timeoutMilliseconds: nil // only if that host's config expects one
+)
 ```
 
-Only `agent`, `session_id` and `state` are required. A missing session id or an
-unrecognised state is rejected with 400 rather than guessed at.
-
-## 3. Add the AgentKind constant
-
-Only if the agent isn't already in `AgentEvent.swift`. Unknown agents are
+Add an `AgentKind` constant too if it is genuinely new. Unknown agents are
 accepted at runtime by design, so a new tool works before we ship a release —
 the constant is for our own call sites, not a gate.
+
+Anything not listed maps to idle. That default is deliberate: guessing "working"
+would let a mislabelled hook pin the Mac awake indefinitely.
+
+## 3. Register it with the host
+
+Each host has its own mechanism for trusting a hook. Codex records a
+`trusted_hash` per hook in `config.toml`, so a newly installed hook may need
+approving on first run. Read the host's documentation; don't assume it behaves
+like Claude Code.
 
 ## 4. Verify without installing the agent
 
