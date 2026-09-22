@@ -44,17 +44,33 @@ final class AppModel {
   /// one the setting is offered but inert, so the UI disables it and says why.
   var clamshellSupported: Bool { clamshell.isSupported }
 
-  /// Read through to `SMAppService` every time — the user can change this in
-  /// System Settings behind our back, and a stale switch is worse than none.
-  var launchAtLogin: Bool {
-    get { LoginItem.isEnabled }
-    set {
+  /// Mirrors `SMAppService`'s registration.
+  ///
+  /// Stored rather than computed: `@Observable` cannot track a computed
+  /// property, so a toggle bound to one would not reliably reflect changes —
+  /// and every view update would fire an XPC call to the service-management
+  /// daemon. The user can change this in System Settings behind our back, so
+  /// `refreshLaunchAtLogin()` re-reads it whenever settings are shown.
+  var launchAtLogin: Bool = LoginItem.isEnabled {
+    didSet {
+      guard launchAtLogin != oldValue else { return }
       do {
-        try LoginItem.set(newValue)
+        try LoginItem.set(launchAtLogin)
+        setupError = nil
       } catch {
         setupError = "Couldn't change the login item: \(error.localizedDescription)"
+        // Put the switch back where the system actually is, rather than
+        // leaving it showing a state that never took.
+        launchAtLogin = oldValue
       }
     }
+  }
+
+  /// Re-read the system's view of the login item. Cheap enough to call when
+  /// the settings window opens, too expensive to call on every render.
+  func refreshLaunchAtLogin() {
+    let actual = LoginItem.isEnabled
+    if actual != launchAtLogin { launchAtLogin = actual }
   }
 
   var manualOverride = false {

@@ -11,6 +11,8 @@ import SwiftUI
 @MainActor
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
+  private weak var model: AppModel?
+
   convenience init(model: AppModel) {
     let hosting = NSHostingController(rootView: SettingsView(model: model))
     let window = NSWindow(contentViewController: hosting)
@@ -19,10 +21,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     window.isReleasedWhenClosed = false
     window.center()
     self.init(window: window)
+    self.model = model
     window.delegate = self
   }
 
   func present() {
+    model?.refreshLaunchAtLogin()
     // Become a regular app just long enough to own a real window.
     NSApp.setActivationPolicy(.regular)
     NSApp.activate(ignoringOtherApps: true)
