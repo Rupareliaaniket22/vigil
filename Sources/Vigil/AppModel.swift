@@ -67,6 +67,8 @@ final class AppModel {
   private let clamshell = ClamshellController()
   private var bridge: EventBridge?
   private var tick: Timer?
+  /// Previous snapshot, so we notify on transitions rather than on every tick.
+  private var lastNotificationState: NotificationPolicy.State?
 
   // MARK: - Lifecycle
 
@@ -159,6 +161,30 @@ final class AppModel {
     otherAssertions =
       PowerAssertion.systemAssertions()
       .filter { $0.preventsSystemSleep && $0.pid != ProcessInfo.processInfo.processIdentifier }
+
+    notifyIfWorthIt()
+  }
+
+  private func notifyIfWorthIt() {
+    let current = NotificationPolicy.State(
+      workingCount: workingCount,
+      isHolding: decision.holdIdleAssertion,
+      reason: decision.reason
+    )
+    defer { lastNotificationState = current }
+
+    // No previous snapshot means this is the first tick after launch. Finding
+    // agents already running is not a transition worth announcing.
+    guard let previous = lastNotificationState,
+      let event = NotificationPolicy.event(from: previous, to: current)
+    else { return }
+
+    switch event {
+    case .allAgentsFinished(let count):
+      Notifier.notify(.allAgentsFinished(count: count))
+    case .guardrailStoppedHold:
+      Notifier.notify(.guardrailStoppedHold(reason: statusLine))
+    }
   }
 
   // MARK: - Presentation
