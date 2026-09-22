@@ -41,9 +41,10 @@ make run
 
 Press **⌥⌘L** anywhere to toggle the manual hold.
 
-Then open the menu bar icon and click **Set up Claude Code**. Vigil adds a hook
-to `~/.claude/settings.json`, keeping a backup alongside it, and leaves any
-other hooks you have in place.
+Then open the menu bar icon and click **Set up**. Vigil finds the agents you
+have installed — Claude Code, Codex and Gemini CLI — adds a hook to each one's
+settings, keeps a backup of every file it touches, and leaves any other hooks
+you have in place.
 
 ## Build from source
 
@@ -90,8 +91,8 @@ are reachable by every other user account on the machine.
   `sudo ./Scripts/install-clamshell.sh --uninstall`.
 - **Notifications** when a run finishes or the battery floor is hit.
 - **A signed, notarized release.** Until then it is build-from-source only.
-- **Agents other than Claude Code.** Codex, Cursor, Gemini and OpenCode are
-  recognised if something posts events for them, but no hook ships for them yet.
+- **Cursor and OpenCode.** Recognised if something posts events for them, but
+  no hook ships for them yet.
 
 ## Contributing
 

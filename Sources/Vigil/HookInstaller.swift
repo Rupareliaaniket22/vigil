@@ -14,11 +14,17 @@ struct HookInstaller {
   /// settings; it should not be the one part that is never run before shipping.
   let scriptPath: String
   let settingsPath: String
+  let integration: AgentIntegration
 
-  static let live = HookInstaller(
-    scriptPath: defaultScriptPath,
-    settingsPath: defaultSettingsPath
-  )
+  /// One installer per agent Vigil knows about.
+  static func live(for integration: AgentIntegration) -> HookInstaller {
+    HookInstaller(
+      scriptPath: defaultScriptPath,
+      settingsPath: FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(integration.settingsPath).path,
+      integration: integration
+    )
+  }
 
   enum InstallError: LocalizedError {
     case scriptMissingFromBundle
@@ -54,7 +60,8 @@ struct HookInstaller {
     guard FileManager.default.isExecutableFile(atPath: scriptPath),
       let settings = try? Self.readSettings(at: settingsPath)
     else { return false }
-    return HookConfiguration.isInstalled(in: settings, scriptPath: scriptPath)
+    return HookConfiguration.isInstalled(
+      in: settings, scriptPath: scriptPath, integration: integration)
   }
 
   // MARK: - Install
@@ -63,7 +70,8 @@ struct HookInstaller {
     try copyScript()
 
     var settings = try Self.readSettings(at: settingsPath)
-    settings = HookConfiguration.install(into: settings, scriptPath: scriptPath)
+    settings = HookConfiguration.install(
+      into: settings, scriptPath: scriptPath, integration: integration)
     try Self.writeSettings(settings, to: settingsPath)
 
     Self.log.info("hooks installed into \(settingsPath, privacy: .public)")

@@ -44,17 +44,19 @@ struct MenuPanelView: View {
   private var setup: some View {
     if !model.hooksInstalled {
       VStack(alignment: .leading, spacing: Theme.Metrics.snug) {
-        Text("Claude Code isn't reporting to Vigil yet.")
+        Text("No agents are reporting to Vigil yet.")
           .font(Theme.Text.body)
           .foregroundStyle(.vigilPrimary)
           .fixedSize(horizontal: false, vertical: true)
 
-        Text("Vigil will add a hook to your Claude Code settings and keep a backup.")
-          .font(Theme.Text.detail)
-          .foregroundStyle(.vigilSecondary)
-          .fixedSize(horizontal: false, vertical: true)
+        Text(
+          "Vigil will add a hook to \(setupTargets), keeping a backup of each file."
+        )
+        .font(Theme.Text.detail)
+        .foregroundStyle(.vigilSecondary)
+        .fixedSize(horizontal: false, vertical: true)
 
-        Button("Set up Claude Code") { model.installHooks() }
+        Button("Set up") { model.installAllAvailableHooks() }
           .controlSize(.small)
       }
     }
@@ -64,6 +66,18 @@ struct MenuPanelView: View {
         .font(Theme.Text.detail)
         .foregroundStyle(.vigilAmber)
         .fixedSize(horizontal: false, vertical: true)
+    }
+  }
+
+  /// Name the agents we found rather than saying "your agents" — people should
+  /// know exactly which files are about to be edited.
+  private var setupTargets: String {
+    let names = model.availableIntegrations.map(\.displayName)
+    switch names.count {
+    case 0: return "your agent settings"
+    case 1: return names[0]
+    case 2: return "\(names[0]) and \(names[1])"
+    default: return names.dropLast().joined(separator: ", ") + " and " + (names.last ?? "")
     }
   }
 

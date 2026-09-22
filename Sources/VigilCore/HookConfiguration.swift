@@ -34,18 +34,24 @@ public enum HookConfiguration {
     return command.contains(name)
   }
 
-  /// Add Vigil's hooks to a settings dictionary, leaving everything else alone.
+  /// Add an agent's hooks to its settings, leaving everything else alone.
+  ///
+  /// The event-to-state mapping is baked into the command at install time
+  /// (`vigil-hook.sh <agent> <event> <state>`) rather than branching inside the
+  /// shell script. That keeps one script for every agent and keeps the mapping
+  /// here, where it is typed and tested.
   ///
   /// Idempotent: installing twice produces the same result as installing once.
   public static func install(
     into settings: [String: Any],
     scriptPath: String,
-    events: [String] = claudeCodeEvents
+    integration: AgentIntegration
   ) -> [String: Any] {
     var settings = settings
     var hooks = settings["hooks"] as? [String: Any] ?? [:]
 
-    for event in events {
+    for event in integration.allEvents {
+      let state = integration.state(for: event)
       var matchers = hooks[event] as? [[String: Any]] ?? []
 
       // Drop any previous entry of ours before adding, so a changed script path
@@ -57,9 +63,12 @@ public enum HookConfiguration {
         }
       }
 
-      matchers.append([
-        "hooks": [["type": "command", "command": "\(scriptPath) \(event)"]]
-      ])
+      var entry: [String: Any] = [
+        "type": "command",
+        "command": "\(scriptPath) \(integration.id.rawValue) \(event) \(state.rawValue)",
+      ]
+      if let timeout = integration.timeoutMilliseconds { entry["timeout"] = timeout }
+      matchers.append(["hooks": [entry]])
       hooks[event] = matchers
     }
 
@@ -104,9 +113,13 @@ public enum HookConfiguration {
   }
 
   /// Whether our hooks are already present for every event we want.
-  public static func isInstalled(in settings: [String: Any], scriptPath: String) -> Bool {
+  public static func isInstalled(
+    in settings: [String: Any],
+    scriptPath: String,
+    integration: AgentIntegration
+  ) -> Bool {
     guard let hooks = settings["hooks"] as? [String: Any] else { return false }
-    return claudeCodeEvents.allSatisfy { event in
+    return integration.allEvents.allSatisfy { event in
       guard let matchers = hooks[event] as? [[String: Any]] else { return false }
       return matchers.contains { matcher in
         guard let inner = matcher["hooks"] as? [[String: Any]] else { return false }

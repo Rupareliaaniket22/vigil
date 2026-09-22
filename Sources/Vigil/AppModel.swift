@@ -79,9 +79,26 @@ final class AppModel {
 
   private(set) var pausedUntil: Date?
 
-  /// Whether Claude Code is wired up to report to us. Until it is, Vigil can
-  /// only be driven by the manual toggle.
-  private(set) var hooksInstalled = false
+  /// Which agents are wired up to report to us. Until at least one is, Vigil
+  /// can only be driven by the manual toggle.
+  private(set) var installedAgents: Set<AgentKind> = []
+
+  var hooksInstalled: Bool { !installedAgents.isEmpty }
+
+  func isInstalled(_ integration: AgentIntegration) -> Bool {
+    installedAgents.contains(integration.id)
+  }
+
+  /// Only the agents actually present on this machine are worth offering —
+  /// a settings row for a tool someone has never installed is noise.
+  var availableIntegrations: [AgentIntegration] {
+    AgentIntegration.all.filter { integration in
+      let home = FileManager.default.homeDirectoryForCurrentUser
+      let dir = home.appendingPathComponent(integration.settingsPath).deletingLastPathComponent()
+      return FileManager.default.fileExists(atPath: dir.path)
+        || installedAgents.contains(integration.id)
+    }
+  }
   /// Surfaced in the panel rather than logged, so a failed setup is visible.
   private(set) var setupError: String?
 
@@ -105,7 +122,7 @@ final class AppModel {
 
     bridge = EventBridge { [weak self] event in self?.handle(event) }
     bridge?.start()
-    hooksInstalled = HookInstaller.live.isInstalled
+    refreshInstalledAgents()
 
     tick = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
       Task { @MainActor in self?.reevaluate() }
@@ -157,24 +174,39 @@ final class AppModel {
     return until > Date()
   }
 
-  /// Wire Claude Code up to report to us.
-  func installHooks() {
+  func refreshInstalledAgents() {
+    installedAgents = Set(
+      AgentIntegration.all
+        .filter { HookInstaller.live(for: $0).isInstalled }
+        .map(\.id)
+    )
+  }
+
+  /// Wire an agent up to report to us.
+  func installHooks(for integration: AgentIntegration) {
     do {
-      try HookInstaller.live.install()
-      hooksInstalled = true
+      try HookInstaller.live(for: integration).install()
+      installedAgents.insert(integration.id)
       setupError = nil
     } catch {
       setupError = error.localizedDescription
     }
   }
 
-  func uninstallHooks() {
+  func uninstallHooks(for integration: AgentIntegration) {
     do {
-      try HookInstaller.live.uninstall()
-      hooksInstalled = false
+      try HookInstaller.live(for: integration).uninstall()
+      installedAgents.remove(integration.id)
       setupError = nil
     } catch {
       setupError = error.localizedDescription
+    }
+  }
+
+  /// Set up every agent present on this machine, in one action.
+  func installAllAvailableHooks() {
+    for integration in availableIntegrations where !isInstalled(integration) {
+      installHooks(for: integration)
     }
   }
 

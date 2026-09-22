@@ -155,7 +155,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #"{"theme":"dark","hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"/opt/other/hook.sh"}]}]}}"#
       try existing.write(toFile: settingsPath, atomically: true, encoding: .utf8)
 
-      let installer = HookInstaller(scriptPath: scriptPath, settingsPath: settingsPath)
+      let installer = HookInstaller(
+        scriptPath: scriptPath, settingsPath: settingsPath, integration: .claudeCode)
       guard !installer.isInstalled else { fail("reported installed before installing") }
 
       try installer.install()

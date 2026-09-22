@@ -59,15 +59,26 @@ struct SettingsView: View {
       }
 
       Section("Agents") {
-        HStack {
-          Text(model.hooksInstalled ? "Claude Code is reporting to Vigil." : "Not set up yet.")
-            .font(Theme.Text.body)
-          Spacer()
-          if model.hooksInstalled {
-            Button("Remove") { model.uninstallHooks() }
-          } else {
-            Button("Set up") { model.installHooks() }
+        ForEach(model.availableIntegrations) { integration in
+          HStack {
+            Text(integration.displayName)
+              .font(Theme.Text.body)
+            Spacer()
+            if model.isInstalled(integration) {
+              Text("Reporting")
+                .font(Theme.Text.detail)
+                .foregroundStyle(.vigilSecondary)
+              Button("Remove") { model.uninstallHooks(for: integration) }
+            } else {
+              Button("Set up") { model.installHooks(for: integration) }
+            }
           }
+        }
+
+        if model.availableIntegrations.isEmpty {
+          Text("No supported agents found on this Mac.")
+            .font(Theme.Text.detail)
+            .foregroundStyle(.vigilSecondary)
         }
         if let error = model.setupError {
           Text(error)
