@@ -17,6 +17,11 @@ import VigilCore
 /// without hopping back to it.
 private let log = Logger(subsystem: Vigil.subsystem, category: "bridge")
 
+/// A hook event is a few hundred bytes. Anything approaching this is either a
+/// bug in a hook or something deliberately probing the socket; either way we
+/// should not materialise it in memory.
+private let maximumBodyBytes = 64 * 1024
+
 @MainActor
 final class EventBridge {
 
@@ -41,12 +46,27 @@ final class EventBridge {
     let handle = onEvent
 
     Task {
-      await server.appendRoute("POST /event") { request in
+      await server.appendRoute("POST /event") { (request: HTTPRequest) in
+        // Check the declared length before reading anything, so an oversized
+        // body is refused rather than buffered.
+        if let declared = request.headers[.contentLength].flatMap(Int.init),
+          declared > maximumBodyBytes
+        {
+          log.notice("refused a \(declared, privacy: .public) byte event payload")
+          return HTTPResponse(statusCode: .payloadTooLarge)
+        }
+
         let data: Data
         do {
           data = try await request.bodyData
         } catch {
           return HTTPResponse(statusCode: .badRequest)
+        }
+
+        // A body with no declared length still gets checked once read.
+        guard data.count <= maximumBodyBytes else {
+          log.notice("refused a \(data.count, privacy: .public) byte event payload")
+          return HTTPResponse(statusCode: .payloadTooLarge)
         }
 
         // Hook payloads are shell-assembled JSON: assume nothing.

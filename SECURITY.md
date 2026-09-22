@@ -21,7 +21,9 @@ account, while a socket file is constrained by filesystem permissions and gives
 us a kernel-verified peer uid via `getpeereid`.
 
 All payloads are treated as untrusted input. Malformed events are rejected
-rather than guessed at.
+rather than guessed at, and bodies over 64 KB are refused with 413 before being
+read into memory — a real hook event is a few hundred bytes, so anything near
+that limit is either a broken hook or something probing the socket.
 
 ### Lid-closed support (opt-in)
 
