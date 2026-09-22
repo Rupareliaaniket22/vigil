@@ -61,6 +61,20 @@ Lid-closed mode is off by default and must be explicitly enabled.
 
 ### Failure mode we care most about
 
-A Mac left unable to sleep in a bag will drain its battery and run hot. Vigil
-restores normal sleep on quit, enforces a battery floor, and expires sessions
-that stop reporting.
+A Mac left unable to sleep in a bag will drain its battery and run hot. Four
+things guard against it:
+
+- **A battery floor**, checked before intent. No amount of agent activity or
+  manual override beats it.
+- **Session expiry.** An agent that dies without reporting stops counting after
+  five minutes, so a crashed agent cannot pin the Mac awake indefinitely.
+- **Restore on quit**, via `applicationWillTerminate`.
+- **Restore on launch and on signals.** `applicationWillTerminate` does not run
+  on a crash, a force-quit or a `kill`, so Vigil also clears the lid-close flag
+  every time it starts, and installs `SIGINT`/`SIGTERM`/`SIGHUP` handlers that
+  restore it before dying.
+
+One gap remains: if Vigil is killed with `SIGKILL` (which cannot be trapped) and
+never relaunched, lid-close sleep stays disabled until something restores it.
+Run `sudo ./Scripts/install-clamshell.sh --uninstall`, or
+`sudo pmset -a disablesleep 0`, to clear it by hand.

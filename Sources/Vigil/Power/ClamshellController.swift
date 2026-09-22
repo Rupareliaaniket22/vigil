@@ -101,6 +101,50 @@ final class ClamshellController {
     self.backends = backends
   }
 
+  /// Put sleep back the way we found it, at launch.
+  ///
+  /// `applicationWillTerminate` does not run on a crash, a force-quit, or a
+  /// kill. If Vigil died with lid-close sleep disabled, the Mac stays unable to
+  /// sleep with nothing left running to undo it — a laptop that cooks in a bag
+  /// is the worst thing this app can do. Clearing the flag on every launch
+  /// closes the case where the user relaunches; `installSignalHandlers` covers
+  /// termination signals.
+  func restoreOnLaunch() async {
+    guard let backend = activeBackend else { return }
+    do {
+      try await backend.setSleepDisabled(false)
+      isDisabled = false
+      Self.log.info("restored normal sleep at launch")
+    } catch {
+      Self.log.notice(
+        "could not restore sleep at launch: \(error.localizedDescription, privacy: .public)")
+    }
+  }
+
+  /// Restore on the signals that skip `applicationWillTerminate`.
+  ///
+  /// The handler runs in a signal context, so it does the smallest possible
+  /// thing: shell out to the helper synchronously, then re-raise with the
+  /// default disposition so the process still dies as expected.
+  nonisolated func installSignalHandlers() {
+    let restore: @convention(c) (Int32) -> Void = { signal in
+      let helper = SudoersClamshellBackend.helperPath
+      if FileManager.default.isExecutableFile(atPath: helper) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        process.arguments = ["-n", helper, "off"]
+        try? process.run()
+        process.waitUntilExit()
+      }
+      Foundation.signal(signal, SIG_DFL)
+      raise(signal)
+    }
+
+    for sig in [SIGINT, SIGTERM, SIGHUP] {
+      Foundation.signal(sig, restore)
+    }
+  }
+
   var activeBackend: (any ClamshellBackend)? {
     backends.first(where: \.isAvailable)
   }

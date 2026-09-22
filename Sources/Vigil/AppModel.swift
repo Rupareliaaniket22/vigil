@@ -82,6 +82,11 @@ final class AppModel {
   // MARK: - Lifecycle
 
   func start() {
+    // Undo any lid-close setting left behind by a previous run that died
+    // before it could clean up, before doing anything else.
+    clamshell.installSignalHandlers()
+    Task { await clamshell.restoreOnLaunch() }
+
     bridge = EventBridge { [weak self] event in self?.handle(event) }
     bridge?.start()
     hooksInstalled = HookInstaller.live.isInstalled
