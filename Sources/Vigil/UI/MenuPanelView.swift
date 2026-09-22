@@ -1,0 +1,192 @@
+import SwiftUI
+import VigilCore
+
+/// The dropdown. One status line, the sessions, the ledger, the controls.
+struct MenuPanelView: View {
+  @Bindable var model: AppModel
+  var onQuit: () -> Void
+  var onSettings: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: Theme.Metrics.loose) {
+      header
+      sessions
+      ledger
+      controls
+    }
+    .padding(Theme.Metrics.panelPadding)
+    .frame(width: Theme.Metrics.panelWidth)
+    .animation(Theme.Motion.contentChange, value: model.sessions)
+  }
+
+  // MARK: - Header
+
+  private var header: some View {
+    HStack(alignment: .firstTextBaseline, spacing: Theme.Metrics.snug) {
+      Text(model.statusLine)
+        .font(Theme.Text.status)
+        // Amber appears here only when the Mac is actually being held awake.
+        .foregroundStyle(model.decision.holdIdleAssertion ? Color.vigilAmber : .vigilPrimary)
+        .fixedSize(horizontal: false, vertical: true)
+
+      Spacer(minLength: Theme.Metrics.snug)
+
+      BatteryMeter(percent: model.power.batteryPercent, isPluggedIn: model.power.isPluggedIn)
+    }
+  }
+
+  // MARK: - Sessions
+
+  @ViewBuilder
+  private var sessions: some View {
+    if model.sessions.isEmpty {
+      // Never a blank panel: say what is true and leave an action in reach.
+      Text("Nothing is running. Vigil is out of the way.")
+        .font(Theme.Text.detail)
+        .foregroundStyle(.vigilSecondary)
+    } else {
+      VStack(alignment: .leading, spacing: Theme.Metrics.snug) {
+        Text("Sessions")
+          .font(Theme.Text.section)
+          .foregroundStyle(.vigilPrimary)
+
+        VStack(alignment: .leading, spacing: Theme.Metrics.tight) {
+          ForEach(model.sessions) { session in
+            SessionRow(session: session)
+          }
+        }
+      }
+    }
+  }
+
+  // MARK: - Ledger
+
+  @ViewBuilder
+  private var ledger: some View {
+    if !model.otherAssertions.isEmpty {
+      VStack(alignment: .leading, spacing: Theme.Metrics.snug) {
+        Divider().overlay(Color.vigilSeparator)
+
+        Text("Also holding your Mac awake")
+          .font(Theme.Text.section)
+          .foregroundStyle(.vigilPrimary)
+
+        Text(otherNames)
+          .font(Theme.Text.detail)
+          .foregroundStyle(.vigilSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+  }
+
+  private var otherNames: String {
+    let names = Set(model.otherAssertions.map(\.processName)).sorted()
+    return names.joined(separator: ", ")
+  }
+
+  // MARK: - Controls
+
+  private var controls: some View {
+    VStack(alignment: .leading, spacing: Theme.Metrics.snug) {
+      Divider().overlay(Color.vigilSeparator)
+
+      Toggle("Keep awake", isOn: $model.manualOverride)
+        .font(Theme.Text.body)
+        .toggleStyle(.switch)
+        .controlSize(.small)
+
+      HStack {
+        if model.isPaused {
+          Button("Resume") { model.resume() }
+        } else {
+          Menu("Pause for…") {
+            Button("30 minutes") { model.pause(for: 30 * 60) }
+            Button("1 hour") { model.pause(for: 60 * 60) }
+            Button("Until tomorrow") { model.pause(for: 12 * 60 * 60) }
+          }
+          .menuStyle(.borderlessButton)
+          .fixedSize()
+        }
+
+        Spacer()
+
+        Button("Settings…", action: onSettings)
+        Button("Quit", action: onQuit)
+      }
+      .font(Theme.Text.detail)
+      .buttonStyle(.link)
+    }
+  }
+}
+
+// MARK: - Row
+
+private struct SessionRow: View {
+  let session: AgentSession
+
+  var body: some View {
+    HStack(spacing: Theme.Metrics.snug) {
+      // Filled vs hollow carries the state; amber only ever means "working".
+      Circle()
+        .fill(session.state == .working ? Color.vigilAmber : .vigilTertiary)
+        .frame(width: 6, height: 6)
+
+      Text(session.agent.rawValue)
+        .font(Theme.Text.body)
+        .foregroundStyle(.vigilPrimary)
+
+      if let cwd = session.cwd {
+        Text(shorten(cwd))
+          .font(Theme.Text.detail)
+          .foregroundStyle(.vigilSecondary)
+          .lineLimit(1)
+          .truncationMode(.head)
+      }
+
+      Spacer(minLength: Theme.Metrics.tight)
+
+      Text(elapsed)
+        .font(Theme.Text.detail)
+        .foregroundStyle(.vigilTertiary)
+        .monospacedDigit()
+    }
+    .frame(height: Theme.Metrics.rowHeight - Theme.Metrics.snug)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(session.agent.rawValue), \(session.state.rawValue), \(elapsed)")
+  }
+
+  private func shorten(_ path: String) -> String {
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
+  }
+
+  private var elapsed: String {
+    let seconds = Int(Date().timeIntervalSince(session.lastSeen))
+    if seconds < 60 { return "now" }
+    let minutes = seconds / 60
+    return minutes < 60 ? "\(minutes)m" : "\(minutes / 60)h"
+  }
+}
+
+// MARK: - Battery
+
+private struct BatteryMeter: View {
+  let percent: Int
+  let isPluggedIn: Bool
+
+  var body: some View {
+    HStack(spacing: Theme.Metrics.tight) {
+      if isPluggedIn {
+        Image(systemName: "powerplug.fill")
+          .font(.system(size: 9))
+          .foregroundStyle(.vigilSecondary)
+      }
+      Text("\(percent)%")
+        .font(Theme.Text.detail)
+        .foregroundStyle(.vigilSecondary)
+        .monospacedDigit()
+    }
+    .accessibilityLabel(
+      "Battery \(percent) percent\(isPluggedIn ? ", plugged in" : ", on battery")")
+  }
+}

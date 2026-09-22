@@ -90,3 +90,13 @@ extension Color {
   static let vigilTertiary = Color(nsColor: Theme.Ink.tertiary)
   static let vigilSeparator = Color(nsColor: Theme.Ink.separator)
 }
+
+/// So call sites can write `.foregroundStyle(.vigilSecondary)` — the leading-dot
+/// form resolves against ShapeStyle, not Color.
+extension ShapeStyle where Self == Color {
+  static var vigilAmber: Color { .vigilAmber }
+  static var vigilPrimary: Color { .vigilPrimary }
+  static var vigilSecondary: Color { .vigilSecondary }
+  static var vigilTertiary: Color { .vigilTertiary }
+  static var vigilSeparator: Color { .vigilSeparator }
+}
