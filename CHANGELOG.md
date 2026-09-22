@@ -13,3 +13,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - System-wide power assertion readout — shows every reason the Mac is awake, not just ours
 - Pluggable clamshell backend (sudoers now, `SMAppService` helper once signed)
 - Universal build, bundle and ad-hoc signing with Command Line Tools only
+- Menu bar panel, settings window, and one-click Claude Code hook setup
+- Notifications when a run finishes or a guardrail cuts one short
+- Lid-closed support behind a scoped sudoers helper
+- ⌥⌘L to toggle the manual hold from anywhere

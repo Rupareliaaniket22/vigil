@@ -38,6 +38,8 @@ cd vigil
 make run
 ```
 
+Press **⌥⌘L** anywhere to toggle the manual hold.
+
 Then open the menu bar icon and click **Set up Claude Code**. Vigil adds a hook
 to `~/.claude/settings.json`, keeping a backup alongside it, and leaves any
 other hooks you have in place.

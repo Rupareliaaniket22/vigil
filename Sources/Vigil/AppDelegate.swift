@@ -20,6 +20,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     installStatusItem()
     model.start()
 
+    // ⌥⌘L toggles the manual hold from anywhere.
+    GlobalShortcut.register { [weak self] in
+      self?.model.manualOverride.toggle()
+    }
+
     // Redraw the status item whenever the model changes, without polling.
     observeModel()
     Self.log.info("\(Vigil.displayName, privacy: .public) launched")
@@ -30,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationWillTerminate(_: Notification) {
+    GlobalShortcut.unregister()
     model.stop()
   }
 
