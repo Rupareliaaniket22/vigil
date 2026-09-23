@@ -24,18 +24,30 @@ public struct PowerConditions: Sendable, Equatable {
   /// Nil on desktops. Clamshell rules only apply to laptops.
   public var lidIsClosed: Bool?
 
+  /// Whether this Mac has a battery at all.
+  ///
+  /// No policy reads it — a desktop reports as permanently on mains at 100%,
+  /// which already makes every power guardrail a no-op. It exists because
+  /// "100%, on mains" and "there is no battery" are the same numbers, and the
+  /// panel has to tell them apart: a meter reading a full charge forever is a
+  /// decoration on a Mac mini, and the status line is the one line in the app
+  /// that cannot afford a decoration.
+  public var hasBattery: Bool
+
   public init(
     batteryPercent: Int = 100,
     isPluggedIn: Bool = true,
     isLowPowerMode: Bool = false,
     thermalState: ThermalState = .nominal,
-    lidIsClosed: Bool? = nil
+    lidIsClosed: Bool? = nil,
+    hasBattery: Bool = true
   ) {
     self.batteryPercent = batteryPercent
     self.isPluggedIn = isPluggedIn
     self.isLowPowerMode = isLowPowerMode
     self.thermalState = thermalState
     self.lidIsClosed = lidIsClosed
+    self.hasBattery = hasBattery
   }
 }
 

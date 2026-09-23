@@ -1,0 +1,148 @@
+import SwiftUI
+
+// The plumbing every hand-drawn control in this folder needs, and none of it
+// comes free. AppKit's press highlight and focus ring belong to `NSButton`; a
+// `Shape` we drew ourselves is invisible to both, and to `.disabled()` as well.
+//
+// On previews: these controls carry `…Gallery` views rather than `#Preview`.
+// The macro expands to `#externalMacro(module: "PreviewsMacros", …)`, and that
+// plugin ships inside Xcode — Command Line Tools has Observation, Swift and
+// Testing macros and nothing else. AGENTS.md makes building without Xcode a
+// contributor guarantee, so a `#Preview` here would break `make build` for
+// exactly the contributors that guarantee exists for. A plain `View` compiles
+// everywhere and can still be dropped into a window to look at.
+
+// MARK: - Disabled
+
+extension View {
+  /// The dimming `.disabled()` does not do.
+  ///
+  /// `.disabled()` stops hit testing and sets `isEnabled` in the environment,
+  /// and system controls read that and grey themselves out. A `Capsule` we
+  /// filled ourselves reads nothing and stays at full strength, so a disabled
+  /// custom control looks live until you click it and nothing happens. Every
+  /// control here says so explicitly.
+  func vigilDimmed(_ isEnabled: Bool) -> some View {
+    opacity(isEnabled ? 1 : 0.5)
+  }
+}
+
+// MARK: - Press
+
+/// Tracks the press phase and fires on release inside the control.
+///
+/// `.onTapGesture` cannot report the phase at all, and a bare `DragGesture`
+/// never cancels — drag the pointer off a pressed control and it stays lit.
+/// Measuring the bounds and testing the release point against them is what
+/// gives `NSButton`'s actual behaviour: the tone follows the pointer in and out
+/// of the control, and letting go outside it does nothing.
+private struct PressAction: ViewModifier {
+  @Binding var isPressed: Bool
+  let action: () -> Void
+
+  @State private var size: CGSize = .zero
+
+  func body(content: Content) -> some View {
+    content
+      .background {
+        GeometryReader { proxy in
+          Color.clear
+            .onChange(of: proxy.size, initial: true) { _, new in size = new }
+        }
+      }
+      .gesture(
+        DragGesture(minimumDistance: 0)
+          .onChanged { value in
+            let inside = bounds.contains(value.location)
+            if isPressed != inside { isPressed = inside }
+          }
+          .onEnded { value in
+            isPressed = false
+            if bounds.contains(value.location) { action() }
+          }
+      )
+  }
+
+  /// `DragGesture` reports in the local coordinate space, so the control's own
+  /// bounds start at the origin.
+  private var bounds: CGRect { CGRect(origin: .zero, size: size) }
+}
+
+// MARK: - Focus
+
+/// Draws the focus ring, just outside the control's own shape.
+///
+/// The ring sits on `keyboardFocusIndicatorColor`, which already carries 50%
+/// alpha. Nothing here multiplies it — the presence of the ring is the state,
+/// so it is drawn or it is absent, never faded.
+private struct FocusRing<S: Shape>: ViewModifier {
+  let shape: S
+  let isFocused: Bool
+
+  /// AppKit's ring hugs the control and bleeds outward. Stroking a shape
+  /// grown by half the line width puts the stroke's inner edge on the
+  /// control's boundary and the rest of it outside, which is the same look.
+  private let width: CGFloat = 3
+  private let bleed: CGFloat = 1.5
+
+  func body(content: Content) -> some View {
+    content.overlay {
+      if isFocused {
+        shape
+          .stroke(Color.vigilFocusRing, lineWidth: width)
+          .padding(-bleed)
+      }
+    }
+  }
+}
+
+extension View {
+  /// Press-and-release handling with the phase reported back.
+  func vigilPressAction(
+    isPressed: Binding<Bool>,
+    perform action: @escaping () -> Void
+  ) -> some View {
+    modifier(PressAction(isPressed: isPressed, action: action))
+  }
+
+  /// A drawn focus ring. Pair it with `.focusEffectDisabled()`, or the system
+  /// draws a second rectangular one around the view's bounds.
+  func vigilFocusRing(_ isFocused: Bool, in shape: some Shape) -> some View {
+    modifier(FocusRing(shape: shape, isFocused: isFocused))
+  }
+}
+
+// MARK: - Gallery scaffolding
+
+/// One labelled specimen in a control gallery.
+struct GallerySpecimen<Content: View>: View {
+  let caption: String
+  @ViewBuilder let content: Content
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: Theme.Metrics.tight) {
+      Text(caption)
+        .font(Theme.Text.footnote)
+        .foregroundStyle(.vigilTertiary)
+      content
+    }
+  }
+}
+
+/// The frame a gallery sits in: panel width, panel padding, and nothing else,
+/// so a specimen is seen at the size it will actually be used at.
+struct GalleryFrame<Content: View>: View {
+  let title: String
+  @ViewBuilder let content: Content
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: Theme.Metrics.loose) {
+      Text(title)
+        .font(Theme.Text.section)
+        .foregroundStyle(.vigilPrimary)
+      content
+    }
+    .padding(Theme.Metrics.panelPadding)
+    .frame(width: Theme.Metrics.panelWidth, alignment: .leading)
+  }
+}

@@ -36,7 +36,8 @@ enum PowerMonitor {
     else {
       // No battery: a desktop. Every power guardrail is a no-op for it, but
       // heat is not — a Mac mini under a desk can still cook.
-      return PowerConditions(thermalState: thermal, lidIsClosed: lidClosed())
+      return PowerConditions(
+        thermalState: thermal, lidIsClosed: lidClosed(), hasBattery: false)
     }
 
     let capacity = description[kIOPSCurrentCapacityKey] as? Int ?? 100
@@ -48,7 +49,8 @@ enum PowerMonitor {
       isPluggedIn: state == kIOPSACPowerValue,
       isLowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
       thermalState: thermal,
-      lidIsClosed: lidClosed()
+      lidIsClosed: lidClosed(),
+      hasBattery: true
     )
   }
 }

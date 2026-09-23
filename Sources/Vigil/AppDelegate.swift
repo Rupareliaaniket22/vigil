@@ -1,4 +1,5 @@
 import AppKit
+import IOKit.pwr_mgt
 import OSLog
 import SwiftUI
 import VigilCore
@@ -194,7 +195,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let full = makePanel()
     full.contentView?.layoutSubtreeIfNeeded()
     let size = full.measuredContentSize()
-    print("smoke: populated panel \(Int(size.width))x\(Int(size.height))")
+    // The row counts, because the height is mostly rows: every list in this
+    // panel is one 24pt row per thing it has to say, so a number with no count
+    // beside it cannot be told from a regression.
+    let agentRows = model.sessions.count + model.quietIntegrations.count
+    print(
+      "smoke: populated panel \(Int(size.width))x\(Int(size.height)) "
+        + "(\(agentRows) agent rows, \(model.otherAssertions.count) ledger rows)")
     guard size.height > emptySize.height else {
       print("smoke: FAILED - rows did not lay out")
       exit(1)
@@ -206,6 +213,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       exit(1)
     }
 
+    smokeSettings()
+    smokeDegraded()
     smokeTestHookInstall()
 
     print("smoke: ok")
@@ -232,6 +241,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         agent: AgentKind(rawValue: "some-new-tool"), sessionID: "smoke-4", state: .working),
     ]
     model.loadSampleSessions(events)
+
+    // The ledger, which until now the smoke test never built at all: it only
+    // populates while the panel is open, so the section that carries half the
+    // panel's rows was the one section never instantiated before shipping.
+    // Both kinds are here — a daemon `LedgerPhrase` has a sentence for, and one
+    // it deliberately does not — because they take different paths through it.
+    let start = Date()
+    model.loadSampleAssertions([
+      SystemAssertion(
+        id: "smoke-a", pid: 100, processName: "powerd",
+        type: kIOPMAssertionTypePreventUserIdleSystemSleep,
+        reason: "Powerd - Prevent sleep while display is on",
+        startedAt: start.addingTimeInterval(-5880), timeoutSeconds: nil, timeLeft: nil),
+      SystemAssertion(
+        id: "smoke-b", pid: 101, processName: "coreaudiod",
+        type: kIOPMAssertionTypePreventUserIdleSystemSleep,
+        reason: "com.apple.audio.BuiltInSpeakerDevice.context.preventuseridlesleep",
+        startedAt: start.addingTimeInterval(-7440), timeoutSeconds: nil, timeLeft: nil),
+      SystemAssertion(
+        id: "smoke-c", pid: 102, processName: "Some App With A Very Long Name Indeed",
+        type: kIOPMAssertionTypePreventSystemSleep,
+        reason: "Uploading a rather large file to somewhere far away",
+        startedAt: start.addingTimeInterval(-240), timeoutSeconds: 3600, timeLeft: 3360),
+    ])
+  }
+
+  /// Build the settings window's content and report its size.
+  ///
+  /// Same argument as the panel: a SwiftUI layout crash only happens when the
+  /// view is instantiated, and this one is now a hand-built stack of custom
+  /// controls rather than a `Form` that could be trusted to size itself. The
+  /// controller is deliberately not used — `present()` flips the activation
+  /// policy and puts a real window on screen, and the smoke test is supposed to
+  /// leave the machine exactly as it found it.
+  private func smokeSettings() {
+    let hosting = NSHostingController(rootView: SettingsView(model: model))
+    hosting.view.layoutSubtreeIfNeeded()
+    let size = hosting.view.fittingSize
+
+    // What the sections actually want, with the fixed height taken off. The
+    // window can only stay a decision rather than a clipping mask for as long
+    // as this number stays under it.
+    let fitted = NSHostingController(rootView: SettingsView(model: model, fitsToContent: true))
+    fitted.view.layoutSubtreeIfNeeded()
+    let content = fitted.view.fittingSize.height
+
+    print("smoke: settings \(Int(size.width))x\(Int(size.height)) (content \(Int(content)))")
+    guard size.width == Theme.Metrics.settingsWidth, size.height == Theme.Metrics.settingsHeight
+    else {
+      print(
+        "smoke: FAILED - settings is \(Int(size.width))x\(Int(size.height)), not "
+          + "\(Int(Theme.Metrics.settingsWidth))x\(Int(Theme.Metrics.settingsHeight))")
+      exit(1)
+    }
+    guard content <= Theme.Metrics.settingsHeight else {
+      print(
+        "smoke: FAILED - settings content wants \(Int(content))pt, "
+          + "which is \(Int(content - Theme.Metrics.settingsHeight))pt more than the window has")
+      exit(1)
+    }
+  }
+
+  /// Build the panel chrome that only appears when something is wrong.
+  ///
+  /// The bridge notice and the blocked switch cannot be reached from a fixture
+  /// — one needs a socket that will not bind and the other a live guardrail,
+  /// and arranging either on the machine running the check is precisely what a
+  /// layout check must not do. `MenuPanelDegradedGallery` holds them instead.
+  private func smokeDegraded() {
+    let hosting = NSHostingView(rootView: MenuPanelDegradedGallery())
+    hosting.layoutSubtreeIfNeeded()
+    let size = hosting.fittingSize
+    print("smoke: degraded chrome \(Int(size.width))x\(Int(size.height))")
+    guard size.width == Theme.Metrics.panelWidth, size.height > 0 else {
+      print("smoke: FAILED - degraded chrome is \(Int(size.width))pt wide")
+      exit(1)
+    }
   }
 
   /// Run a real install and uninstall against a temporary directory.

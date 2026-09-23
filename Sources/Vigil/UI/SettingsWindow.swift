@@ -17,7 +17,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     let hosting = NSHostingController(rootView: SettingsView(model: model))
     let window = NSWindow(contentViewController: hosting)
     window.title = "Vigil Settings"
-    window.styleMask = [.titled, .closable]
+
+    // `.titled` and `.closable` stay. Dropping the title bar entirely — a
+    // `.borderless` window — takes ⌘W and dragging with it, and a settings
+    // window you cannot move or close from the keyboard is a worse trade than
+    // the 28pt it saves.
+    //
+    // What goes is the *look* of it: no bar, no title, content running up
+    // behind the traffic lights. SettingsView leaves them their clearance.
+    window.styleMask = [.titled, .closable, .fullSizeContentView]
+    window.titlebarAppearsTransparent = true
+    window.titleVisibility = .hidden
+
     window.isReleasedWhenClosed = false
     window.center()
     self.init(window: window)

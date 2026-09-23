@@ -117,15 +117,6 @@ final class AppModel {
     setupStates[integration.id] ?? .notSetUp
   }
 
-  /// Agents that are reporting through hooks older than the set Vigil now
-  /// listens for.
-  ///
-  /// These used to be invisible. `isInstalled` correctly said no, but an agent
-  /// with live sessions never reached the "needs setting up" list, so nothing
-  /// told the user and the panel under-reported without ever looking wrong.
-  var outOfDateIntegrations: [AgentIntegration] {
-    AgentIntegration.all.filter { setupState(for: $0) == .outOfDate }
-  }
   /// Surfaced in the panel rather than logged, so a failed setup is visible.
   private(set) var setupError: String?
 
@@ -187,6 +178,20 @@ final class AppModel {
     clamshell.restoreOnExit()
   }
 
+  /// Stand the bridge back up after it failed.
+  ///
+  /// Behind the panel's "Try again", because the usual causes — a stale socket
+  /// from a run that was killed, a home directory that was not mounted yet —
+  /// are gone by the time anyone reads the notice. `stop()` first: the failed
+  /// task is still parked in `bridge`, and starting a second one would leave
+  /// two servers racing for the same path.
+  func retryBridge() {
+    guard let bridge else { return }
+    bridge.stop()
+    bridgeError = nil
+    bridge.start()
+  }
+
   // MARK: - Actions
 
   /// Start and stop the display clock with the panel, not with the app.
@@ -233,6 +238,15 @@ final class AppModel {
   func loadSampleSessions(_ events: [AgentEvent]) {
     for event in events { store.apply(event) }
     sessions = store.all()
+  }
+
+  /// Put sample ledger rows in front of the panel, and nothing else.
+  ///
+  /// Same rule as `loadSampleSessions`: the layout check runs as the real app,
+  /// so it reads the real machine. It must not be the thing that copies every
+  /// assertion on it out of the kernel, and it must not take one.
+  func loadSampleAssertions(_ assertions: [SystemAssertion]) {
+    otherAssertions = assertions
   }
 
   func pause(for duration: TimeInterval) {
@@ -368,7 +382,12 @@ final class AppModel {
     )
 
     if decision.holdIdleAssertion {
-      assertion.hold(reason: statusLine)
+      // `assertionName`, never `statusLine`. `pmset -g assertions` prints this
+      // through a context that is not UTF-8, where the em dash arrives as a
+      // replacement character. The fold is structural now — there is no raw
+      // string here to get wrong — which is the point, because this exact bug
+      // has been fixed once and reintroduced twice.
+      assertion.hold(reason: decision.reason.assertionName)
     } else {
       assertion.release()
     }
@@ -423,39 +442,18 @@ final class AppModel {
 
   // MARK: - Presentation
 
-  /// The headline. Deliberately short enough never to wrap in a 340pt panel —
-  /// a two-line headline breaks the baseline everything beside it aligns to.
-  var statusHeadline: String {
-    decision.holdIdleAssertion ? "Keeping your Mac awake" : "Your Mac can sleep"
-  }
+  // The wording lives on `WakeReason` in VigilCore, beside the decision it
+  // describes, so it can be tested. These three are the whole app-layer view of
+  // it: forwarding rather than re-deriving means there is exactly one place a
+  // sentence can be changed, and no second copy to drift.
 
-  /// The reason, underneath. Splitting headline from detail means the panel
-  /// always answers "what" first and "why" second, instead of one long
-  /// sentence that has to wrap.
-  var statusDetail: String {
-    switch decision.reason {
-    case .agentsWorking(let count):
-      "\(count) agent\(count == 1 ? "" : "s") working"
-    case .manualOverride:
-      "Kept awake manually"
-    case .paused(let until):
-      "Paused until \(until.formatted(date: .omitted, time: .shortened))"
-    case .noAgents:
-      "No agents are running"
-    case .batteryBelowFloor(let percent, let floor):
-      "Battery \(percent)% is below your \(floor)% floor"
-    case .onBatteryAndPluggedInRequired:
-      "On battery — set to hold only on mains power"
-    case .lowPowerMode:
-      "Low Power Mode is on"
-    case .tooHot(let state):
-      state == .critical ? "Your Mac is too hot to stay awake safely" : "Your Mac is running hot"
-    }
-  }
+  var statusHeadline: String { decision.reason.statusHeadline }
+  var statusDetail: String { decision.reason.statusDetail }
 
-  /// One line, for the menu bar tooltip and the power assertion's own name, so
-  /// `pmset -g assertions` explains itself too.
-  var statusLine: String { "\(statusHeadline) — \(statusDetail)" }
+  /// One line, for the menu bar tooltip and for `Notifier`. Keeps the em dash:
+  /// both of those render UTF-8. The power assertion deliberately does not use
+  /// this — see `reevaluate`.
+  var statusLine: String { decision.reason.statusLine }
 
   var workingCount: Int {
     sessions.filter { $0.state == .working }.count
@@ -479,15 +477,50 @@ final class AppModel {
     sessions(for: integration).contains { $0.state == .working }
   }
 
-  /// The rows that follow the live sessions: agents with nothing running, and
-  /// agents that are running but have never been wired up.
+  /// The rows that follow the live sessions: the agents with nothing running.
   ///
-  /// That second case is the one that used to be missing. Filtering purely on
-  /// "has no sessions" meant an agent Vigil could not hear properly never
-  /// offered a Set up button, precisely when the user most needed one.
+  /// Strictly "no live sessions", so no agent can appear twice in a list whose
+  /// two halves are now the same row. An agent that *is* running and still
+  /// isn't wired up properly used to be forced in here for the sake of its Set
+  /// up button; it is answered by `integrationsNeedingAttention` instead, in
+  /// the section header, where one tap fixes all of them at once.
   var quietIntegrations: [AgentIntegration] {
+    availableIntegrations.filter { sessions(for: $0).isEmpty }
+  }
+
+  /// Agents Vigil is hearing from but cannot hear properly.
+  ///
+  /// Either they were set up by an older version and send less than Vigil now
+  /// listens for, or their hooks have gone from the settings file while a
+  /// session is still live. Both look completely normal from the outside — a
+  /// working row, a sensible elapsed time — while runs quietly fail to hold the
+  /// Mac awake, so something has to say so. Agents with no sessions are absent
+  /// on purpose: they have a row of their own, carrying its own button.
+  var integrationsNeedingAttention: [AgentIntegration] {
     availableIntegrations.filter {
-      sessions(for: $0).isEmpty || setupState(for: $0) == .notSetUp
+      !sessions(for: $0).isEmpty && setupState(for: $0) != .ready
     }
+  }
+
+  /// What the Agents header's trailing slot says, or nil when it says nothing.
+  ///
+  /// Replaces an 83pt banner that explained at length something the user can
+  /// only do one thing about. The words split on which fix it is, because
+  /// "updating" an agent that was never set up would be a lie, and a single
+  /// vaguer word covering both would be worse than either.
+  var attentionSummary: String? {
+    let needy = integrationsNeedingAttention
+    guard let first = needy.first else { return nil }
+    let verb =
+      needy.allSatisfy { setupState(for: $0) == .outOfDate }
+      ? "updating" : "setting up"
+    return needy.count == 1
+      ? "\(first.displayName) needs \(verb)"
+      : "\(needy.count) need \(verb)"
+  }
+
+  /// Bring every agent in `integrationsNeedingAttention` up to date.
+  func fixIntegrationsNeedingAttention() {
+    for integration in integrationsNeedingAttention { installHooks(for: integration) }
   }
 }

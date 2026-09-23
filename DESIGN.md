@@ -71,10 +71,17 @@ The macOS ramp is tighter than iOS's. Use only the bottom half of it:
 | Role | Style | Size / line |
 | --- | --- | --- |
 | Status line | Title 3 | 15 / 20 |
-| Section label | Headline (bold) | 13 / 16 |
+| Section label | Headline (semibold) | 13 / 16 |
 | Session name | Body | 13 / 16 |
 | Path, elapsed time | Callout | 12 / 15 |
-| Footnotes | Footnote | 10 / 13 |
+| Footnotes | Footnote | 11 / 14 |
+
+Semibold, not bold. SwiftUI's `.bold` is weight 700 and the macOS Headline
+style is 600; at 13pt, 700 out-weighs the 15pt status line, and the panel ends
+up with the smallest text as its loudest — the hierarchy exactly inverted.
+
+Footnotes are 11, not 10. Ten-point text is below the size macOS sets any of
+its own interface text at, and it only ever bought captions nobody read.
 
 **Don't** use Large Title, Title 1 or Title 2 (26/22/17). They are sized for
 window headers and will look absurd in a 320pt panel.
@@ -94,14 +101,32 @@ Apple publishes no popover width, no corner radius, and no point grid.
 | Panel width | 340pt | *(chosen — 320 truncated the assertion reasons)* |
 | Corner radius | 12pt, `cornerCurve = .continuous` | *(chosen)* |
 | Grid | 8pt multiples | *(chosen convention)* |
-| Panel padding | 16pt | *(chosen)* |
-| Row height | 32pt | *(chosen)* |
+| Panel padding | 16pt across, 5pt top and bottom | *(chosen)* |
+| Row height | 24pt | *(chosen)* |
+| Value rail | 56pt, trailing | *(chosen)* |
+| Settings window | 520 × 580pt | *(chosen)* |
 | Menu bar height | 24pt | Apple |
 | Status item icon | 16×16pt in a 22pt slot | Apple |
 | Minimum hit target | 44×44pt | Apple |
 
 macOS 26 pushed corner radii dramatically larger; macOS 27 pulled them back.
 Don't chase it — 12pt is a deliberate choice, not a guess at the current trend.
+
+The padding is deliberately not square. The horizontal margin is a *text*
+margin: it sets the column every row aligns to. The vertical one only has to
+keep the first and last rows off the corner curve, and every row carries its own
+height, so matching 16 there reads as a gap somebody forgot to fill.
+
+**One row, one height.** Both lists in the panel — the agents, and the processes
+holding the Mac awake — answer the same question, so they are the same 24pt row
+with the same four columns, stacked at zero spacing so the row *is* the rhythm.
+The last column is a fixed rail rather than whatever each value happens to
+measure, which is what lets the eye run down the elapsed times as a column.
+
+**The settings window is a fixed size, not a fitted one.** A window that sizes
+itself is at the mercy of its longest sentence: the grouped `Form` it replaced
+came to 813pt, which on a 13" MacBook very nearly touches the top and bottom of
+the screen. Naming the size makes it something a reviewer can check.
 
 ---
 
@@ -183,27 +208,48 @@ is the established convention for countdowns and counts.
 ## The panel
 
 ```
-┌────────────────────────────────────────────┐
-│  Awake · 2 agents working      ▓▓▓▓▓▓▓░ 78%│   Title 3 + meter
-│                                            │
-│  Sessions                                  │   Headline
-│  ● claude-code   ~/vigil     working   4m  │   Body + Callout
-│  ● codex         ~/linkzy    working   1m  │
-│  ○ cursor        ~/cosmic    idle     12m  │
-│                                            │
-│  ─────────────────────────────────────     │   separatorColor
-│  Also holding your Mac awake               │   Headline
-│  Music · caffeinate                        │   Callout
-│                                            │
-│  Keep awake                          ( •)  │
-│  Pause for…                                │
-└────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────┐
+│  Keeping your Mac awake         ▓▓▓▓▓▓▓░ 95% left  │  Title 3 + meter
+│  2 agents working                                  │  Callout
+│                                                    │
+│  Agents                         2 need updating ›  │  Headline + action
+│  ●  Claude Code    ~/code/vigil               4m   │  Body + Callout
+│  ◐  Codex          ~/code/linkzy       needs you   │
+│  ○  Gemini CLI                              idle   │
+│                                                    │
+│  Also holding your Mac awake                       │  Headline
+│     Your display is on   powerd           1h 38m   │
+│     Audio is playing     coreaudiod       2h 04m   │
+│                                                    │
+│────────────────────────────────────────────────────│  separatorColor
+│   Keep awake, agents or not                 ( •)   │
+│   Pause 30 minutes                                 │
+│   Pause 1 hour                                     │
+│   Settings…                                  ⌘,    │
+│   Quit Vigil                                 ⌘Q    │
+└────────────────────────────────────────────────────┘
 ```
 
 Amber appears only where state is: the headline while the Mac is held awake,
-the dot beside a working agent, and the battery bar once the floor has cut in.
-The bar stays monochrome otherwise — a green battery bar would be a second
-colour with a second meaning, and the whole design rests on there being one.
+and the dot beside a working agent. Nothing else, the meter included — a green
+or amber battery bar would be a second colour with a second meaning, and the
+whole design rests on there being one.
+
+**The meter lives on the status line**, not in a section of its own. A section
+stated one number three times and printed the battery floor permanently, as
+though it were a fact about the machine rather than a setting. What is genuinely
+stateful — that the charge has fallen below the number you chose — arrives in
+the reason line underneath, in words, on the one day it matters. On a Mac with
+no battery the meter is absent rather than pinned at full.
+
+**Exactly one rule**, above the footer, where the content stops being an answer
+and starts being an action. Once both lists are the same row, the rule that used
+to sit above the ledger marked no change of kind — only a change of subject, and
+the header states that.
+
+**The ledger leaves the dot's gutter empty.** That gap is what keeps the dot
+meaning one thing — *this is an agent Vigil is watching* — rather than drifting
+into *this is a row*.
 
 **The ledger is the point.** That second section — assertions held by *other*
 processes — is what turns this from a switch into an explanation. It is also
@@ -215,9 +261,20 @@ leaves you guessing. One row per process: something holding several assertions
 is still one answer to the question, and repeating it would make a short list
 look alarming.
 
-**The empty state is never blank.** Zero sessions reads "No agents running —
-your Mac can sleep normally", with the manual toggle still present, so there is
-always something to act on.
+**The empty state is never blank**, and it is never a grey sentence where a
+list should be. Each one is a headline in `labelColor`, one sentence, and one
+thing to do:
+
+- **Nothing running.** Keep the idle rows. Four hollow dots are proof Vigil is
+  watching; replacing them with a sentence makes a working app look empty.
+- **No agents installed.** The Agents section *becomes* the empty state, in
+  place, under its own header — what Vigil supports, and a link.
+- **The bridge is down.** The one global notice there is, because every row in
+  the panel is quietly stale and nothing else would say so.
+
+Raw error text never appears in the panel. A socket error is a path, an errno
+and the word "bind"; it goes on `.help()` and into the log, and the panel shows
+a written sentence and the one action that resolves it.
 
 ---
 
