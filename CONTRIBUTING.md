@@ -33,8 +33,10 @@ Run `make format` to fix formatting automatically.
   decision. No AppKit, no IOKit, no I/O. **Everything here must be unit-tested.**
 - `Sources/Vigil` — the app: menu bar, IOKit, the socket bridge. Keep it thin;
   push decisions down into `VigilCore` where they can be tested.
-- `Sources/VigilHelper` — the privileged helper (v2). Treat every change here as
-  security-sensitive.
+- `Sources/VigilHelper` — the privileged XPC helper. Does not exist yet: it is
+  v2, and it needs a Developer ID before `SMAppService` will register it. Until
+  then the scoped sudoers helper in `Scripts/` fills the role. Treat every
+  change to either as security-sensitive.
 
 The split exists so the interesting logic is testable without a running app.
 If you find yourself wanting to test something in `Sources/Vigil`, that is a

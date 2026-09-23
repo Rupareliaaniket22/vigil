@@ -3,12 +3,15 @@
 # Vigil's clamshell helper. Runs as root via a scoped sudoers rule.
 #
 # This is the only part of Vigil that runs with privilege, so it does exactly
-# one thing and validates its input strictly. It takes precisely one argument,
-# "on" or "off", and rejects everything else. There is no path through it that
-# runs a command built from its input.
+# one thing and validates its input strictly. It takes precisely one argument —
+# "on", "off" or "sleep" — and rejects everything else. There is no path through
+# it that runs a command built from its input.
 #
-# Installed by Scripts/install-clamshell.sh to /usr/local/libexec/vigil-clamshell,
-# owned by root, mode 0755.
+# Installed by Scripts/install-clamshell.sh to
+# /Library/PrivilegedHelperTools/vigil-clamshell, owned by root, mode 0755.
+# Not /usr/local: Homebrew chowns that to the user on Intel Macs, and a
+# NOPASSWD rule pointing into a user-writable tree is a root shell. The
+# installer explains the ancestor check that enforces this.
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -17,7 +20,7 @@ readonly PMSET=/usr/bin/pmset
 
 # Exactly one argument. No flags, no pass-through, no shifting.
 if [[ $# -ne 1 ]]; then
-  echo "usage: vigil-clamshell on|off" >&2
+  echo "usage: vigil-clamshell on|off|sleep" >&2
   exit 64
 fi
 

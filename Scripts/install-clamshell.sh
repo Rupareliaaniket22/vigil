@@ -5,9 +5,10 @@
 #   sudo ./Scripts/install-clamshell.sh
 #   sudo ./Scripts/install-clamshell.sh --uninstall
 #
-# What this grants: your user may run one specific program, with one of two
-# literal arguments, as root without a password. That program can only call
-# `pmset -a disablesleep`. It cannot run anything else.
+# What this grants: your user may run one specific program, with one of three
+# literal arguments — on, off, sleep — as root without a password. That program
+# can only call `pmset -a disablesleep`, and for `sleep` also `pmset sleepnow`.
+# It cannot run anything else.
 #
 # Why it needs root at all: keeping a Mac awake with the lid shut means clearing
 # SleepDisabled on IOPMrootDomain, which is privileged. The unprivileged wake
@@ -17,7 +18,7 @@ set -euo pipefail
 
 readonly HELPER_SRC="$(cd "$(dirname "$0")" && pwd)/clamshell-helper.sh"
 # /Library/PrivilegedHelperTools is Apple's designated location for privileged
-# helpers: root:wheel, mode 1755, and every ancestor root-owned. /usr/local is
+# helpers: root:wheel, mode 0755, and every ancestor root-owned. /usr/local is
 # not — Homebrew chowns it to the user on Intel Macs, and renaming a directory
 # needs write permission only on its parent, so an attacker could swap the
 # helper out from under a NOPASSWD rule.

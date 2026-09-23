@@ -31,19 +31,22 @@ Keeping the Mac awake with the lid shut requires clearing `SleepDisabled` on
 `IOPMrootDomain`, which needs root. Two backends exist:
 
 - **sudoers backend** — a root-owned helper at `/Library/PrivilegedHelperTools/vigil-clamshell`,
-  permitted by a scoped `/etc/sudoers.d` rule to run exactly two fixed argument
-  vectors. Specifically:
+  permitted by a scoped `/etc/sudoers.d` rule to run exactly three fixed
+  argument vectors. Specifically:
 
   ```
   <user> ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/vigil-clamshell on, \
-                              /Library/PrivilegedHelperTools/vigil-clamshell off
+                              /Library/PrivilegedHelperTools/vigil-clamshell off, \
+                              /Library/PrivilegedHelperTools/vigil-clamshell sleep
   ```
 
   The grant is deliberately narrow. No wildcard, because `vigil-clamshell *`
   would let any argument through and the helper is only safe because its input
-  is fixed. The helper takes exactly one argument, accepts only `on` or `off`,
-  rejects everything else with exit 64, and never builds a command from its
-  input. It calls `pmset -a disablesleep` and nothing else.
+  is fixed. The helper takes exactly one argument, accepts only `on`, `off` or
+  `sleep`, rejects everything else with exit 64, and never builds a command from
+  its input. It calls `pmset -a disablesleep` — and, for `sleep` alone,
+  `pmset sleepnow` — and nothing else. Why a third verb is needed at all is in
+  "Failure mode we care most about" below.
 
   The installer validates the generated rule with `visudo -cqf` before moving
   it into place — a malformed file in `sudoers.d` can lock you out of `sudo`
@@ -83,7 +86,7 @@ Without a Developer ID this is the honest route; a signed build would use
 
 ### Failure mode we care most about
 
-A Mac left unable to sleep in a bag will drain its battery and run hot. Four
+A Mac left unable to sleep in a bag will drain its battery and run hot. Six
 things guard against it:
 
 - **Actually asking the Mac to sleep** when a guardrail fires. macOS only
@@ -103,7 +106,10 @@ things guard against it:
   manual override beats it.
 - **Session expiry.** An agent that dies without reporting stops counting after
   five minutes, so a crashed agent cannot pin the Mac awake indefinitely.
-- **Restore on quit**, via `applicationWillTerminate`.
+- **Restore on quit**, via `applicationWillTerminate`. It re-reads
+  `SleepDisabled` rather than trusting what Vigil last set, so a flag that
+  drifted — or one a still-running worker had just set without recording it —
+  is cleared on the way out instead of being left behind.
 - **Restore on launch and on signals.** `applicationWillTerminate` does not run
   on a crash, a force-quit or a `kill`, so Vigil also clears the lid-close flag
   every time it starts, and installs `SIGINT`/`SIGTERM`/`SIGHUP` handlers that

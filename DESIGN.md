@@ -26,7 +26,7 @@ This is the whole design. Every rule below follows from it.
 
 | | Light | Dark |
 | --- | --- | --- |
-| **Vigil Amber** | `#A66A00` | `#FFB340` |
+| **Vigil Amber** | `#8A5600` | `#FFB340` |
 
 Amber is the instrumentation convention for *active watch* — aviation and
 control-room panels use it for "something is running, stay aware", distinct from
@@ -34,7 +34,11 @@ red's "something is wrong". It also inverts Night Shift's association: macOS
 turns warm to wind you down, Vigil goes warm to say the desk lamp is still on.
 
 Two values, not one, because perceived contrast differs by appearance. The light
-value is darkened well past the dark-mode value so it reads on a white panel.
+value is darkened well past the dark-mode value so it reads on a white panel:
+`#A66A00` measured 3.76:1 against the panel, below AA, and the `.popover`
+material lets the desktop through — so a mid-tone wallpaper washed it out
+entirely. `#8A5600` measures 5.3:1. Dark mode never had this failure, which is
+why it went unnoticed. High-contrast variants of both are in `DesignSystem.swift`.
 
 **Used only for:** the status glyph when awake, the awake status line, and the
 dot beside a session that is actively working. Nothing else.

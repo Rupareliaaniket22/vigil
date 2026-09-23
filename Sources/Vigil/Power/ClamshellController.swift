@@ -34,9 +34,9 @@ enum ClamshellError: LocalizedError {
 }
 
 /// Free path: a small root-owned shell script, permitted by a narrowly scoped
-/// `/etc/sudoers.d` rule to run exactly two `pmset` argument vectors and nothing
-/// else. No wildcards, no shell interpolation — the classic way these rules turn
-/// into privilege escalation.
+/// `/etc/sudoers.d` rule to run exactly three fixed argument vectors — `on`,
+/// `off` and `sleep` — and nothing else. No wildcards, no shell interpolation —
+/// the classic way these rules turn into privilege escalation.
 struct SudoersClamshellBackend: ClamshellBackend {
   static let helperPath = "/Library/PrivilegedHelperTools/vigil-clamshell"
 
@@ -253,7 +253,16 @@ final class ClamshellController {
   /// Restore normal sleep. Called on quit and from the watchdog — leaving a
   /// laptop unable to sleep in a bag is the worst failure this app can have.
   func restoreOnExit() {
-    guard isDisabled else { return }
+    // Ask the system, not only what we last believed. `apply` reconciles
+    // against `IOPMrootDomain` rather than trusting our own last write, and
+    // quit is the one moment that has to be at least as careful: a worker that
+    // has already spawned `sudo … on` has not written `isDisabled` yet, and
+    // macOS moves this flag underneath us regardless. Gating on the cached
+    // answer alone left the flag set on exactly the path SECURITY.md calls the
+    // primary one, while the signal handler — which never asks, and simply
+    // clears it — got it right. Reading is unprivileged and costs nothing; a
+    // laptop that cannot sleep in a bag costs a battery and a hot chassis.
+    guard isDisabled || SleepDisabledFlag.current() == true else { return }
     // Synchronous and direct, the same path the signal handler takes. Quit is
     // not a moment to hand work to a task and block the main thread waiting on
     // a semaphore — and the process may not outlive the await.
