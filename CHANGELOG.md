@@ -68,6 +68,14 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cannot leave a dead session holding the Mac awake indefinitely
 - Two agents that hand out the same session id are tracked as two sessions
   instead of merging into one attributed to the wrong agent
+- A control that becomes unavailable while the pointer is on it, or while it is
+  held down, now goes dark. It used to keep its hover fill or its press tone —
+  dimmed, but still lit — because neither the pointer nor the mouse button had
+  moved, so nothing told it to redraw, and a control frozen half-pressed reads
+  as broken rather than as unavailable
+- Rows in both lists move as one piece when a session appears or disappears.
+  The dot, the name, the path and the elapsed time each used to settle at their
+  own rate, so for a couple of frames the row re-columned itself in mid-air
 - Clicking the menu bar icon while the panel is open closes it, instead of
   closing and immediately reopening it
 - The panel resizes when its content changes while it is open, rather than

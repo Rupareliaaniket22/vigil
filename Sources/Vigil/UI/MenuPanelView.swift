@@ -530,6 +530,24 @@ struct AwakeRow: View {
     }
     .padding(.horizontal, Theme.Metrics.panelPadding)
     .frame(height: Theme.Metrics.rowHeight)
+    // The row moves as one piece, or not at all.
+    //
+    // DESIGN.md asks for a session appearing or disappearing to be animated,
+    // and `MenuPanelView` does that on `model.sessions`. Without a group, every
+    // leaf in here resolves its own geometry against the ancestor's
+    // *interpolating* frame — and these four columns do not resolve at the same
+    // rate, because two of them carry `layoutPriority` and the rail is
+    // `fixedSize`. So the rail slides to its new x while the path is still the
+    // old width, and for two frames the row re-columns itself in mid-air. That
+    // is precisely what makes a list look replaced rather than updated, which
+    // is the thing the animation was added to prevent.
+    //
+    // Taken from MacControlCenterUI, which puts a geometry group on every one
+    // of its menu items (Menu Abstracts/HighlightingMenuItem.swift and the
+    // rest) for the same reason. macOS 14 is our floor, so it needs no gate;
+    // theirs is spelled `geometryGroupIfSupportedByPlatform()` because they
+    // still support 11.
+    .geometryGroup()
     .modifier(RowAccessibility(spoken: spoken, hasAction: hasAction))
   }
 

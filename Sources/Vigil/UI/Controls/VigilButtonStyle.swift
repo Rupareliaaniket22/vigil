@@ -62,8 +62,15 @@ private struct ButtonBody: View {
       .focusEffectDisabled()
       .vigilFocusRing(isFocused, in: shape)
       // Hover is pointer-only feedback, so it is never the sole carrier of
-      // anything; disabled buttons simply do not light up.
-      .onHover { isHovered = isEnabled && $0 }
+      // anything; disabled buttons simply do not light up, and one that is
+      // disabled while lit goes dark — see `vigilHover`.
+      .vigilHover($isHovered)
+      // The same rule `VigilMenuRow` states: hover snaps. These buttons sit
+      // inside the panel's own `.animation(_:value:)` on the session list, and
+      // a row's button is rebuilt whenever that list changes — so a hover that
+      // lands in the same pass would otherwise fade in on the panel's timing
+      // and read as the app lagging behind the pointer.
+      .animation(nil, value: isHovered)
   }
 
   private var foreground: Color {
