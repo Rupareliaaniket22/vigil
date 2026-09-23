@@ -16,6 +16,12 @@ AGENT="${1:-unknown}"
 EVENT="${2:-unknown}"
 STATE="${3:-idle}"
 
+# Troubleshooting: `touch /tmp/vigil-hook-debug` to trace every invocation.
+# Useful for answering "is my agent actually calling this?", which is otherwise
+# invisible because the hook is deliberately silent.
+[ -f /tmp/vigil-hook-debug ] && \
+  echo "$(date +%H:%M:%S) $AGENT $EVENT $STATE" >> /tmp/vigil-hook.log
+
 SOCKET="$HOME/Library/Application Support/Vigil/bridge.sock"
 [ -S "$SOCKET" ] || exit 0
 

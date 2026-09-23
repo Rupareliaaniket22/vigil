@@ -320,7 +320,7 @@ final class AppModel {
     case .batteryBelowFloor(let percent, let floor):
       "Battery \(percent)% is below your \(floor)% floor"
     case .onBatteryAndPluggedInRequired:
-      "On battery — set to hold only while plugged in"
+      "On battery - set to hold only while plugged in"
     case .lowPowerMode:
       "Low Power Mode is on"
     case .tooHot(let state):
@@ -330,7 +330,7 @@ final class AppModel {
 
   /// One line, for the menu bar tooltip and the power assertion's own name, so
   /// `pmset -g assertions` explains itself too.
-  var statusLine: String { "\(statusHeadline) — \(statusDetail)" }
+  var statusLine: String { "\(statusHeadline) - \(statusDetail)" }
 
   var workingCount: Int {
     sessions.filter { $0.state == .working }.count

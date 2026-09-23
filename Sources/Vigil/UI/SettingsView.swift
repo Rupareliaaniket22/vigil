@@ -47,15 +47,35 @@ struct SettingsView: View {
         Toggle("Keep working with the lid closed", isOn: $model.settings.allowClamshell)
           .disabled(!model.clamshellSupported)
 
-        Text(
-          model.clamshellSupported
-            ? "Your Mac will keep running with the lid shut while an agent is working."
-            : "Needs a one-time setup step that isn't available in this build. "
-              + "Without it, closing the lid still sleeps your Mac."
-        )
-        .font(Theme.Text.footnote)
-        .foregroundStyle(.vigilSecondary)
-        .fixedSize(horizontal: false, vertical: true)
+        if model.clamshellSupported {
+          Text("Your Mac will keep running with the lid shut while an agent is working.")
+            .font(Theme.Text.footnote)
+            .foregroundStyle(.vigilSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        } else {
+          // Say what to do, not that it is unavailable. Keeping a Mac awake
+          // with the lid shut is a privileged change, so it cannot be a switch
+          // — but the user can still make it work in one command.
+          VStack(alignment: .leading, spacing: 4) {
+            Text("Closing the lid still sleeps your Mac. Enabling this needs one command:")
+              .font(Theme.Text.footnote)
+              .foregroundStyle(.vigilSecondary)
+              .fixedSize(horizontal: false, vertical: true)
+
+            Text("sudo ./Scripts/install-clamshell.sh")
+              .font(.system(size: 10, design: .monospaced))
+              .textSelection(.enabled)
+              .foregroundStyle(.vigilPrimary)
+
+            Text(
+              "It lets one specific program change the lid-close setting as root. "
+                + "Read SECURITY.md before you run it."
+            )
+            .font(Theme.Text.footnote)
+            .foregroundStyle(.vigilTertiary)
+            .fixedSize(horizontal: false, vertical: true)
+          }
+        }
       }
 
       Section("Agents") {
