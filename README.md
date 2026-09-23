@@ -1,5 +1,7 @@
 # Vigil
 
+<img src="Resources/icon-source.png" width="128" alt="">
+
 Keeps your Mac awake while AI coding agents are working — and lets it sleep the moment they stop.
 
 Agents like Claude Code and Codex run for minutes at a stretch with no keyboard

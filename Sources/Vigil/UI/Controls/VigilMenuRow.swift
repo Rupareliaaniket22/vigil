@@ -68,7 +68,7 @@ struct VigilMenuRow: View {
     .vigilFocusRing(isFocused, in: shape)
     .onKeyPress(.space) { activate() }
     .onKeyPress(.return) { activate() }
-    .onHover { isHovered = isEnabled && $0 }
+    .vigilHover($isHovered)
     .padding(.horizontal, Theme.Metrics.menuRowInset)
     // Real menus snap. Fading the highlight in reads as the app lagging behind
     // the pointer, and `nil` here also protects the row from an ambient

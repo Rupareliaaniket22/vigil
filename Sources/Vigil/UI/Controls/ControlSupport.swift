@@ -40,6 +40,7 @@ private struct PressAction: ViewModifier {
   @Binding var isPressed: Bool
   let action: () -> Void
 
+  @Environment(\.isEnabled) private var isEnabled
   @State private var size: CGSize = .zero
 
   func body(content: Content) -> some View {
@@ -53,19 +54,66 @@ private struct PressAction: ViewModifier {
       .gesture(
         DragGesture(minimumDistance: 0)
           .onChanged { value in
+            guard isEnabled else { return }
             let inside = bounds.contains(value.location)
             if isPressed != inside { isPressed = inside }
           }
           .onEnded { value in
             isPressed = false
-            if bounds.contains(value.location) { action() }
+            guard isEnabled, bounds.contains(value.location) else { return }
+            action()
           }
       )
+      // A control disabled mid-press stays lit for good. `.disabled()` stops
+      // hit testing, which tears the gesture down without ever calling
+      // `onEnded`, so the release that would have cleared this never arrives
+      // and a half-dimmed control sits there looking pressed. Nothing in the
+      // panel redraws it, because nothing changed.
+      //
+      // Taken from MacControlCenterUI's MenuCircleToggle.swift, which clears
+      // its own `isMouseDown` on this signal. Done here rather than in each
+      // control so a control added later cannot forget it — which is the whole
+      // reason this file exists.
+      .onChange(of: isEnabled) { _, enabled in
+        if !enabled { isPressed = false }
+      }
   }
 
   /// `DragGesture` reports in the local coordinate space, so the control's own
   /// bounds start at the origin.
   private var bounds: CGRect { CGRect(origin: .zero, size: size) }
+}
+
+// MARK: - Hover
+
+/// Pointer feedback that goes out when the control does.
+///
+/// `.onHover` reports *crossings*, not where the pointer is. A control that is
+/// disabled while the pointer is resting on it gets no second callback, so a
+/// plain `isHovered = $0` leaves the flag reading true and the fill lit on a
+/// control that no longer does anything — dimmed to 50%, which makes it look
+/// broken rather than off. Reading `isEnabled` at both ends is what makes the
+/// flag mean "lit" instead of "was last entered".
+///
+/// Taken from MacControlCenterUI's HighlightingMenuItem.swift, which drops its
+/// highlight on the same signal.
+///
+/// The converse — re-enabled while the pointer is already inside — stays unlit
+/// until the pointer moves. That is `.onHover`'s own limit and an `NSButton`
+/// does the same thing; it also resolves itself on the next twitch of the
+/// mouse, which is not true of the stuck case above.
+private struct HoverState: ViewModifier {
+  @Binding var isHovered: Bool
+
+  @Environment(\.isEnabled) private var isEnabled
+
+  func body(content: Content) -> some View {
+    content
+      .onHover { isHovered = isEnabled && $0 }
+      .onChange(of: isEnabled) { _, enabled in
+        if !enabled { isHovered = false }
+      }
+  }
 }
 
 // MARK: - Focus
@@ -103,6 +151,11 @@ extension View {
     perform action: @escaping () -> Void
   ) -> some View {
     modifier(PressAction(isPressed: isPressed, action: action))
+  }
+
+  /// Pointer feedback that cannot outlive the control being usable.
+  func vigilHover(_ isHovered: Binding<Bool>) -> some View {
+    modifier(HoverState(isHovered: isHovered))
   }
 
   /// A drawn focus ring. Pair it with `.focusEffectDisabled()`, or the system
