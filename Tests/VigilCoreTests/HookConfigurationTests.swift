@@ -61,27 +61,37 @@ struct HookConfigurationTests {
     #expect(pre.contains { $0.contains(script) })
   }
 
-  @Test("installing twice does not duplicate anything")
-  func installIsIdempotent() {
+  /// Every agent, not just Claude Code. Pinned to the nested shape, this
+  /// missed Cursor's flat entries entirely — which is how Cursor ended up
+  /// duplicating its hooks on every install.
+  @Test("installing twice does not duplicate anything", arguments: AgentIntegration.all)
+  func installIsIdempotent(integration: AgentIntegration) {
     let once = HookConfiguration.install(
-      into: existingSettings(), scriptPath: script, integration: .claudeCode)
-    let twice = HookConfiguration.install(into: once, scriptPath: script, integration: .claudeCode)
-    for event in AgentIntegration.claudeCode.allEvents {
+      into: existingSettings(), scriptPath: script, integration: integration)
+    let twice = HookConfiguration.install(into: once, scriptPath: script, integration: integration)
+    for event in integration.allEvents {
       let ours = commands(twice, event: event).filter { $0.contains(script) }
-      #expect(ours.count == 1, "duplicated hook for \(event)")
+      #expect(ours.count == 1, "\(integration.displayName) duplicated its hook for \(event)")
     }
   }
 
-  @Test("a moved app replaces its old hook rather than adding beside it")
-  func replacesStalePath() {
+  @Test(
+    "a moved app replaces its old hook rather than adding beside it",
+    arguments: AgentIntegration.all)
+  func replacesStalePath(integration: AgentIntegration) {
     let old = "/Applications/Vigil.app/hooks/vigil-hook.sh"
-    let installed = HookConfiguration.install(into: [:], scriptPath: old, integration: .claudeCode)
+    let installed = HookConfiguration.install(
+      into: [:], scriptPath: old, integration: integration)
     let moved = HookConfiguration.install(
-      into: installed, scriptPath: script, integration: .claudeCode)
+      into: installed, scriptPath: script, integration: integration)
 
-    let pre = commands(moved, event: "PreToolUse")
-    #expect(pre.contains { $0.contains(script) })
-    #expect(!pre.contains { $0.contains(old) })
+    for event in integration.allEvents {
+      let ours = commands(moved, event: event)
+      #expect(ours.contains { $0.contains(script) }, "\(integration.displayName): \(event)")
+      #expect(
+        !ours.contains { $0.contains(old) },
+        "\(integration.displayName) kept its old path for \(event)")
+    }
   }
 
   @Test("uninstall removes ours and keeps theirs")
@@ -133,8 +143,19 @@ struct HookConfigurationTests {
 @Suite("Agent integrations")
 struct AgentIntegrationTests {
 
+  /// The idle third of this used to be unfalsifiable: `state(for:)` answers
+  /// `.idle` for anything it does not recognise, so an empty `idleEvents` —
+  /// or one missing the event that actually ends a turn — passed every
+  /// assertion. That is precisely how Claude Code's `Stop` went missing
+  /// without a test noticing. What is checked now is that the three sets
+  /// really are three sets: named, non-empty where they must be, and disjoint.
   @Test("each agent's events map to the right state", arguments: AgentIntegration.all)
   func eventsMapCorrectly(integration: AgentIntegration) {
+    #expect(!integration.workingEvents.isEmpty, "\(integration.displayName) reports no work")
+    #expect(
+      !integration.idleEvents.isEmpty,
+      "\(integration.displayName) has no event meaning stopped, so sessions only ever expire")
+
     for event in integration.workingEvents {
       #expect(integration.state(for: event) == .working, "\(event) should be working")
     }
@@ -143,7 +164,68 @@ struct AgentIntegrationTests {
     }
     for event in integration.idleEvents {
       #expect(integration.state(for: event) == .idle, "\(event) should be idle")
+      // The real assertion: it is idle because we said so, not because
+      // `state(for:)` fell through to its default.
+      #expect(
+        !integration.workingEvents.contains(event) && !integration.waitingEvents.contains(event),
+        "\(event) is in two categories at once")
     }
+
+    #expect(
+      Set(integration.allEvents).count == integration.allEvents.count,
+      "\(integration.displayName) lists an event twice, so it installs two hooks for it")
+  }
+
+  /// A deliberate golden master.
+  ///
+  /// Every name here is one a host actually emits, established from a real
+  /// config file rather than guessed. Pinning the set means dropping one — the
+  /// way `Stop` was dropped, so every finished Claude Code turn held the Mac
+  /// awake until it went stale — fails here instead of a release later. Adding
+  /// one is also a deliberate edit: it changes what `isInstalled` demands, so
+  /// every existing install becomes out of date and has to be re-run.
+  @Test("the event vocabulary only changes on purpose")
+  func eventVocabularyIsPinned() {
+    let expected: [AgentKind: Set<String>] = [
+      .claudeCode: [
+        "UserPromptSubmit", "PreToolUse", "PostToolUse", "SubagentStart", "SubagentStop",
+        "Notification", "Stop", "SessionEnd",
+      ],
+      .codex: ["UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionStart", "Stop"],
+      .gemini: ["BeforeAgent", "BeforeTool", "AfterTool", "AfterAgent", "SessionEnd"],
+      .cursor: [
+        "beforeSubmitPrompt", "beforeShellExecution", "afterShellExecution", "beforeReadFile",
+        "afterFileEdit", "beforeMCPExecution", "afterMCPExecution", "afterAgentThought",
+        "afterAgentResponse", "stop",
+      ],
+    ]
+    for integration in AgentIntegration.all {
+      #expect(
+        Set(integration.allEvents) == expected[integration.id],
+        "\(integration.displayName)'s event set changed")
+    }
+  }
+
+  /// Not a wish: a record of which hosts can tell us they are blocked on the
+  /// human. Only Claude Code does. For the others a session sitting on a
+  /// permission prompt reads as working until it goes stale, and inventing an
+  /// event name to paper over that would install a hook nothing ever fires.
+  @Test("only the hosts that publish a blocked-on-user event claim one")
+  func blockedOnUserIsHonest() {
+    #expect(AgentIntegration.claudeCode.hasBlockedOnUserEvent)
+    for integration in [AgentIntegration.codex, .gemini, .cursor] {
+      #expect(
+        !integration.hasBlockedOnUserEvent,
+        "\(integration.displayName) now claims a waiting event — check the host really emits it")
+    }
+  }
+
+  @Test("agents are named for people, not by their event vocabulary")
+  func agentsHaveDisplayNames() {
+    #expect(AgentIntegration.displayName(for: .claudeCode) == "Claude Code")
+    #expect(AgentIntegration.displayName(for: .gemini) == "Gemini CLI")
+    // An agent we ship no integration for still gets a name to show.
+    #expect(AgentIntegration.displayName(for: AgentKind(rawValue: "aider")) == "aider")
   }
 
   @Test("an unrecognised event is treated as idle, never as work")

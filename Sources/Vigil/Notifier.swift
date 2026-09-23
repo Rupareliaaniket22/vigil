@@ -24,6 +24,10 @@ enum Notifier {
   /// launch — a permission prompt before the app has demonstrated any value is
   /// the fastest route to being denied.
   private static var hasRequestedAuthorization = false
+  /// Nil until asked. False means the user said no, and kept saying no every
+  /// time we posted anyway — so we stop posting rather than logging a failure
+  /// on every guardrail for the rest of the session.
+  private static var isAuthorized: Bool?
 
   static func notify(_ event: Event) {
     Task { await send(event) }
@@ -35,13 +39,14 @@ enum Notifier {
     if !hasRequestedAuthorization {
       hasRequestedAuthorization = true
       do {
-        _ = try await center.requestAuthorization(options: [.alert, .sound])
+        isAuthorized = try await center.requestAuthorization(options: [.alert, .sound])
       } catch {
+        isAuthorized = false
         log.notice(
           "notification authorization failed: \(error.localizedDescription, privacy: .public)")
-        return
       }
     }
+    guard isAuthorized == true else { return }
 
     let content = UNMutableNotificationContent()
 

@@ -76,6 +76,24 @@ struct MenuPanelView: View {
     if let error = model.setupError {
       Notice(title: "Setup didn't finish", detail: error)
     }
+    // An agent reporting through an older set of hooks looks completely normal
+    // — it has live sessions and a working row — while Vigil misses the events
+    // it has since learned to listen for. Nothing else would say so.
+    if let stale = model.outOfDateIntegrations.first {
+      let several = model.outOfDateIntegrations.count > 1
+      Notice(
+        title: several
+          ? "Some agents' hooks are out of date"
+          : "\(stale.displayName)'s hooks are out of date",
+        detail: several
+          ? "Vigil now listens for events these agents aren't set up to send, "
+            + "so some runs won't keep your Mac awake."
+          : "Vigil now listens for events \(stale.displayName) isn't set up to send, "
+            + "so some runs won't keep your Mac awake.",
+        actionTitle: several ? "Update all" : "Update",
+        action: { for agent in model.outOfDateIntegrations { model.installHooks(for: agent) } }
+      )
+    }
   }
 
   // MARK: - Battery
@@ -123,22 +141,30 @@ struct MenuPanelView: View {
 
       VStack(alignment: .leading, spacing: 2) {
         if model.availableIntegrations.isEmpty {
-          Text("Vigil works with Claude Code, Codex, Gemini CLI and Cursor. None is installed.")
-            .font(Theme.Text.detail)
-            .foregroundStyle(.vigilSecondary)
-            .fixedSize(horizontal: false, vertical: true)
+          Text(
+            "Vigil works with Claude Code, Codex, Gemini CLI and Cursor. "
+              + "None of them is installed here."
+          )
+          .font(Theme.Text.detail)
+          .foregroundStyle(.vigilSecondary)
+          .fixedSize(horizontal: false, vertical: true)
         }
 
         // Live sessions first, with the project each is working in — the thing
         // you actually want to know is *which* run is still going.
-        ForEach(model.sessions) { session in
+        ForEach(shownSessions) { session in
           SessionRow(session: session, now: model.now)
+        }
+        if hiddenSessionCount > 0 {
+          Text("and \(hiddenSessionCount) more")
+            .font(Theme.Text.footnote)
+            .foregroundStyle(.vigilTertiary)
         }
 
         ForEach(model.quietIntegrations) { integration in
           QuietAgentRow(
             name: integration.displayName,
-            isSetUp: model.isInstalled(integration),
+            state: model.setupState(for: integration),
             setUp: { model.installHooks(for: integration) }
           )
         }
@@ -148,17 +174,24 @@ struct MenuPanelView: View {
     }
   }
 
+  /// Capped the way the ledger is. The panel clamps its height to the screen
+  /// and does not scroll, so without a cap the rows past the bottom would be
+  /// silently cut off — worse than saying how many there are. Sorted by most
+  /// recent activity, so the ones shown are the ones worth seeing.
+  private var shownSessions: [AgentSession] { Array(model.sessions.prefix(8)) }
+  private var hiddenSessionCount: Int { max(0, model.sessions.count - 8) }
+
   // MARK: - Ledger
 
   @ViewBuilder
   private var ledger: some View {
     if !shownAssertions.isEmpty {
       Rule().padding(.top, Theme.Metrics.loose)
-      SectionHeader("Also keeping it awake")
+      SectionHeader("Also holding your Mac awake")
 
       VStack(alignment: .leading, spacing: 2) {
         ForEach(shownAssertions) { assertion in
-          AssertionRow(assertion: assertion, now: model.now)
+          AssertionRow(assertion: assertion, now: model.now.wall)
         }
         if hiddenAssertionCount > 0 {
           Text("and \(hiddenAssertionCount) more")
@@ -250,9 +283,13 @@ private struct Rule: View {
   }
 }
 
+/// Something the user needs to know, and where offered, the one action that
+/// resolves it. DESIGN.md: errors say what happened and what to do.
 private struct Notice: View {
   let title: String
   let detail: String
+  var actionTitle: String?
+  var action: (() -> Void)?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 2) {
@@ -263,9 +300,18 @@ private struct Notice: View {
         .font(Theme.Text.detail)
         .foregroundStyle(.vigilSecondary)
         .fixedSize(horizontal: false, vertical: true)
+      if let actionTitle, let action {
+        Button(actionTitle, action: action)
+          .buttonStyle(.borderless)
+          .controlSize(.small)
+          .font(Theme.Text.detail)
+          .padding(.top, 2)
+      }
     }
     .padding(.horizontal, Theme.Metrics.panelPadding)
     .padding(.top, Theme.Metrics.loose)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel(title)
   }
 }
 
@@ -277,22 +323,29 @@ private struct MenuRow: View {
   let title: String
   let action: () -> Void
   @State private var isHovered = false
+  /// Keyboard focus highlights the same way the pointer does. A plain button
+  /// draws no focus ring, so without this a Full Keyboard Access user tabbing
+  /// through the footer could not see where they were.
+  @FocusState private var isFocused: Bool
+
+  private var isHighlighted: Bool { isHovered || isFocused }
 
   var body: some View {
     Button(action: action) {
       HStack {
         Text(title)
           .font(Theme.Text.body)
-          .foregroundStyle(isHovered ? Color.vigilSelectedText : .vigilPrimary)
+          .foregroundStyle(isHighlighted ? Color.vigilSelectedText : .vigilPrimary)
           .lineLimit(1)
         Spacer()
       }
       .padding(.horizontal, Theme.Metrics.panelPadding)
       .frame(height: Theme.Metrics.menuRowHeight)
       .contentShape(Rectangle())
-      .background(isHovered ? Color.vigilSelection : .clear)
+      .background(isHighlighted ? Color.vigilSelection : .clear)
     }
     .buttonStyle(.plain)
+    .focused($isFocused)
     .onHover { isHovered = $0 }
   }
 }
@@ -315,7 +368,9 @@ private struct MenuSubmenuRow<Content: View>: View {
 /// One live session, named by the project it is working in.
 private struct SessionRow: View {
   let session: AgentSession
-  let now: Date
+  let now: Timestamp
+
+  private var name: String { AgentIntegration.displayName(for: session.agent) }
 
   var body: some View {
     HStack(spacing: Theme.Metrics.snug) {
@@ -323,7 +378,7 @@ private struct SessionRow: View {
         .fill(session.state == .working ? Color.vigilAmber : .vigilTertiary)
         .frame(width: 6, height: 6)
 
-      Text(session.agent.rawValue)
+      Text(name)
         .font(Theme.Text.body)
         .foregroundStyle(.vigilPrimary)
         .lineLimit(1)
@@ -347,8 +402,7 @@ private struct SessionRow: View {
     }
     .frame(height: Theme.Metrics.rowHeight)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel(
-      "\(session.agent.rawValue), \(session.state.rawValue), last active \(elapsed)")
+    .accessibilityLabel("\(name), \(session.state.rawValue), last active \(elapsed)")
   }
 
   private func shorten(_ path: String) -> String {
@@ -356,11 +410,20 @@ private struct SessionRow: View {
     return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
   }
 
-  private var elapsed: String {
-    let seconds = Int(now.timeIntervalSince(session.lastSeen))
-    if seconds < 60 { return "now" }
-    let minutes = seconds / 60
-    return minutes < 60 ? "\(minutes)m" : "\(minutes / 60)h"
+  /// Measured monotonically, so a clock adjustment cannot make a session that
+  /// reported a moment ago read as an hour old — or as being in the future.
+  private var elapsed: String { Elapsed.short(session.quietFor(now: now)) }
+}
+
+/// One way of saying how long ago, used by every row that says it.
+enum Elapsed {
+  static func short(_ seconds: TimeInterval) -> String {
+    let minutes = Int(max(0, seconds)) / 60
+    if minutes < 1 { return "now" }
+    if minutes < 60 { return "\(minutes)m" }
+    let hours = minutes / 60
+    let remainder = minutes % 60
+    return remainder == 0 ? "\(hours)h" : "\(hours)h \(remainder)m"
   }
 }
 
@@ -371,7 +434,7 @@ private struct SessionRow: View {
 /// row — the one you most need to act on — down to 1.4:1.
 private struct QuietAgentRow: View {
   let name: String
-  let isSetUp: Bool
+  let state: HookSetupState
   let setUp: () -> Void
 
   var body: some View {
@@ -385,11 +448,17 @@ private struct QuietAgentRow: View {
 
       Spacer(minLength: Theme.Metrics.tight)
 
-      if isSetUp {
+      switch state {
+      case .ready:
         Text("idle")
           .font(Theme.Text.detail)
           .foregroundStyle(.vigilTertiary)
-      } else {
+      case .outOfDate:
+        Button("Update", action: setUp)
+          .buttonStyle(.borderless)
+          .controlSize(.small)
+          .font(Theme.Text.detail)
+      case .notSetUp:
         Button("Set up", action: setUp)
           .buttonStyle(.borderless)
           .controlSize(.small)
@@ -398,13 +467,23 @@ private struct QuietAgentRow: View {
     }
     .frame(height: Theme.Metrics.rowHeight)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(name), \(isSetUp ? "idle" : "not set up")")
+    .accessibilityLabel("\(name), \(spokenState)")
+  }
+
+  private var spokenState: String {
+    switch state {
+    case .ready: "idle"
+    case .outOfDate: "set up by an older version of Vigil"
+    case .notSetUp: "not set up"
+    }
   }
 }
 
 /// One process holding the Mac awake, with how long it has been at it.
 private struct AssertionRow: View {
   let assertion: SystemAssertion
+  /// Wall clock: IOKit reports an assertion's start as a `Date`, so there is no
+  /// monotonic reading of it to compare against.
   let now: Date
 
   var body: some View {
@@ -441,12 +520,7 @@ private struct AssertionRow: View {
 
   private var duration: String {
     guard let seconds = assertion.held(until: now), seconds >= 0 else { return "" }
-    let minutes = Int(seconds) / 60
-    if minutes < 1 { return "now" }
-    if minutes < 60 { return "\(minutes)m" }
-    let hours = minutes / 60
-    let remainder = minutes % 60
-    return remainder == 0 ? "\(hours)h" : "\(hours)h \(remainder)m"
+    return Elapsed.short(seconds)
   }
 
   private var accessibleDescription: String {

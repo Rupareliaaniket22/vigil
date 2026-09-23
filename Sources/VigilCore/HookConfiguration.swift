@@ -8,20 +8,6 @@ import Foundation
 /// don't understand, never install twice, and always be removable.
 public enum HookConfiguration {
 
-  /// The Claude Code lifecycle events Vigil listens for.
-  ///
-  /// `Notification` means the agent is blocked on the user, which maps to
-  /// `waiting` — deliberately not a reason to hold the Mac awake.
-  public static let claudeCodeEvents = [
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PostToolUse",
-    "SubagentStart",
-    "SubagentStop",
-    "Notification",
-    "SessionEnd",
-  ]
-
   /// A hook entry is ours if its command invokes our script.
   ///
   /// Matched on the script's *filename*, not its full path: the app can move
@@ -129,10 +115,59 @@ public enum HookConfiguration {
     scriptPath: String,
     integration: AgentIntegration
   ) -> Bool {
-    guard let hooks = settings["hooks"] as? [String: Any] else { return false }
-    return integration.allEvents.allSatisfy { event in
-      guard let matchers = hooks[event] as? [[String: Any]] else { return false }
-      return matchers.contains { isOurs($0, scriptPath: scriptPath) }
+    missingEvents(in: settings, scriptPath: scriptPath, integration: integration).isEmpty
+  }
+
+  /// The events we expect a hook for and did not find one.
+  ///
+  /// `isInstalled` is the same question asked as a yes or no, but the list is
+  /// what makes a half-installed agent explicable: when Vigil's expected event
+  /// set grows between versions, an older install fails the yes/no check with
+  /// nothing to say about *why*, and the panel quietly under-reports.
+  public static func missingEvents(
+    in settings: [String: Any],
+    scriptPath: String,
+    integration: AgentIntegration
+  ) -> [String] {
+    let hooks = settings["hooks"] as? [String: Any] ?? [:]
+    return integration.allEvents.filter { event in
+      guard let matchers = hooks[event] as? [[String: Any]] else { return true }
+      return !matchers.contains { isOurs($0, scriptPath: scriptPath) }
     }
+  }
+}
+
+/// What an agent's hook setup looks like from the user's side.
+public enum HookSetupState: Sendable, Equatable {
+  /// Wired up for everything we listen for.
+  case ready
+  /// Events are arriving, but not every hook we now expect is registered —
+  /// an install from an older version of Vigil. This is the case that used to
+  /// be invisible: the agent is plainly working, so it never appeared in the
+  /// "needs setting up" list, and the panel silently reported less than the
+  /// truth.
+  case outOfDate
+  /// Never wired up, and not reporting.
+  case notSetUp
+}
+
+extension HookConfiguration {
+  /// Classify an agent from what its settings file actually contains.
+  ///
+  /// The distinction that matters is between "never set up" and "set up by a
+  /// version of Vigil that listened for a different set of events", and it is
+  /// readable straight off the file: some of our hooks present and some absent
+  /// can only be an older install.
+  ///
+  /// Deliberately not a function of whether the agent is currently reporting.
+  /// Tying it to live sessions meant an agent kept its out-of-date badge for
+  /// the whole staleness window after the user had just removed it — pressing
+  /// them to reinstall what they had deliberately taken out.
+  public static func setupState(missingEvents: [String], expectedEvents: [String])
+    -> HookSetupState
+  {
+    if missingEvents.isEmpty { return .ready }
+    if missingEvents.count < expectedEvents.count { return .outOfDate }
+    return .notSetUp
   }
 }

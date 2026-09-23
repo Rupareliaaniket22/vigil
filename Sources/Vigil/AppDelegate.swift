@@ -118,9 +118,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       _ = model.decision
       _ = model.sessions
       _ = model.pausedUntil
+      // Not for the status item — for the panel's height. Every one of these
+      // adds or removes a row while the panel may be open.
+      _ = model.otherAssertions
+      _ = model.installedAgents
+      _ = model.availableIntegrations
+      _ = model.setupError
+      _ = model.bridgeError
     } onChange: {
       Task { @MainActor [weak self] in
         self?.refreshStatusItem()
+        // Content that grew or shrank while the panel is open would otherwise
+        // be clipped: the hosting view is pinned to the window, and the window
+        // was sized once, when it opened.
+        self?.panel?.refitIfVisible()
         self?.observeModel()
       }
     }
@@ -130,19 +141,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   @objc private func togglePanel() {
     if let panel, panel.isVisible {
-      panel.orderOut(nil)
-      model.panelBecameHidden()
+      panel.dismiss()
       return
     }
+    // Clicking the status item while the panel was key already dismissed it,
+    // before this action ran. Reopening here would make the status item unable
+    // to close the panel at all.
+    if let panel, panel.wasJustDismissed { return }
     guard let button = statusItem.button else { return }
-
-    model.reevaluate()
 
     let panel = panel ?? makePanel()
     self.panel = panel
     // The panel dismisses itself on outside clicks, so the model needs telling
     // either way — hence the callback rather than only stopping the clock here.
     panel.onDismiss = { [weak self] in self?.model.panelBecameHidden() }
+    // Re-reads everything the panel shows, including the readings that are
+    // only sampled while it is open.
     model.panelBecameVisible()
     panel.show(relativeTo: button)
   }
@@ -162,18 +176,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   /// Exists because a SwiftUI layout crash only shows up when the view is
   /// actually instantiated, and CI has no one to click the menu bar.
   private func runSmokeTest() {
-    let panel = makePanel()
-    panel.contentView?.layoutSubtreeIfNeeded()
-    let size = panel.measuredContentSize()
-    print("smoke: panel built, fitting size \(Int(size.width))x\(Int(size.height))")
-    guard size.width > 0, size.height > 0 else {
+    let empty = makePanel()
+    empty.contentView?.layoutSubtreeIfNeeded()
+    let emptySize = empty.measuredContentSize()
+    print("smoke: empty panel \(Int(emptySize.width))x\(Int(emptySize.height))")
+    guard emptySize.width > 0, emptySize.height > 0 else {
       print("smoke: FAILED - panel has zero size")
       exit(1)
     }
+
+    // Now with content. Building an empty panel never instantiated a session
+    // row, an agent row or the ledger, so the views most likely to break at a
+    // realistic content length were the ones the smoke test did not cover.
+    model.refreshInstalledAgents()
+    smokeContent()
+
+    let full = makePanel()
+    full.contentView?.layoutSubtreeIfNeeded()
+    let size = full.measuredContentSize()
+    print("smoke: populated panel \(Int(size.width))x\(Int(size.height))")
+    guard size.height > emptySize.height else {
+      print("smoke: FAILED - rows did not lay out")
+      exit(1)
+    }
+    // Width is the design contract; a row that refuses to compress would push
+    // it out rather than truncate, and nothing else would notice.
+    guard size.width == Theme.Metrics.panelWidth else {
+      print("smoke: FAILED - panel is \(size.width)pt wide, not \(Theme.Metrics.panelWidth)")
+      exit(1)
+    }
+
     smokeTestHookInstall()
 
     print("smoke: ok")
     exit(0)
+  }
+
+  /// Feed the panel the content it has to survive: long paths, every session
+  /// state, an agent we ship no integration for, and a prompt that is nothing
+  /// but wide characters.
+  ///
+  /// View state only — see `loadSampleSessions`. A smoke test that changed the
+  /// power state of the machine running it would be worse than no smoke test.
+  private func smokeContent() {
+    let deep = FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent("code/a-rather-long-project-name/packages/server").path
+    let events = [
+      AgentEvent(
+        agent: .claudeCode, sessionID: "smoke-1", state: .working, event: "PreToolUse",
+        cwd: deep, title: String(repeating: "ええ", count: 60)),
+      AgentEvent(
+        agent: .codex, sessionID: "smoke-1", state: .waiting, event: "PreToolUse", cwd: "/"),
+      AgentEvent(agent: .cursor, sessionID: "smoke-3", state: .idle, event: "stop", cwd: deep),
+      AgentEvent(
+        agent: AgentKind(rawValue: "some-new-tool"), sessionID: "smoke-4", state: .working),
+    ]
+    model.loadSampleSessions(events)
   }
 
   /// Run a real install and uninstall against a temporary directory.
@@ -255,7 +313,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   private func openSettings() {
-    panel?.orderOut(nil)
+    panel?.dismiss()
     let controller = settingsWindow ?? SettingsWindowController(model: model)
     settingsWindow = controller
     controller.present()

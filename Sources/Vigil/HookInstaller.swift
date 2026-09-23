@@ -29,6 +29,8 @@ struct HookInstaller {
   enum InstallError: LocalizedError {
     case scriptMissingFromBundle
     case settingsUnreadable(String)
+    case settingsHasComments(String)
+    case settingsNotWritable(String)
 
     var errorDescription: String? {
       switch self {
@@ -36,6 +38,13 @@ struct HookInstaller {
         "Vigil's hook script is missing from the app bundle. Reinstall Vigil."
       case .settingsUnreadable(let path):
         "Couldn't read \(path). Vigil left it untouched — check it is valid JSON."
+      case .settingsHasComments(let path):
+        // Naming the real reason matters: the host accepts comments, so the
+        // user's editor shows nothing wrong and "invalid JSON" reads as a lie.
+        "\(path) has comments in it, which Vigil can't edit without deleting "
+          + "them. Remove the comments and try again, or add the hook by hand."
+      case .settingsNotWritable(let path):
+        "\(path) is read-only. Vigil left it alone — make it writable and try again."
       }
     }
   }
@@ -50,17 +59,17 @@ struct HookInstaller {
       .path
   }
 
-  static var defaultSettingsPath: String {
-    FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent(".claude/settings.json")
-      .path
-  }
+  var isInstalled: Bool { missingEvents.isEmpty }
 
-  var isInstalled: Bool {
+  /// Which events we expect a hook for and did not find one.
+  ///
+  /// Empty means installed. A missing script counts as everything missing,
+  /// because a hook entry pointing at a file that is not there fires nothing.
+  var missingEvents: [String] {
     guard FileManager.default.isExecutableFile(atPath: scriptPath),
       let settings = try? Self.readSettings(at: settingsPath)
-    else { return false }
-    return HookConfiguration.isInstalled(
+    else { return integration.allEvents }
+    return HookConfiguration.missingEvents(
       in: settings, scriptPath: scriptPath, integration: integration)
   }
 
@@ -85,15 +94,29 @@ struct HookInstaller {
     // One script serves every agent, so deleting it here would break the hooks
     // of every *other* agent still installed. Remove it only once nothing
     // points at it any more.
-    if !Self.anyIntegrationStillInstalled() {
+    if !Self.anyIntegrationReferencesScript() {
       try? FileManager.default.removeItem(atPath: scriptPath)
     }
     Self.log.info("hooks removed for \(integration.displayName, privacy: .public)")
   }
 
-  /// Whether any agent still has our hook registered.
-  static func anyIntegrationStillInstalled() -> Bool {
-    AgentIntegration.all.contains { live(for: $0).isInstalled }
+  /// Whether any agent's settings still point at our script.
+  ///
+  /// Deliberately a weaker question than `isInstalled`, and the difference is
+  /// load-bearing. Widening Vigil's expected event set makes every install
+  /// written by an earlier version read as incomplete; asking "is anyone fully
+  /// installed" would then answer no, and uninstalling one agent would delete
+  /// the shared script out from under three agents that were working fine.
+  static func anyIntegrationReferencesScript() -> Bool {
+    AgentIntegration.all.contains { live(for: $0).referencesScript }
+  }
+
+  /// Whether this agent's settings mention our script at all.
+  var referencesScript: Bool {
+    guard let settings = try? Self.readSettings(at: settingsPath) else { return false }
+    let missing = HookConfiguration.missingEvents(
+      in: settings, scriptPath: scriptPath, integration: integration)
+    return missing.count < integration.allEvents.count
   }
 
   // MARK: - Files
@@ -126,7 +149,11 @@ struct HookInstaller {
     guard let object = try? JSONSerialization.jsonObject(with: data),
       let settings = object as? [String: Any]
     else {
-      // Refuse rather than overwrite something we can't understand.
+      // Refuse rather than overwrite something we can't understand — but say
+      // which kind of "can't understand" it is.
+      if SettingsFile.containsComments(String(decoding: data, as: UTF8.self)) {
+        throw InstallError.settingsHasComments(path)
+      }
       throw InstallError.settingsUnreadable(path)
     }
     return settings
@@ -142,25 +169,57 @@ struct HookInstaller {
       withIntermediateDirectories: true
     )
 
-    // Keep the user's *original* file, once. Overwriting the backup on every
-    // write meant that after install-then-uninstall the "backup" was our own
-    // post-install output rather than what they started with. A backup that
-    // cannot be written aborts the edit rather than proceeding unprotected.
-    let backup = url.path + ".vigil-backup"
-    if FileManager.default.fileExists(atPath: url.path),
-      !FileManager.default.fileExists(atPath: backup)
-    {
-      try FileManager.default.copyItem(atPath: url.path, toPath: backup)
+    let exists = FileManager.default.fileExists(atPath: url.path)
+
+    // An atomic write renames a new file over the old one, so it succeeds on a
+    // file the user deliberately made read-only — the mode belongs to the file
+    // being replaced, not to the directory doing the replacing. Refuse instead:
+    // chmod 444 on a settings file is someone saying "don't touch this".
+    if exists, !FileManager.default.isWritableFile(atPath: url.path) {
+      throw InstallError.settingsNotWritable(url.path)
     }
 
     // withoutEscapingSlashes matters: Foundation writes "\/Users\/..." by
     // default, which is valid JSON but makes a hand-edited settings file uglier
     // than we found it and produces noisy diffs for anyone versioning dotfiles.
+    //
+    // sortedKeys is a lesser evil rather than a good one. Serializing a
+    // dictionary reorders keys either way, so the choice is between a stable
+    // order and a different arbitrary one on every write; stable at least means
+    // a second write produces no diff.
     let data = try JSONSerialization.data(
       withJSONObject: settings,
       options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
     )
+
+    // Nothing to do. Worth checking because Vigil reformats what it writes, and
+    // reformatting someone's version-controlled dotfiles to change nothing is a
+    // diff they have to read and then discard.
+    if exists, let current = try? Data(contentsOf: url), current == data { return }
+
+    // Keep the user's *original* file, once. Overwriting the backup on every
+    // write meant that after install-then-uninstall the "backup" was our own
+    // post-install output rather than what they started with. A backup that
+    // cannot be written aborts the edit rather than proceeding unprotected.
+    let backup = url.path + ".vigil-backup"
+    if exists, !FileManager.default.fileExists(atPath: backup) {
+      try FileManager.default.copyItem(atPath: url.path, toPath: backup)
+    }
+
+    // Carry the original mode across. The atomic rename installs a brand-new
+    // file, so a settings file the user had at 0600 would come back 0644 —
+    // quietly widening the permissions on a file that can hold API keys.
+    let mode =
+      exists
+      ? (try? FileManager.default.attributesOfItem(atPath: url.path))?[.posixPermissions]
+        as? NSNumber
+      : nil
+
     // Atomic, so an interrupted write can't truncate their settings.
     try data.write(to: url, options: .atomic)
+
+    if let mode {
+      try? FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: url.path)
+    }
   }
 }

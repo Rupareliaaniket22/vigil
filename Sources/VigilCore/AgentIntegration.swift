@@ -26,6 +26,12 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
   public let workingEvents: [String]
   /// Events that mean it is blocked on the user. Deliberately not a reason to
   /// hold the Mac awake — someone could be away for hours.
+  ///
+  /// Empty for every host but Claude Code, and not an oversight: Codex, Gemini
+  /// CLI and Cursor publish no lifecycle event for "asking the human". Until
+  /// one of them does, a session of theirs sitting on a permission prompt reads
+  /// as `working` until it goes stale. Guessing at an event name would be
+  /// worse — see `hasBlockedOnUserEvent`.
   public let waitingEvents: [String]
   /// Events that mean it has stopped.
   public let idleEvents: [String]
@@ -46,6 +52,14 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
     if waitingEvents.contains(event) { return .waiting }
     return .idle
   }
+
+  /// Whether this host tells us when it is blocked on the human.
+  ///
+  /// False means a session of this agent sitting on a permission prompt counts
+  /// as `working` until it goes stale — the hold outlives the work by up to the
+  /// staleness window. Recorded rather than hidden so the gap is visible in one
+  /// place instead of reading as an empty array someone forgot to fill in.
+  public var hasBlockedOnUserEvent: Bool { !waitingEvents.isEmpty }
 
   public init(
     id: AgentKind,
@@ -80,7 +94,10 @@ extension AgentIntegration {
       "UserPromptSubmit", "PreToolUse", "PostToolUse", "SubagentStart", "SubagentStop",
     ],
     waitingEvents: ["Notification"],
-    idleEvents: ["SessionEnd"]
+    // `Stop` ends a turn; `SessionEnd` only fires when the whole session goes
+    // away. Without `Stop`, every finished turn held the Mac awake until the
+    // session went stale.
+    idleEvents: ["Stop", "SessionEnd"]
   )
 
   public static let codex = AgentIntegration(
@@ -99,7 +116,10 @@ extension AgentIntegration {
     settingsPath: ".gemini/settings.json",
     scriptName: "vigil-gemini-hook",
     workingEvents: ["BeforeAgent", "BeforeTool", "AfterTool"],
-    idleEvents: ["AfterAgent"],
+    // A session that is torn down without a closing `AfterAgent` — the terminal
+    // closed, the host crashed — would otherwise stay `working` until it went
+    // stale.
+    idleEvents: ["AfterAgent", "SessionEnd"],
     // Gemini's own config carries a per-hook timeout; match its convention.
     timeoutMilliseconds: 10_000
   )
@@ -121,4 +141,15 @@ extension AgentIntegration {
 
   /// Every integration Vigil ships, in the order the settings window lists them.
   public static let all: [AgentIntegration] = [.claudeCode, .codex, .gemini, .cursor]
+
+  /// What to call an agent in the interface.
+  ///
+  /// Events carry a raw kind, so a session can name an agent we ship no
+  /// integration for. Falling back to the raw value keeps such a session
+  /// visible — "claude-code" is still a better answer than nothing — but the
+  /// four we know about read as their proper names, including to VoiceOver,
+  /// which otherwise spells the hyphen out.
+  public static func displayName(for kind: AgentKind) -> String {
+    all.first { $0.id == kind }?.displayName ?? kind.rawValue
+  }
 }

@@ -74,31 +74,30 @@ struct SettingsView: View {
 
       Section("Agents") {
         ForEach(model.availableIntegrations) { integration in
-          HStack {
-            Text(integration.displayName)
-              .font(Theme.Text.body)
-            Spacer()
-            if model.isInstalled(integration) {
-              Text("Reporting")
-                .font(Theme.Text.detail)
-                .foregroundStyle(.vigilSecondary)
-              Button("Remove") { model.uninstallHooks(for: integration) }
-            } else {
-              Button("Set up") { model.installHooks(for: integration) }
-            }
-          }
+          AgentSettingsRow(
+            integration: integration,
+            state: model.setupState(for: integration),
+            setUp: { model.installHooks(for: integration) },
+            remove: { model.uninstallHooks(for: integration) }
+          )
         }
 
         if model.availableIntegrations.isEmpty {
-          Text("Vigil works with Claude Code, Codex, Gemini CLI and Cursor. None is installed.")
-            .fixedSize(horizontal: false, vertical: true)
-            .font(Theme.Text.detail)
-            .foregroundStyle(.vigilSecondary)
+          Text(
+            "Vigil works with Claude Code, Codex, Gemini CLI and Cursor. "
+              + "None of them is installed here."
+          )
+          .fixedSize(horizontal: false, vertical: true)
+          .font(Theme.Text.detail)
+          .foregroundStyle(.vigilSecondary)
         }
         if let error = model.setupError {
+          // Not amber. Amber means one thing in this app — that something is
+          // holding the Mac awake — and spending it on an error message is
+          // exactly the second meaning DESIGN.md rules out.
           Text(error)
             .font(Theme.Text.footnote)
-            .foregroundStyle(.vigilAmber)
+            .foregroundStyle(.vigilPrimary)
             .fixedSize(horizontal: false, vertical: true)
         }
       }
@@ -121,5 +120,50 @@ struct SettingsView: View {
     .formStyle(.grouped)
     .frame(width: 420)
     .fixedSize(horizontal: false, vertical: true)
+  }
+}
+
+/// One agent, and the one thing to do about it.
+///
+/// Three states, not two: an agent can be reporting through hooks from an older
+/// version of Vigil, which reads as working while quietly sending less than we
+/// now listen for. "Set up" would be wrong for it and "Reporting" would be a
+/// lie, so it gets its own wording and its own action.
+private struct AgentSettingsRow: View {
+  let integration: AgentIntegration
+  let state: HookSetupState
+  let setUp: () -> Void
+  let remove: () -> Void
+
+  var body: some View {
+    HStack {
+      Text(integration.displayName)
+        .font(Theme.Text.body)
+      Spacer()
+      switch state {
+      case .ready:
+        Text("Reporting")
+          .font(Theme.Text.detail)
+          .foregroundStyle(.vigilSecondary)
+        Button("Remove", action: remove)
+      case .outOfDate:
+        Text("Out of date")
+          .font(Theme.Text.detail)
+          .foregroundStyle(.vigilSecondary)
+        Button("Update", action: setUp)
+      case .notSetUp:
+        Button("Set up", action: setUp)
+      }
+    }
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("\(integration.displayName), \(description)")
+  }
+
+  private var description: String {
+    switch state {
+    case .ready: "reporting"
+    case .outOfDate: "set up by an older version of Vigil"
+    case .notSetUp: "not set up"
+    }
   }
 }

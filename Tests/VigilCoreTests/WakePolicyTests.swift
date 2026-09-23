@@ -6,10 +6,9 @@ import Testing
 private func session(_ state: AgentState, id: String = "s1", ago: TimeInterval = 0) -> AgentSession
 {
   var store = SessionStore()
-  let now = Date()
   return store.apply(
     AgentEvent(agent: .claudeCode, sessionID: id, state: state),
-    now: now.addingTimeInterval(-ago)
+    now: Timestamp.now.advanced(by: -ago)
   )
 }
 

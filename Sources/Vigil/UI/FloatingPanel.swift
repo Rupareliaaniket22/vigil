@@ -13,6 +13,24 @@ final class FloatingPanel: NSPanel {
   /// that `resignKey` handles without anyone asking us to close.
   var onDismiss: (() -> Void)?
 
+  /// When the panel last took itself off screen.
+  ///
+  /// Clicking the status item while the panel is key resigns key *first* — the
+  /// status bar's own window becomes key on mouse-down — so by the time the
+  /// button's action runs, the panel has already dismissed itself and a check
+  /// on `isVisible` reads "closed, so open it". The panel flickered shut and
+  /// straight back open, and the status item could not be used to close it.
+  private var dismissedAt: ContinuousClock.Instant?
+  /// Guards against `orderOut` re-entering through `resignKey`.
+  private var isDismissing = false
+
+  /// Whether this panel closed itself moments ago — long enough ago to be a
+  /// separate gesture is 250ms, which is also the double-click interval.
+  var wasJustDismissed: Bool {
+    guard let dismissedAt else { return false }
+    return dismissedAt.duration(to: .now) < .milliseconds(250)
+  }
+
   /// Kept so the panel can re-anchor itself when its content resizes.
   private weak var anchorButton: NSStatusBarButton?
   private weak var hosting: NSView?
@@ -82,15 +100,25 @@ final class FloatingPanel: NSPanel {
   /// Escape dismisses, the way a popover does. Without this the panel is a
   /// popover-shaped thing with no keyboard way out.
   override func cancelOperation(_: Any?) {
-    orderOut(nil)
-    onDismiss?()
+    dismiss()
   }
 
   /// Dismiss when the user clicks elsewhere, the way a popover does.
   override func resignKey() {
     super.resignKey()
     guard NSApp.modalWindow == nil else { return }
+    dismiss()
+  }
+
+  /// The one way this panel goes away, so nothing can close it without the
+  /// model hearing about it — an `orderOut` that skipped `onDismiss` left the
+  /// display clock ticking against a panel nobody could see.
+  func dismiss() {
+    guard isVisible, !isDismissing else { return }
+    isDismissing = true
+    defer { isDismissing = false }
     orderOut(nil)
+    dismissedAt = .now
     onDismiss?()
   }
 
@@ -118,6 +146,7 @@ final class FloatingPanel: NSPanel {
     }
 
     setFrameOrigin(origin)
+    dismissedAt = nil
     makeKeyAndOrderFront(nil)
   }
 
@@ -146,7 +175,9 @@ final class FloatingPanel: NSPanel {
 
   private func resizeToFit(near buttonWindow: NSWindow) {
     let fitting = measuredContentSize().height
-    // Never taller than the screen it sits on; the content scrolls the rest.
+    // Never taller than the screen it sits on. Nothing scrolls, so every
+    // section that can grow without bound caps itself and says how many it is
+    // not showing; this clamp is the backstop, not the mechanism.
     let ceiling = (buttonWindow.screen?.visibleFrame.height ?? 800) - 24
     setContentSize(NSSize(width: Theme.Metrics.panelWidth, height: min(fitting, ceiling)))
   }

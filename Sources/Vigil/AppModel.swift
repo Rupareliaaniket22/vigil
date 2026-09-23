@@ -26,12 +26,20 @@ final class AppModel {
 
   /// The clock the panel renders elapsed times against.
   ///
-  /// Only ticks while the panel is open. Reading `Date()` inside a row would
+  /// Only ticks while the panel is open. Reading the clock inside a row would
   /// freeze the moment SwiftUI stopped re-rendering, and re-rendering on a
   /// timer regardless of visibility is work a power utility has no business
   /// doing when nobody is looking.
-  private(set) var now = Date()
+  private(set) var now = Timestamp.now
   private var clock: Timer?
+
+  /// Whether the panel is on screen.
+  ///
+  /// Gates the readings only the panel consumes. Sampling every assertion on
+  /// the machine every five seconds with nothing displaying them contradicts
+  /// the reason the display clock beside it is visibility-gated in the first
+  /// place.
+  private(set) var isPanelVisible = false
 
   var settings = SettingsStore.load() {
     didSet {
@@ -88,21 +96,35 @@ final class AppModel {
   /// can only be driven by the manual toggle.
   private(set) var installedAgents: Set<AgentKind> = []
 
-  var hooksInstalled: Bool { !installedAgents.isEmpty }
+  /// Only the agents actually present on this machine are worth offering —
+  /// a settings row for a tool someone has never installed is noise.
+  ///
+  /// Stored, not computed: it answers from the filesystem, so a computed
+  /// version ran four `stat` calls every time SwiftUI evaluated a body, and
+  /// `@Observable` could not see it change anyway.
+  private(set) var availableIntegrations: [AgentIntegration] = []
+
+  /// What each agent's settings file says about our hooks. Read from disk by
+  /// `refreshInstalledAgents`, not on every render.
+  private(set) var setupStates: [AgentKind: HookSetupState] = [:]
 
   func isInstalled(_ integration: AgentIntegration) -> Bool {
     installedAgents.contains(integration.id)
   }
 
-  /// Only the agents actually present on this machine are worth offering —
-  /// a settings row for a tool someone has never installed is noise.
-  var availableIntegrations: [AgentIntegration] {
-    AgentIntegration.all.filter { integration in
-      let home = FileManager.default.homeDirectoryForCurrentUser
-      let dir = home.appendingPathComponent(integration.settingsPath).deletingLastPathComponent()
-      return FileManager.default.fileExists(atPath: dir.path)
-        || installedAgents.contains(integration.id)
-    }
+  /// Ready, out of date, or never set up.
+  func setupState(for integration: AgentIntegration) -> HookSetupState {
+    setupStates[integration.id] ?? .notSetUp
+  }
+
+  /// Agents that are reporting through hooks older than the set Vigil now
+  /// listens for.
+  ///
+  /// These used to be invisible. `isInstalled` correctly said no, but an agent
+  /// with live sessions never reached the "needs setting up" list, so nothing
+  /// told the user and the panel under-reported without ever looking wrong.
+  var outOfDateIntegrations: [AgentIntegration] {
+    AgentIntegration.all.filter { setupState(for: $0) == .outOfDate }
   }
   /// Surfaced in the panel rather than logged, so a failed setup is visible.
   private(set) var setupError: String?
@@ -143,12 +165,17 @@ final class AppModel {
         }
       }
     )
-    bridge?.start()
     refreshInstalledAgents()
+    bridge?.start()
 
-    tick = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+    let tick = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
       Task { @MainActor in self?.reevaluate() }
     }
+    // Nothing here needs to land on the second. Tolerance lets macOS fire this
+    // alongside a wakeup it was making anyway, which is the whole argument a
+    // power utility has to make about its own cost.
+    tick.tolerance = 1
+    self.tick = tick
     reevaluate()
   }
 
@@ -164,14 +191,28 @@ final class AppModel {
 
   /// Start and stop the display clock with the panel, not with the app.
   func panelBecameVisible() {
-    now = Date()
+    isPanelVisible = true
+    now = .now
+    // Hooks can be changed on disk by an uninstall, an upgrade, or another
+    // tool. Re-reading them when the panel opens is the cheapest cadence that
+    // still means what the panel shows is true when someone looks at it.
+    refreshInstalledAgents()
     clock?.invalidate()
-    clock = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-      Task { @MainActor in self?.now = Date() }
+    let clock = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+      Task { @MainActor in self?.now = .now }
     }
+    // Elapsed times are rendered to the minute, so letting macOS coalesce this
+    // with other work costs nothing and saves a wakeup.
+    clock.tolerance = 5
+    self.clock = clock
+
+    // Last, so the readings the panel is about to show — the assertion ledger
+    // above all — are taken with the panel already counted as visible.
+    reevaluate()
   }
 
   func panelBecameHidden() {
+    isPanelVisible = false
     clock?.invalidate()
     clock = nil
   }
@@ -179,6 +220,19 @@ final class AppModel {
   func handle(_ event: AgentEvent) {
     store.apply(event)
     reevaluate()
+  }
+
+  /// Put sample sessions in front of the panel, and nothing else.
+  ///
+  /// The headless layout check runs as the real bundled app, so it reads the
+  /// real settings and can reach the real helper. Routing its sample sessions
+  /// through `handle` would have taken a power assertion and, for anyone with
+  /// lid-closed support turned on, cleared `SleepDisabled` and then exited
+  /// without restoring it — leaving the machine that built Vigil unable to
+  /// sleep with the lid shut. Populate the view state; touch nothing.
+  func loadSampleSessions(_ events: [AgentEvent]) {
+    for event in events { store.apply(event) }
+    sessions = store.all()
   }
 
   func pause(for duration: TimeInterval) {
@@ -234,39 +288,51 @@ final class AppModel {
   }
 
   func refreshInstalledAgents() {
-    installedAgents = Set(
-      AgentIntegration.all
-        .filter { HookInstaller.live(for: $0).isInstalled }
-        .map(\.id)
-    )
+    var states: [AgentKind: HookSetupState] = [:]
+    for integration in AgentIntegration.all {
+      states[integration.id] = HookConfiguration.setupState(
+        missingEvents: HookInstaller.live(for: integration).missingEvents,
+        expectedEvents: integration.allEvents
+      )
+    }
+    if states != setupStates { setupStates = states }
+
+    let installed = Set(states.filter { $0.value == .ready }.map(\.key))
+    if installed != installedAgents { installedAgents = installed }
+
+    let home = FileManager.default.homeDirectoryForCurrentUser
+    let available = AgentIntegration.all.filter { integration in
+      if states[integration.id] != .notSetUp { return true }
+      let dir = home.appendingPathComponent(integration.settingsPath).deletingLastPathComponent()
+      return FileManager.default.fileExists(atPath: dir.path)
+    }
+    if available.map(\.id) != availableIntegrations.map(\.id) {
+      availableIntegrations = available
+    }
   }
 
-  /// Wire an agent up to report to us.
+  /// Wire an agent up to report to us, or bring an older install up to date.
   func installHooks(for integration: AgentIntegration) {
     do {
       try HookInstaller.live(for: integration).install()
-      installedAgents.insert(integration.id)
       setupError = nil
     } catch {
       setupError = error.localizedDescription
     }
+    // Re-read rather than assume. An install that threw part-way, or one whose
+    // script did not end up executable, must not leave the panel claiming the
+    // agent is reporting when it is not.
+    refreshInstalledAgents()
   }
 
   func uninstallHooks(for integration: AgentIntegration) {
     do {
       try HookInstaller.live(for: integration).uninstall()
-      installedAgents.remove(integration.id)
       setupError = nil
     } catch {
       setupError = error.localizedDescription
     }
-  }
-
-  /// Set up every agent present on this machine, in one action.
-  func installAllAvailableHooks() {
-    for integration in availableIntegrations where !isInstalled(integration) {
-      installHooks(for: integration)
-    }
+    refreshInstalledAgents()
   }
 
   // MARK: - The loop
@@ -319,10 +385,16 @@ final class AppModel {
 
     // Everything holding the Mac awake except us — ours is already the
     // headline, and listing it twice would read as a bug.
-    let others =
-      PowerAssertion.systemAssertions()
-      .filter { $0.preventsSystemSleep && $0.pid != ProcessInfo.processInfo.processIdentifier }
-    if others != otherAssertions { otherAssertions = others }
+    //
+    // Only while the panel is open. `IOPMCopyAssertionsByProcess` copies every
+    // assertion on the machine out of the kernel, and the ledger is the only
+    // thing that reads the result.
+    if isPanelVisible {
+      let others =
+        PowerAssertion.systemAssertions()
+        .filter { $0.preventsSystemSleep && $0.pid != ProcessInfo.processInfo.processIdentifier }
+      if others != otherAssertions { otherAssertions = others }
+    }
 
     notifyIfWorthIt()
   }
@@ -373,7 +445,7 @@ final class AppModel {
     case .batteryBelowFloor(let percent, let floor):
       "Battery \(percent)% is below your \(floor)% floor"
     case .onBatteryAndPluggedInRequired:
-      "On battery - set to hold only while plugged in"
+      "On battery — set to hold only on mains power"
     case .lowPowerMode:
       "Low Power Mode is on"
     case .tooHot(let state):
@@ -383,7 +455,7 @@ final class AppModel {
 
   /// One line, for the menu bar tooltip and the power assertion's own name, so
   /// `pmset -g assertions` explains itself too.
-  var statusLine: String { "\(statusHeadline) - \(statusDetail)" }
+  var statusLine: String { "\(statusHeadline) — \(statusDetail)" }
 
   var workingCount: Int {
     sessions.filter { $0.state == .working }.count
@@ -407,10 +479,15 @@ final class AppModel {
     sessions(for: integration).contains { $0.state == .working }
   }
 
-  /// Agents with nothing live: either idle, or never wired up. Listed under
-  /// the active sessions so the panel shows what is running first and what
-  /// exists second.
+  /// The rows that follow the live sessions: agents with nothing running, and
+  /// agents that are running but have never been wired up.
+  ///
+  /// That second case is the one that used to be missing. Filtering purely on
+  /// "has no sessions" meant an agent Vigil could not hear properly never
+  /// offered a Set up button, precisely when the user most needed one.
   var quietIntegrations: [AgentIntegration] {
-    availableIntegrations.filter { sessions(for: $0).isEmpty }
+    availableIntegrations.filter {
+      sessions(for: $0).isEmpty || setupState(for: $0) == .notSetUp
+    }
   }
 }

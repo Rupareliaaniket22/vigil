@@ -34,13 +34,13 @@ struct SessionStoreTests {
   @Test("sessions that stop reporting are pruned")
   func prunesStaleSessions() {
     var store = SessionStore(staleAfter: 60)
-    let t0 = Date()
+    let t0 = Timestamp.now
     store.apply(AgentEvent(agent: .claudeCode, sessionID: "a", state: .working), now: t0)
 
-    #expect(store.all(now: t0.addingTimeInterval(30)).count == 1)
-    #expect(store.all(now: t0.addingTimeInterval(90)).isEmpty)
+    #expect(store.all(now: t0.advanced(by: 30)).count == 1)
+    #expect(store.all(now: t0.advanced(by: 90)).isEmpty)
 
-    let dead = store.prune(now: t0.addingTimeInterval(90))
+    let dead = store.prune(now: t0.advanced(by: 90))
     #expect(dead.count == 1)
     #expect(store.isEmpty)
   }
@@ -48,15 +48,15 @@ struct SessionStoreTests {
   @Test("a crashed agent stuck in .working cannot hold the Mac awake forever")
   func stuckWorkingSessionExpires() {
     var store = SessionStore(staleAfter: 300)
-    let t0 = Date()
+    let t0 = Timestamp.now
     store.apply(AgentEvent(agent: .claudeCode, sessionID: "ghost", state: .working), now: t0)
 
-    let later = t0.addingTimeInterval(301)
+    let later = t0.advanced(by: 301)
     let decision = WakePolicy.decide(
       sessions: store.all(now: later),
       conditions: PowerConditions(),
       settings: WakeSettings(),
-      now: later)
+      now: later.wall)
     #expect(!decision.holdIdleAssertion)
   }
 
@@ -115,5 +115,103 @@ struct AgentEventDecodingTests {
     #expect(throws: (any Error).self) {
       try AgentEvent.decode(from: Data(json.utf8))
     }
+  }
+}
+
+@Suite("Session staleness uses a clock that cannot go backwards")
+struct SessionClockTests {
+
+  /// The failure this exists to prevent: NTP steps the wall clock back, the
+  /// age of a dead `.working` session never passes the staleness window, and
+  /// the Mac is held awake indefinitely by an agent that stopped hours ago.
+  @Test("a wall clock jumping backwards cannot make a dead session immortal")
+  func wallClockStepBackwardsStillExpires() {
+    var store = SessionStore(staleAfter: 300)
+    let t0 = Timestamp.now
+    store.apply(AgentEvent(agent: .claudeCode, sessionID: "ghost", state: .working), now: t0)
+
+    // Real time moved on; the wall clock was corrected an hour backwards.
+    let later = Timestamp(
+      wall: t0.wall.addingTimeInterval(-3600),
+      uptime: t0.uptime.advanced(by: .seconds(301))
+    )
+
+    #expect(store.all(now: later).isEmpty)
+    #expect(store.prune(now: later).count == 1)
+    #expect(store.isEmpty)
+  }
+
+  /// The same step forwards must not expire a session that is very much alive.
+  @Test("a wall clock jumping forwards cannot kill a live session")
+  func wallClockStepForwardsKeepsLiveSession() {
+    var store = SessionStore(staleAfter: 300)
+    let t0 = Timestamp.now
+    store.apply(AgentEvent(agent: .claudeCode, sessionID: "live", state: .working), now: t0)
+
+    let later = Timestamp(
+      wall: t0.wall.addingTimeInterval(86_400),
+      uptime: t0.uptime.advanced(by: .seconds(5))
+    )
+    #expect(store.all(now: later).count == 1)
+    #expect(store.prune(now: later).isEmpty)
+  }
+
+  @Test("elapsed time never reads as negative")
+  func elapsedIsClamped() {
+    let t0 = Timestamp.now
+    #expect(t0.seconds(since: t0.advanced(by: 60)) == 0)
+    #expect(t0.advanced(by: 60).seconds(since: t0) == 60)
+  }
+}
+
+@Suite("Sessions belong to an agent, not just an id")
+struct SessionIdentityTests {
+
+  /// Session ids come from each host's own namespace and nothing stops two
+  /// hosts choosing the same one — the hook's own `pid-NNNN` fallback collides
+  /// outright. Keyed on the id alone they merged into one row, attributed to
+  /// whichever agent reported first.
+  @Test("two agents sharing a session id stay two sessions")
+  func sameIdDifferentAgents() {
+    var store = SessionStore()
+    let now = Timestamp.now
+    store.apply(AgentEvent(agent: .claudeCode, sessionID: "shared", state: .working), now: now)
+    store.apply(AgentEvent(agent: .cursor, sessionID: "shared", state: .idle), now: now)
+
+    let all = store.all(now: now)
+    #expect(all.count == 2)
+    #expect(Set(all.map(\.id)).count == 2, "two sessions collapsed into one row")
+    #expect(all.first { $0.agent == .claudeCode }?.state == .working)
+    #expect(all.first { $0.agent == .cursor }?.state == .idle)
+    #expect(store.active(now: now).count == 1)
+  }
+
+  /// And the flip side: one agent stopping must not release the hold the other
+  /// still needs.
+  @Test("stopping one of a colliding pair leaves the other working")
+  func collidingIdsExpireIndependently() {
+    var store = SessionStore()
+    let now = Timestamp.now
+    store.apply(AgentEvent(agent: .claudeCode, sessionID: "shared", state: .working), now: now)
+    store.apply(AgentEvent(agent: .codex, sessionID: "shared", state: .working), now: now)
+    store.apply(AgentEvent(agent: .codex, sessionID: "shared", state: .idle), now: now)
+
+    let decision = WakePolicy.decide(
+      sessions: store.all(now: now),
+      conditions: PowerConditions(),
+      settings: WakeSettings(),
+      now: now.wall)
+    #expect(decision.holdIdleAssertion)
+    #expect(decision.reason == .agentsWorking(count: 1))
+  }
+
+  @Test("row order is stable when two sessions report at the same instant")
+  func stableOrdering() {
+    var store = SessionStore()
+    let now = Timestamp.now
+    for id in ["c", "a", "b"] {
+      store.apply(AgentEvent(agent: .claudeCode, sessionID: id, state: .working), now: now)
+    }
+    #expect(store.all(now: now).map(\.sessionID) == ["a", "b", "c"])
   }
 }

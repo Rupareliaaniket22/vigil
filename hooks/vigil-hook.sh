@@ -25,7 +25,35 @@ STATE="${3:-idle}"
 SOCKET="$HOME/Library/Application Support/Vigil/bridge.sock"
 [ -S "$SOCKET" ] || exit 0
 
-INPUT=$(cat 2>/dev/null || true)
+# Read the host's JSON payload, if it sends one.
+#
+# `INPUT=$(cat)` waits for EOF, so a host that hands the hook its own stdin and
+# never closes it hung here forever — inside the user's agent, on their
+# critical path.
+#
+# A line at a time with a timeout on each, rather than one timed read of the
+# whole thing: macOS ships bash 3.2, which throws away partial input when a
+# read times out, so a single read would lose the entire payload against a host
+# that simply left the pipe open. Per line, the timeout only costs the last
+# line that never arrives. A JSON string cannot contain a raw newline, so
+# rejoining the lines with nothing between them is safe.
+#
+# One case still degrades: a host that writes its payload with no trailing
+# newline *and* holds the pipe open loses it, because bash 3.2 discards the
+# partial line. The event is still posted — keyed on the parent pid, which is
+# stable for the life of that host process — so the session is tracked, just
+# without its title and cwd. Better than the alternative, which was to hang.
+INPUT=""
+if [ ! -t 0 ]; then
+  line=""
+  while IFS= read -r -t 1 line || [ -n "$line" ]; do
+    INPUT="$INPUT$line"
+    line=""
+    # A hook payload is a few hundred bytes. Anything past this is a bug or a
+    # probe, and Vigil's socket would refuse it anyway.
+    [ "${#INPUT}" -gt 65536 ] && break
+  done
+fi
 
 # plutil parses JSON safely and is on every Mac; jq is not.
 extract() { printf '%s' "$INPUT" | /usr/bin/plutil -extract "$1" raw -o - - 2>/dev/null || true; }
@@ -34,12 +62,23 @@ SESSION_ID=$(extract session_id)
 [ -z "$SESSION_ID" ] && SESSION_ID=$(extract sessionId)
 CWD=$(extract cwd)
 [ -z "$CWD" ] && CWD="$PWD"
-TITLE=$(extract prompt | head -c 200)
+
+# First line of the prompt, capped.
+#
+# `head -c 200` cut at a byte, which splits a multibyte character: BSD sed then
+# refused the whole string with "illegal byte sequence", and even under LC_ALL=C
+# the half-character made the JSON body invalid UTF-8, so Vigil rejected the
+# event entirely rather than merely losing the title. iconv -c drops whatever
+# does not survive the cut, so what we send is always valid UTF-8.
+TITLE=$(extract prompt | head -n 1)
+TITLE=$(printf '%s' "${TITLE}" | head -c 400 | /usr/bin/iconv -c -f UTF-8 -t UTF-8 2>/dev/null)
 
 # Escape for embedding in JSON, and strip control characters that would make
-# the payload invalid.
+# the payload invalid. Byte-wise (LC_ALL=C) throughout: sed errors out on input
+# its locale considers malformed, and a hook that fails is a hook that reports
+# nothing.
 escape() {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | LC_ALL=C tr -d '\000-\037'
+  printf '%s' "$1" | LC_ALL=C sed 's/\\/\\\\/g; s/"/\\"/g' | LC_ALL=C tr -d '\000-\037'
 }
 
 PAYLOAD=$(printf '{"agent":"%s","session_id":"%s","state":"%s","event":"%s","pid":%d,"cwd":"%s","title":"%s"}' \
