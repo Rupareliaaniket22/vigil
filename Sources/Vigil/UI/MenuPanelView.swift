@@ -133,27 +133,18 @@ struct MenuPanelView: View {
 
         VStack(alignment: .leading, spacing: Theme.Metrics.tight) {
           ForEach(collapsedAssertions) { assertion in
-            HStack(alignment: .firstTextBaseline, spacing: Theme.Metrics.snug) {
-              Text(assertion.processName)
-                .font(Theme.Text.detail)
-                .foregroundStyle(.vigilSecondary)
-              Text(assertion.reason)
-                .font(Theme.Text.detail)
-                .foregroundStyle(.vigilTertiary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("\(assertion.processName): \(assertion.reason)")
+            AssertionRow(assertion: assertion, now: model.now)
           }
         }
       }
     }
   }
 
-  /// One row per process. A process holding several assertions is still one
-  /// answer to "what is keeping my Mac awake", and listing it repeatedly would
-  /// make a short list look alarming.
+  /// One row per process, keeping its longest-held assertion.
+  ///
+  /// A process holding several is still one answer to "what is keeping my Mac
+  /// awake", and listing it repeatedly would make a short list look alarming.
+  /// The list is already sorted longest-first, so the first one seen wins.
   private var collapsedAssertions: [SystemAssertion] {
     var seen = Set<String>()
     return model.otherAssertions.filter { seen.insert($0.processName).inserted }
@@ -194,7 +185,57 @@ struct MenuPanelView: View {
   }
 }
 
-// MARK: - Row
+// MARK: - Rows
+
+/// One process holding the Mac awake. Duration first among the details,
+/// because when a Mac will not sleep, the thing that has been holding on
+/// longest is usually the answer.
+private struct AssertionRow: View {
+  let assertion: SystemAssertion
+  let now: Date
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: Theme.Metrics.snug) {
+      Text(assertion.processName)
+        .font(Theme.Text.detail)
+        .foregroundStyle(.vigilSecondary)
+        .lineLimit(1)
+
+      Text(assertion.reason)
+        .font(Theme.Text.detail)
+        .foregroundStyle(.vigilTertiary)
+        .lineLimit(1)
+        .truncationMode(.tail)
+
+      Spacer(minLength: Theme.Metrics.tight)
+
+      Text(duration)
+        .font(Theme.Text.detail)
+        .foregroundStyle(.vigilTertiary)
+        .monospacedDigit()
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(accessibleDescription)
+  }
+
+  private var duration: String {
+    guard let seconds = assertion.held(until: now), seconds >= 0 else { return "" }
+    let minutes = Int(seconds) / 60
+    if minutes < 1 { return "just now" }
+    if minutes < 60 { return "\(minutes)m" }
+    let hours = minutes / 60
+    let remainder = minutes % 60
+    return remainder == 0 ? "\(hours)h" : "\(hours)h \(remainder)m"
+  }
+
+  private var accessibleDescription: String {
+    var parts = ["\(assertion.processName): \(assertion.reason)"]
+    if !duration.isEmpty { parts.append("held \(duration)") }
+    // Worth saying aloud: an assertion with no timeout will not stop by itself.
+    parts.append(assertion.expiresOnItsOwn ? "expires on its own" : "no time limit")
+    return parts.joined(separator: ", ")
+  }
+}
 
 private struct SessionRow: View {
   let session: AgentSession

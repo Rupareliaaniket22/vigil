@@ -68,12 +68,25 @@ struct SystemAssertion: Identifiable, Sendable, Equatable {
   let processName: String
   let type: String
   let reason: String
+  let startedAt: Date?
+  /// Nil means it never expires by itself — someone has to release it.
+  let timeoutSeconds: TimeInterval?
+  let timeLeft: TimeInterval?
 
   /// Assertions that actually prevent the system sleeping, as opposed to
   /// display-only or informational ones.
   var preventsSystemSleep: Bool {
     type == kIOPMAssertionTypePreventUserIdleSystemSleep
       || type == kIOPMAssertionTypePreventSystemSleep
+  }
+
+  /// An assertion with no timeout will hold until its process releases it or
+  /// dies. Those are the ones worth looking at when a Mac won't sleep, and no
+  /// other tool surfaces the distinction.
+  var expiresOnItsOwn: Bool { timeoutSeconds != nil }
+
+  func held(until now: Date) -> TimeInterval? {
+    startedAt.map { now.timeIntervalSince($0) }
   }
 }
 
@@ -93,17 +106,41 @@ extension PowerAssertion {
     return byProcess.flatMap { pid, assertions in
       assertions.compactMap { entry -> SystemAssertion? in
         guard let type = entry["AssertType"] as? String else { return nil }
-        let name = entry["AssertName"] as? String ?? "—"
         let process = entry["Process Name"] as? String ?? "pid \(pid.int32Value)"
+
+        // HumanReadableReason is what the OS intends people to be shown;
+        // AssertName is the developer's own label. Prefer the former, but it
+        // is often SHOUTED, so only take it when it isn't.
+        let humane = entry["HumanReadableReason"] as? String
+        let name = entry["AssertName"] as? String
+        let reason =
+          (humane.map { $0 == $0.uppercased() ? nil : $0 } ?? nil)
+          ?? name ?? entry["Details"] as? String ?? "no reason given"
+
+        // A timeout of zero means "no timeout", not "expires immediately".
+        let timeout = (entry["TimeoutSeconds"] as? NSNumber)?.doubleValue
         return SystemAssertion(
-          id: "\(pid.int32Value)-\(type)-\(name)",
+          id: (entry["GlobalUniqueID"] as? NSNumber).map(String.init(describing:))
+            ?? "\(pid.int32Value)-\(type)-\(reason)",
           pid: pid.int32Value,
           processName: process,
           type: type,
-          reason: name
+          reason: reason,
+          startedAt: entry["AssertStartWhen"] as? Date,
+          timeoutSeconds: (timeout ?? 0) > 0 ? timeout : nil,
+          timeLeft: (entry["AssertTimeoutTimeLeft"] as? NSNumber)?.doubleValue
         )
       }
     }
-    .sorted { $0.processName.localizedCaseInsensitiveCompare($1.processName) == .orderedAscending }
+    // Longest-held first: when a Mac won't sleep, the thing that has been
+    // holding on for three hours is the answer far more often than the one
+    // that started a moment ago.
+    .sorted { a, b in
+      switch (a.startedAt, b.startedAt) {
+      case (let x?, let y?): return x < y
+      case (nil, _): return false
+      case (_, nil): return true
+      }
+    }
   }
 }
