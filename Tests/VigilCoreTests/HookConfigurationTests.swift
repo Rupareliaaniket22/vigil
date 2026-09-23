@@ -282,13 +282,15 @@ struct AgentIntegrationTests {
     let expected: [AgentKind: Set<String>] = [
       .claudeCode: [
         "UserPromptSubmit", "PreToolUse", "PostToolUse", "SubagentStart", "SubagentStop",
-        "Notification", "Stop", "StopFailure", "SessionEnd",
+        "Notification", "PermissionRequest", "Elicitation", "Stop", "StopFailure", "SessionEnd",
       ],
       .codex: [
-        "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionStart", "Stop", "Interrupt",
+        "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop", "Interrupt",
         "SessionEnd",
       ],
-      .gemini: ["BeforeAgent", "BeforeTool", "AfterTool", "AfterAgent", "SessionEnd"],
+      .gemini: [
+        "BeforeAgent", "BeforeTool", "AfterTool", "Notification", "AfterAgent", "SessionEnd",
+      ],
       .cursor: [
         "afterShellExecution", "afterFileEdit", "afterMCPExecution", "afterAgentThought",
         "afterAgentResponse", "stop", "sessionEnd",
@@ -365,17 +367,135 @@ struct AgentIntegrationTests {
   }
 
   /// Not a wish: a record of which hosts can tell us they are blocked on the
-  /// human. Only Claude Code does. For the others a session sitting on a
-  /// permission prompt reads as working until it goes stale, and inventing an
-  /// event name to paper over that would install a hook nothing ever fires.
+  /// human. Three of the four do, and for two of them Vigil spent a long time
+  /// asserting the opposite — Gemini CLI's `Notification` and Codex's
+  /// `PermissionRequest` were both there to be read, so a session of either
+  /// sitting on a permission prompt held the Mac awake until it went stale.
+  ///
+  /// Cursor is the remaining gap, and inventing an event name to paper over it
+  /// would install a hook nothing ever fires.
   @Test("only the hosts that publish a blocked-on-user event claim one")
   func blockedOnUserIsHonest() {
-    #expect(AgentIntegration.claudeCode.hasBlockedOnUserEvent)
-    for integration in [AgentIntegration.codex, .gemini, .cursor] {
+    for integration in [AgentIntegration.claudeCode, .codex, .gemini] {
       #expect(
-        !integration.hasBlockedOnUserEvent,
-        "\(integration.displayName) now claims a waiting event — check the host really emits it")
+        integration.hasBlockedOnUserEvent,
+        "\(integration.displayName) stopped listening for its blocked-on-user event")
     }
+    #expect(
+      !AgentIntegration.cursor.hasBlockedOnUserEvent,
+      "Cursor now claims a waiting event — check the host really emits it")
+  }
+
+  /// The event each host publishes when it stops to ask, pinned by name.
+  ///
+  /// `hasBlockedOnUserEvent` above only counts; this says which, because the
+  /// three names came from three different places and each one is a claim
+  /// about somebody else's source that a reader should be able to check.
+  @Test("the blocked-on-user events are the ones the hosts actually publish")
+  func blockedOnUserEventsAreNamed() {
+    // Claude Code: `Notification` (open set, kept as a backstop),
+    // `PermissionRequest` ("When a permission dialog is displayed") and
+    // `Elicitation` ("When an MCP server requests user input").
+    #expect(
+      Set(AgentIntegration.claudeCode.waitingEvents)
+        == ["Notification", "PermissionRequest", "Elicitation"])
+    // Codex: `HookEventName::PermissionRequest`, stage one of
+    // `Session::request_approval`, ahead of Guardian and ahead of the user.
+    #expect(AgentIntegration.codex.waitingEvents == ["PermissionRequest"])
+    // Gemini CLI: `HookEventName.Notification`, whose only payload type is
+    // `NotificationType.ToolPermission`, fired from `notifyHooks` on the line
+    // before the prompt goes up.
+    #expect(AgentIntegration.gemini.waitingEvents == ["Notification"])
+  }
+
+  /// Claude Code cannot tell us the user pressed escape, and that is the
+  /// single most common way a turn ends.
+  ///
+  /// There is no `Interrupt` in its thirty-three-name catalogue, and every
+  /// main-turn `Stop` dispatch is handed the turn's own abort signal, which the
+  /// hook runner checks before it runs anything. `StopFailure` covers the API
+  /// errors, not this. If somebody adds an event name here to close the gap it
+  /// had better be one Claude Code really sends, and if Claude Code ever ships
+  /// an interrupt event this test is where the good news lands.
+  @Test("a host that cannot report an interrupt says so")
+  func interruptCoverageIsHonest() {
+    #expect(
+      !AgentIntegration.claudeCode.hasInterruptEvent,
+      "Claude Code now claims an interrupt event — check its hook catalogue really has one")
+    #expect(AgentIntegration.codex.hasInterruptEvent)
+    #expect(AgentIntegration.codex.interruptEvent == "Interrupt")
+    // Whatever a host names its interrupt, it has to be an ending: the hold is
+    // released on `idleEvents` and nothing else.
+    for integration in AgentIntegration.all {
+      guard let event = integration.interruptEvent else { continue }
+      #expect(
+        integration.idleEvents.contains(event),
+        "\(integration.displayName)'s interrupt event is not in its idle events")
+    }
+  }
+
+  /// The end-to-end shape of the blocked-on-user fix: an event arrives from a
+  /// host, and the Mac is allowed to sleep because nobody is at the keyboard.
+  ///
+  /// Reading these three names as `working` was the bug — a Gemini or Codex
+  /// session parked on a permission prompt held the Mac awake for the whole
+  /// staleness window. Reading an unregistered name as `idle`, which is what
+  /// `state(for:)` does with anything it has not been told about, is the other
+  /// half: it would have announced the run finished. `waiting` is neither.
+  @Test(
+    "a session stopped on a permission prompt neither holds nor finishes",
+    arguments: [
+      (AgentKind.gemini, "Notification"),
+      (.codex, "PermissionRequest"),
+      (.claudeCode, "PermissionRequest"),
+      (.claudeCode, "Elicitation"),
+    ])
+  func aPromptIsWaitingNotWorking(agent: AgentKind, event: String) {
+    let integration = AgentIntegration.all.first { $0.id == agent }!
+    #expect(integration.state(for: event) == .waiting)
+
+    var store = SessionStore()
+    store.apply(AgentEvent(agent: agent, sessionID: "s", state: .working, event: "PreToolUse"))
+    let asked = store.apply(
+      AgentEvent(agent: agent, sessionID: "s", state: integration.state(for: event), event: event))
+
+    let decision = WakePolicy.decide(
+      sessions: [asked], conditions: PowerConditions(), settings: WakeSettings())
+    #expect(!decision.holdIdleAssertion, "nobody is there, so the Mac may sleep")
+    // Still part of the run: the turn is mid-sentence, not over, so this must
+    // not read as an agent that finished.
+    #expect(asked.isLive)
+    #expect(asked.outcome == nil)
+  }
+
+  /// Claude Code fires `SubagentStop` even on a turn the user escaped out of —
+  /// the teardown path passes no abort signal, so it survives the abort that
+  /// kills `Stop`. That makes it tempting as a stand-in for the missing
+  /// interrupt, and it must not be used as one: in every other case it means
+  /// one `Agent` call finished and the parent turn continues, so reading it as
+  /// an ending would drop the hold in the middle of a run.
+  @Test("SubagentStop means the parent turn continues")
+  func subagentStopIsStillWork() {
+    #expect(AgentIntegration.claudeCode.state(for: "SubagentStop") == .working)
+  }
+
+  /// Codex re-fires `SessionStart` in the middle of a turn.
+  ///
+  /// `SessionStartSource` is `{Startup, Resume, Clear, Compact, Fork}`, and
+  /// `Session::compact` queues the `Compact` one as its last act. The turn loop
+  /// drains that queue with `run_pending_session_start_hooks` immediately after
+  /// `run_auto_compact(…, CompactionPhase::MidTurn)` and immediately before it
+  /// continues — so a long run that hits its context limit fired `SessionStart`
+  /// while still working, and Vigil dropped the hold for the whole
+  /// post-compaction round trip.
+  @Test("Codex's SessionStart is not treated as an ending")
+  func codexSessionStartIsNotIdle() {
+    #expect(
+      !AgentIntegration.codex.allEvents.contains("SessionStart"),
+      """
+      Codex fires SessionStart mid-turn after a compaction, so registering for it \
+      drops the wake hold across the slowest request in the session
+      """)
   }
 
   @Test("agents are named for people, not by their event vocabulary")

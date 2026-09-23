@@ -88,8 +88,30 @@ final class EventBridge {
     // is ours to delete, so the socket file was never cleaned up on quit.
     Task { [weak self] in
       await server.appendRoute("POST /event") { (request: HTTPRequest) in
-        // Check the declared length before reading anything, so an oversized
-        // body is refused rather than buffered.
+        // Refuse on the declared length before decoding. A cheap refusal, and
+        // deliberately not called a cap on what gets buffered: it is not one,
+        // and reading it as one would mislead whoever next tightens
+        // `maximumBodyBytes` expecting memory to follow. Measured against
+        // FlyingFox 0.27.1:
+        //
+        // - A body at or under `sharedRequestBufferSize` — 4KB, which is every
+        //   real hook event — is read off the socket in full *before* this
+        //   handler is invoked. Nothing decided here can prevent that.
+        // - A larger one does reach the handler unread, and is then drained by
+        //   the server's own `flushIfNeeded()` once the handler returns. So a
+        //   413 from here still ends with the whole body on the wire, and up
+        //   to `sharedRequestReplaySize` (2MB by default) of it in memory.
+        //
+        // What the check does buy is refusing an oversized payload without
+        // decoding it. Bounding what is buffered means handing the server a
+        // smaller `HTTPServer.Configuration`, not a smaller number here.
+        //
+        // A `Content-Length` that overstates the body never becomes a response
+        // at all, either way: under 4KB the decoder waits for bytes that are
+        // not coming and this handler is never invoked; over it the handler
+        // runs, but the flush afterwards waits instead, so the response it
+        // returned is never sent. Both measured. Neither is this route's to
+        // answer for — it is framing, and it belongs to the server.
         if let declared = request.headers[.contentLength].flatMap(Int.init),
           declared > maximumBodyBytes
         {

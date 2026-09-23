@@ -25,14 +25,56 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
   /// Events that mean it is blocked on the user. Deliberately not a reason to
   /// hold the Mac awake — someone could be away for hours.
   ///
-  /// Empty for every host but Claude Code, and not an oversight: Codex, Gemini
-  /// CLI and Cursor publish no lifecycle event for "asking the human". Until
-  /// one of them does, a session of theirs sitting on a permission prompt reads
-  /// as `working` until it goes stale. Guessing at an event name would be
-  /// worse — see `hasBlockedOnUserEvent`.
+  /// Empty for Cursor alone. This comment used to say that Codex, Gemini CLI
+  /// and Cursor published no such event, and for two of the three that was
+  /// simply wrong — read from Vigil's own assumptions rather than from their
+  /// sources:
+  ///
+  /// - **Gemini CLI** has declared `Notification` since its hooks shipped.
+  ///   `HookEventName.Notification` is a first-class member of the enum and a
+  ///   key in `schemas/settings.schema.json`, its only payload type is
+  ///   `NotificationType.ToolPermission`, and `notifyHooks` awaits it in
+  ///   `scheduler/confirmation.ts` on the line before the prompt goes up.
+  /// - **Codex** has `PermissionRequest` in `HookEventName`, dispatched from
+  ///   `Session::request_approval` as the *first* stage of approval — ahead of
+  ///   Guardian and ahead of the user.
+  ///
+  /// So a Gemini or Codex session parked on a permission prompt read as
+  /// `working` and held the Mac awake for the whole staleness window while
+  /// nobody was there. Both are now listened for.
+  ///
+  /// Neither hook has to answer. Gemini's `NotificationOutput` carries no
+  /// decision at all — only `suppressOutput` and `systemMessage` — and the
+  /// call is wrapped in a `try`/`catch` that swallows a failing hook. Codex
+  /// folds its handlers' verdicts and documents the empty case: handlers "can
+  /// return a concrete allow/deny decision, or decline to decide and let the
+  /// normal approval flow continue… otherwise there is no hook verdict", and
+  /// `run_permission_request_hooks` returning `None` falls straight through to
+  /// `request_reviewer_approval`. Vigil writes nothing to stdout, so both get
+  /// no verdict from us, which is the outcome that changes nothing.
+  ///
+  /// One caveat, recorded because it is not visible from the event name.
+  /// Codex's `PermissionRequest` runs before the *routing* decision, not
+  /// before the *prompt* — so under Guardian or strict auto-review it fires
+  /// for an approval no human will ever see, and Vigil reads `waiting` while
+  /// Codex is in fact reviewing and working. That releases the hold for the
+  /// length of the review. It is the lesser error: the release is undone by
+  /// the next `PreToolUse` a moment later, whereas the bug it replaces held an
+  /// unattended Mac awake for five minutes, and releasing rather than holding
+  /// is the direction `state(for:)` already errs in on purpose.
   public let waitingEvents: [String]
   /// Events that mean it has stopped.
   public let idleEvents: [String]
+  /// The host's own name for "the user stopped this turn", if it has one.
+  ///
+  /// Always one of `idleEvents` when present — it is an ending, and the hold
+  /// has to be released for it. Named separately because "does this release
+  /// the hold" and "does this host tell us about escape at all" are different
+  /// questions, and only the second one has an answer Vigil has to live with.
+  /// Nil means Vigil has no verified interrupt event for this host, which for
+  /// Claude Code is a proven absence and for Gemini CLI and Cursor is simply
+  /// unestablished — neither has been read for one.
+  public let interruptEvent: String?
   /// Some hosts want a per-hook timeout in their config.
   ///
   /// Written verbatim as `"timeout"`, and the name of this field is only
@@ -101,6 +143,21 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
   /// place instead of reading as an empty array someone forgot to fill in.
   public var hasBlockedOnUserEvent: Bool { !waitingEvents.isEmpty }
 
+  /// Whether this host says anything when the user stops a turn by hand.
+  ///
+  /// The question `hasBlockedOnUserEvent` cannot answer, and the more
+  /// expensive one to get wrong. A host that publishes an interrupt lets Vigil
+  /// drop the hold the moment someone presses escape. A host that does not
+  /// leaves the session reading `working` with nothing left to contradict it,
+  /// so the hold outlives the work by up to the whole staleness window — and
+  /// pressing escape is how most turns end.
+  ///
+  /// False for Claude Code, and that one is *proven* rather than merely
+  /// unknown: its hook catalogue has no interrupt event and its `Stop` hooks
+  /// are skipped on an aborted turn. See the note on `claudeCode`. Recorded
+  /// here so the gap can be asserted on instead of living in prose.
+  public var hasInterruptEvent: Bool { interruptEvent != nil }
+
   public init(
     id: AgentKind,
     displayName: String,
@@ -108,6 +165,7 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
     workingEvents: [String],
     waitingEvents: [String] = [],
     idleEvents: [String],
+    interruptEvent: String? = nil,
     timeoutMilliseconds: Int? = nil,
     entryFormat: HookEntryFormat = .nested,
     requiresHookTrust: Bool = false
@@ -118,6 +176,7 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
     self.workingEvents = workingEvents
     self.waitingEvents = waitingEvents
     self.idleEvents = idleEvents
+    self.interruptEvent = interruptEvent
     self.timeoutMilliseconds = timeoutMilliseconds
     self.entryFormat = entryFormat
     self.requiresHookTrust = requiresHookTrust
@@ -132,7 +191,64 @@ extension AgentIntegration {
     workingEvents: [
       "UserPromptSubmit", "PreToolUse", "PostToolUse", "SubagentStart", "SubagentStop",
     ],
-    waitingEvents: ["Notification"],
+    // Three names for "stopped on the human", and they are not
+    // interchangeable.
+    //
+    // `PermissionRequest` — "When a permission dialog is displayed" — is the
+    // precise one, and it is new here. The `Notification` beside it carries
+    // the same news six seconds late: `permission_prompt` is fired from a
+    // `setTimeout(…, 6000)` whose whole job is to avoid pinging for a prompt
+    // the user answered straight away. Six seconds of holding the Mac awake at
+    // an unattended prompt is not much; six seconds of Vigil's own UI saying
+    // "working" when it is not is the part that reads as a bug.
+    //
+    // `Elicitation` — "When an MCP server requests user input" — was missed
+    // entirely. An MCP elicitation is a modal question with no tool call
+    // around it, so nothing else in this list fires for it and the session
+    // read as `working` for as long as the dialog stood.
+    //
+    // Both are safe for a hook that says nothing. Claude Code documents
+    // "Exit code 0 - use hook decision if provided" for one and "use hook
+    // response if provided" for the other, and the elicitation handler is
+    // explicit in code: `if (n) return n;` — falling through to the real
+    // dialog when the hooks returned nothing. Vigil writes no stdout, so both
+    // decline to decide. `Elicitation`'s exit code 2 *would* deny the
+    // elicitation; Vigil's hook exits 0 on every path.
+    //
+    // `Notification` stays, and it is the uncomfortable one. It is an open
+    // set — seventeen `notification_type` values today, with no promise there
+    // will not be an eighteenth — and they do not agree with each other about
+    // what is happening:
+    //
+    // - `idle_prompt` means the REPL is sitting at the prompt with nothing
+    //   running. That is `idle`, not `waiting`.
+    // - `permission_prompt`, `agent_needs_input`, `worker_permission_prompt`,
+    //   `elicitation_dialog`, `elicitation_url_dialog` mean waiting — and the
+    //   two dedicated events above now cover the cases that matter.
+    // - `elicitation_complete` ("MCP server confirmed elicitation complete"),
+    //   `auth_success`, `computer_use_exit`, `agent_completed`,
+    //   `push_notification`, `quota_auto_resume_*` and `model_refusal_fallback`
+    //   arrive *mid-turn*. Vigil reads `waiting` and drops the hold while the
+    //   agent is still working.
+    //
+    // One name cannot mean three things, so this is wrong however it is
+    // classified. It is kept as `waiting` because the alternatives are worse
+    // and because the mistake it makes is the cheap one: a stray `waiting`
+    // releases a hold the next `PreToolUse` takes straight back, while the
+    // `idle` reading would announce "the agent finished, your Mac can sleep"
+    // in the middle of a permission prompt — the bug `live()` exists to
+    // prevent — and dropping `Notification` altogether would throw away
+    // `idle_prompt`, which is the only thing Claude Code ever says after the
+    // user presses escape. See the gap recorded below.
+    //
+    // The real fix is a `matcher` on `notification_type`: Claude Code
+    // publishes one for this event, so Vigil could register several
+    // `Notification` entries with different matchers and a different state
+    // baked into each command, and the mapping would stay in Swift where it
+    // is typed. That is a change to `HookConfiguration.install` (and to
+    // `CodexHookTrust.hash`, which today refuses any matcher key), not to this
+    // file, and it is the one worth making next.
+    waitingEvents: ["Notification", "PermissionRequest", "Elicitation"],
     // `Stop` ends a turn; `SessionEnd` only fires when the whole session goes
     // away. Without `Stop`, every finished turn held the Mac awake until the
     // session went stale.
@@ -147,6 +263,60 @@ extension AgentIntegration {
     // for the full staleness window afterwards. Listed even though `Stop` may
     // also fire on some of those paths — both mean idle, so an overlap costs
     // one redundant event and the gap costs five minutes.
+    //
+    // And here is what this list still does not cover, stated plainly because
+    // the paragraph above reads as though it does.
+    //
+    // **Pressing escape fires nothing.** Claude Code has no `Interrupt` event
+    // anywhere in its thirty-three-name hook catalogue, and the escape key is
+    // not routed to one of the other thirty-two. Every main-turn `Stop`
+    // dispatch hands the runner the turn's own abort signal —
+    // `Fte(fe(h).mode, h.abortController.signal, …)` at the loop tick,
+    // `Fte(Ye, y.abortController.signal, …)` at blockable turn end, the same
+    // again for turn-end reactions — and the runner's first act is
+    // `if (h?.aborted) return;`. Escape aborts that controller with
+    // `"user-cancel"`, so by the time the `Stop` hooks are reached they are
+    // already cancelled. `StopFailure` does not step in: it is dispatched only
+    // from the API-error exits — rate limit, prompt-too-long, autocompact
+    // thrashing, an unparseable tool call — and Claude Code's own summary of
+    // it is "Fires instead of Stop when an API error … ended the turn."
+    // `SessionEnd` fires when the session goes away, not when a turn does.
+    //
+    // So there is no event to listen harder for, and three things that look
+    // like answers are not:
+    //
+    // - **Shortening `SessionStore.staleAfter` for this host.** The staleness
+    //   window is not an interrupt budget; it is the longest tolerated gap
+    //   between two hook events from a live session, and for Claude Code that
+    //   gap is a single long tool call — `PreToolUse`, then silence until the
+    //   test suite finishes. Five minutes is already tight for that. Cutting
+    //   it would trade a rare over-hold for a common mid-run sleep and a false
+    //   "Vigil lost contact" on every slow build, which is the failure this
+    //   app exists to prevent.
+    // - **`SubagentStop`.** It really does fire on an interrupted turn — the
+    //   teardown path passes `void 0` for the signal, so it survives the abort
+    //   that kills `Stop`. But it only fires when a subagent was running, it
+    //   is classified `working` above because in every other case it means the
+    //   parent turn continues, and reclassifying it would release the hold
+    //   each time an `Agent` call finished mid-run.
+    // - **`TeammateIdle`.** A real idle event, and deliberately not registered
+    //   for: its payload is built from the *host session* (`jl(h.session, …)`)
+    //   with the teammate named in a field, so a teammate parking while the
+    //   main turn works would mark the whole session idle and drop the hold
+    //   mid-run. Same shape as the mid-turn `Notification` values above.
+    //
+    // What actually covers it, partly and by accident, is `Notification` with
+    // `notification_type: "idle_prompt"` — "Claude is waiting for your input",
+    // armed whenever the turn stops loading and fired once the REPL has been
+    // untouched for `messageIdleNotifThresholdMs`, 60 seconds by default. The
+    // hook runs even for someone who has turned notifications off, because
+    // the sender executes the hooks before it consults the channel. So escape
+    // costs about a minute of holding the Mac awake rather than five — but
+    // only as `waiting`, so the run never ends, no completion sound is played,
+    // and the session lingers until it is pruned as `lostContact`. That is the
+    // real cost of the gap, and it is the best available reading until either
+    // Claude Code publishes an interrupt event or Vigil can discriminate on
+    // `notification_type`.
     idleEvents: ["Stop", "StopFailure", "SessionEnd"]
   )
 
@@ -155,19 +325,56 @@ extension AgentIntegration {
     displayName: "Codex",
     settingsPath: ".codex/hooks.json",
     workingEvents: ["UserPromptSubmit", "PreToolUse", "PostToolUse"],
-    // SessionStart means a session opened, not that work began.
+    // Codex asks the human out loud, and Vigil used not to listen.
     //
+    // `PermissionRequest` is a first-class member of Codex's `HookEventName`
+    // and runs as stage one of `Session::request_approval`, whose own comment
+    // gives the precedence: "1. Hooks. 2. If StrictAutoReview || Guardian
+    // enabled, then Guardian. Else, user." A hook that returns nothing yields
+    // `None` and the approval falls through to the normal reviewer, which is
+    // exactly what Vigil's silent hook does. See `waitingEvents` for the one
+    // case where this fires with no human involved.
+    waitingEvents: ["PermissionRequest"],
     // `Interrupt` and `SessionEnd` are the two ways a Codex turn ends without
     // `Stop`: the user presses escape, or the terminal goes away mid-tool. Both
     // left the session reading `working` until it went stale — the same shape
     // as Claude Code's missing `Stop`, and the same five minutes of holding the
     // Mac awake for work that finished.
-    idleEvents: ["SessionStart", "Stop", "Interrupt", "SessionEnd"],
-    // All seven are names Codex actually knows. Its `HookEventsToml` has one
-    // field per event and ignores anything else in the file, so a misspelling
-    // here would be silently dropped rather than reported — worth having
-    // checked, and worth `CodexHookTrust.eventLabel` refusing a name it does
-    // not recognise instead of inventing a snake_case form for it.
+    //
+    // `SessionStart` used to be here, on the reading that a session opening is
+    // a session not yet working. That reading is wrong, and it was costing the
+    // hold at the worst possible moment. Codex's `SessionStartSource` is
+    // `{Startup, Resume, Clear, Compact, Fork}`, and `Compact` is not a
+    // session opening at all: `Session::compact` queues
+    // `SessionStartSource::Compact` as its last act, and the turn loop in
+    // `session/turn.rs` drains that queue with
+    // `run_pending_session_start_hooks` *inside the loop*, immediately after
+    // `run_auto_compact(…, CompactionPhase::MidTurn)` and immediately before
+    // it `continue`s. So a long Codex run that hits its context limit mid-turn
+    // fires `SessionStart` while it is still working, Vigil flipped the
+    // session to idle, and the hold was dropped for the whole post-compaction
+    // model round trip — typically the slowest request in the session — until
+    // the next `PreToolUse` took it back. On a Mac whose idle timer had
+    // elapsed, that gap is enough to sleep mid-task.
+    //
+    // Dropped rather than reclassified. `working` would be worse — a terminal
+    // opened and left alone would hold the Mac awake until it went stale — and
+    // the other four sources buy nothing that the first `UserPromptSubmit`
+    // does not deliver one prompt later. Codex does match `SessionStart`
+    // handlers on the source string, so a `matcher` of everything but
+    // `compact` would bring it back honestly; that needs
+    // `HookConfiguration.install` to write matchers and `CodexHookTrust.hash`
+    // to hash them, and neither does today.
+    idleEvents: ["Stop", "Interrupt", "SessionEnd"],
+    // Verified against `codex_protocol::protocol::HookEventName`, which is the
+    // whole vocabulary: PreToolUse, PermissionRequest, PostToolUse,
+    // PreCompact, PostCompact, SessionStart, SessionEnd, UserPromptSubmit,
+    // SubagentStart, SubagentStop, Stop, Interrupt. Codex's `HookEventsToml`
+    // has one field per event and ignores anything else in the file, so a
+    // misspelling here would be silently dropped rather than reported — worth
+    // having checked, and worth `CodexHookTrust.eventLabel` refusing a name it
+    // does not recognise instead of inventing a snake_case form for it.
+    interruptEvent: "Interrupt",
     requiresHookTrust: true
   )
 
@@ -176,6 +383,18 @@ extension AgentIntegration {
     displayName: "Gemini CLI",
     settingsPath: ".gemini/settings.json",
     workingEvents: ["BeforeAgent", "BeforeTool", "AfterTool"],
+    // Gemini's `Notification` is narrower than the word suggests, and that is
+    // what makes it usable: `NotificationType` has exactly one case,
+    // `ToolPermission`, and `fireToolNotificationEvent` is its only producer.
+    // `notifyHooks` awaits it in `scheduler/confirmation.ts` on the line
+    // before the tool call is moved to `AwaitingApproval` and the prompt goes
+    // up, and only when `shouldConfirmExecute` actually returned details — so
+    // it fires once, for a real question, at the moment it is asked.
+    //
+    // Nothing Vigil prints can get in the way: `NotificationOutput` has no
+    // decision field, only `suppressOutput` and `systemMessage`, and the call
+    // is wrapped in a `try`/`catch` that logs and carries on.
+    waitingEvents: ["Notification"],
     // A session that is torn down without a closing `AfterAgent` — the terminal
     // closed, the host crashed — would otherwise stay `working` until it went
     // stale.

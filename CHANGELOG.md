@@ -7,6 +7,15 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Vigil knows when Codex and Gemini CLI are waiting on you. Both publish a
+  permission event Vigil was not listening for — Codex's `PermissionRequest` and
+  Gemini CLI's `Notification` — so a session parked on an approval prompt held
+  the Mac awake for five minutes with nobody there. The comment claiming no host
+  but Claude Code published such an event was simply wrong about two of them
+- Claude Code permission prompts are noticed six seconds sooner, through the
+  dedicated `PermissionRequest` event rather than the notification that is fired
+  from a six-second timer, and a session stopped on an MCP elicitation is
+  recognised at all
 - Wake policy with battery floor, mains-only and Low Power Mode guardrails
 - Agent session tracking with staleness expiry, so a crashed agent cannot pin the Mac awake
 - Unprivileged `IOPMAssertion` wake hold
@@ -99,6 +108,47 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Help text that only restated the control above it is gone
 
 ### Fixed
+- Uninstalling one agent no longer deletes the hook script every other agent is
+  using. One script serves all four, so it is removed only once nothing points
+  at it — but the check read a settings file it could not open as "this agent
+  does not use it". Malformed JSON, a JSON comment, a root that is not an
+  object, a file or a directory with the wrong permissions: each silently voted
+  to delete. Three agents in any of those states and uninstalling the fourth
+  took the shared script out from under all of them, leaving hook entries that
+  still read as perfectly correct pointing at a file that is not there — nothing
+  fires, and the first anyone hears of it is a Mac that slept in the middle of
+  an overnight run. The question has three answers now rather than two, and only
+  a definite "nobody points at this" removes anything
+- Vigil's hook can no longer hold up the agent that ran it. Its read of the
+  host's payload was bounded by volume — 64KB and 4096 lines — and not by time,
+  and the one-second timeout was per *line*, so any host emitting a line more
+  often than once a second kept the loop alive indefinitely: 10.99 seconds for
+  ten lines, 19.49 for twenty, strictly linear, with the line bound putting the
+  worst case a little over an hour. It exited 0 throughout and posted nothing,
+  so the only symptom was a coding agent that stalled for no visible reason. The
+  read now carries a two-second wall clock as well, after which the event is
+  posted with whatever arrived. A payload that turns up at once, which is every
+  real one, still takes about a tenth of a second
+- A payload that arrives in pieces no longer strands a session in "working". Cut
+  short mid-object it is no longer JSON, so nothing could be read out of it and
+  the event was filed under the process id — the one key the matching idle event
+  never uses, because that payload is small, parses, and carries the real
+  session id. The phantom left behind held the Mac awake until it went stale. A
+  payload that will not parse is now scraped for its session id before anything
+  falls back to the pid
+- Codex no longer reads a mid-turn compaction as a finished session. It re-fires
+  `SessionStart` with source `compact` from inside its turn loop, so a long run
+  that hit its context limit released the wake hold for the whole
+  post-compaction model round trip — typically the slowest request in the
+  session. `SessionStart` is no longer registered as an ending
+- A finished run is no longer relabelled a failure by an unrelated one. The
+  worst-outcome accumulator was global and cleared only when nothing anywhere
+  was working or waiting, so with several agents wired up one escaped turn
+  swapped the completion chime for the warning sound on every clean run after
+  it. Outcomes are tracked per agent now
+- A settings file whose permissions Vigil could not read is written back at 0600
+  rather than at whatever the umask gives, so a file that can hold API keys is
+  never quietly widened
 - The completion chime fires when a run actually finished, and not otherwise.
   It was triggered by nothing being in the `working` state, which is four
   different things wearing one face. An agent that stops to ask permission is

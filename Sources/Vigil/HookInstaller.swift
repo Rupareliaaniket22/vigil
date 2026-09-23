@@ -20,10 +20,15 @@ struct HookInstaller {
   static func live(for integration: AgentIntegration) -> HookInstaller {
     HookInstaller(
       scriptPath: defaultScriptPath,
-      settingsPath: FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(integration.settingsPath).path,
+      settingsPath: settingsPath(for: integration),
       integration: integration
     )
+  }
+
+  /// Where this agent keeps its settings, for this user.
+  static func settingsPath(for integration: AgentIntegration) -> String {
+    FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent(integration.settingsPath).path
   }
 
   enum InstallError: LocalizedError {
@@ -202,30 +207,87 @@ struct HookInstaller {
 
     // One script serves every agent, so deleting it here would break the hooks
     // of every *other* agent still installed. Remove it only once nothing
-    // points at it any more.
-    if !Self.anyIntegrationReferencesScript() {
+    // points at it any more — and only when that is *known*, never merely
+    // unrefuted. `.unknown` means some other agent's settings file would not
+    // read, which is exactly where a reference we must not break would be
+    // hiding, so it keeps the script.
+    //
+    // The two mistakes are not comparable. Leaving an orphaned script behind
+    // costs three kilobytes in a directory nobody looks at, and the next
+    // install overwrites it. Deleting a live one leaves every other agent with
+    // hook entries that still read as correct, pointing at a file that is not
+    // there: nothing fires, nothing in any settings file hints at why, and the
+    // first anyone hears of it is a Mac that slept in the middle of a run.
+    if Self.anyIntegrationReferencesScript(at: scriptPath) == .notReferenced {
       try? FileManager.default.removeItem(atPath: scriptPath)
     }
     Self.log.info("hooks removed for \(integration.displayName, privacy: .public)")
   }
 
-  /// Whether any agent's settings still point at our script.
+  /// Whether an agent's settings still point at the shared hook script.
+  ///
+  /// Three answers rather than two, and the third is the whole reason this is
+  /// not a `Bool`. A settings file that will not read might hold a reference
+  /// or might not, and the only honest thing to say about it is that we do not
+  /// know. Answering "no" on its behalf is how a file nobody could read gets
+  /// counted as a file with nothing in it.
+  enum ScriptReference: Equatable {
+    /// The settings file reads, and points at the script.
+    case referenced
+    /// The settings file reads, and does not.
+    case notReferenced
+    /// The settings file did not read, so the question went unanswered.
+    case unknown
+  }
+
+  /// Whether any agent's settings still point at `scriptPath`.
   ///
   /// Deliberately a weaker question than `isInstalled`, and the difference is
   /// load-bearing. Widening Vigil's expected event set makes every install
   /// written by an earlier version read as incomplete; asking "is anyone fully
   /// installed" would then answer no, and uninstalling one agent would delete
   /// the shared script out from under three agents that were working fine.
-  static func anyIntegrationReferencesScript() -> Bool {
-    AgentIntegration.all.contains { live(for: $0).referencesScript }
+  ///
+  /// `.referenced` wins over `.unknown`, and `.unknown` over `.notReferenced`:
+  /// one agent that certainly uses the script settles it, and failing that,
+  /// one agent we could not ask is enough to leave the question open. Only
+  /// four clean "no"s produce a `.notReferenced`.
+  ///
+  /// Takes the path rather than assuming `defaultScriptPath`, so it answers
+  /// the question its caller is actually asking. An installer pointed at a
+  /// script somewhere else — the install/uninstall check in `AppDelegate` runs
+  /// against a temporary directory — would otherwise have the fate of its own
+  /// script decided by whether this user's real settings still reference the
+  /// real one.
+  static func anyIntegrationReferencesScript(at scriptPath: String) -> ScriptReference {
+    var anyUnreadable = false
+    for integration in AgentIntegration.all {
+      let installer = HookInstaller(
+        scriptPath: scriptPath,
+        settingsPath: settingsPath(for: integration),
+        integration: integration
+      )
+      switch installer.scriptReference {
+      case .referenced: return .referenced
+      case .unknown: anyUnreadable = true
+      case .notReferenced: continue
+      }
+    }
+    return anyUnreadable ? .unknown : .notReferenced
   }
 
   /// Whether this agent's settings mention our script at all.
-  var referencesScript: Bool {
-    guard let settings = try? Self.readSettings(at: settingsPath) else { return false }
+  ///
+  /// Every refusal `readSettings` raises is an `.unknown` here: malformed
+  /// JSON, a JSON comment, a root that is not an object, a file that will not
+  /// open, a directory that will not be searched. A `try?` collapsed all of
+  /// them into `false`, and `false` from here is a licence to delete a file
+  /// three other agents are using.
+  var scriptReference: ScriptReference {
+    guard let settings = try? Self.readSettings(at: settingsPath) else { return .unknown }
     let missing = HookConfiguration.missingEvents(
       in: settings, scriptPath: scriptPath, integration: integration)
-    return missing.count < integration.allEvents.count
+    return missing.count < integration.allEvents.count ? .referenced : .notReferenced
   }
 
   // MARK: - Trust
@@ -311,8 +373,16 @@ struct HookInstaller {
   }
 
   /// An absent settings file is an empty one — first run is not an error.
+  ///
+  /// `stat` rather than `fileExists`, because `fileExists` answers false both
+  /// for "there is nothing here" and for "the directory above this one cannot
+  /// be searched", and to a caller deciding whether to delete shared state
+  /// those mean opposite things. Only `ENOENT` and `ENOTDIR` are an absence.
+  /// Anything else falls through to the read below, which throws rather than
+  /// reporting a settings file with nothing in it.
   private static func readSettings(at path: String) throws -> [String: Any] {
-    guard FileManager.default.fileExists(atPath: path) else { return [:] }
+    var info = stat()
+    if stat(path, &info) != 0, errno == ENOENT || errno == ENOTDIR { return [:] }
 
     let data = try Data(contentsOf: URL(fileURLWithPath: path))
     // A file holding nothing but a newline is an empty one, not a broken one.
@@ -392,10 +462,15 @@ struct HookInstaller {
     // Carry the original mode across. The atomic rename installs a brand-new
     // file, so a settings file the user had at 0600 would come back 0644 —
     // quietly widening the permissions on a file that can hold API keys.
-    let mode =
+    //
+    // A mode that cannot be read falls back to 0600 rather than to whatever
+    // the umask gives: the failure worth avoiding is the widening one, so the
+    // guess has to be the tight one. Only the owner ever needs to read any of
+    // these files.
+    let mode: NSNumber? =
       exists
-      ? (try? FileManager.default.attributesOfItem(atPath: url.path))?[.posixPermissions]
-        as? NSNumber
+      ? ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.posixPermissions]
+        as? NSNumber ?? NSNumber(value: 0o600))
       : nil
 
     // Atomic, so an interrupted write can't truncate the file.

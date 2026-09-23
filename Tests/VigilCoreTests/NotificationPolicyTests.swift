@@ -741,12 +741,17 @@ struct RunAnnouncementTests {
   }
 
   /// One clean ending does not speak for the session that vanished beside it.
+  ///
+  /// Two sessions of the *same* host, deliberately. That is what makes them one
+  /// run: the rule below is about a run's own sessions, and using two different
+  /// agents here made it look like a rule about the whole Mac, which is the
+  /// reading that turned into `outcomeIsScopedToItsHost`.
   @Test("a run is judged by its least certain ending, not its best one")
   func mixedEndingsTakeTheWorst() {
     var loop = Loop()
     loop.tick()
     loop.hook(.claudeCode, "a", "UserPromptSubmit")
-    loop.hook(.codex, "b", "UserPromptSubmit")
+    loop.hook(.claudeCode, "b", "UserPromptSubmit")
     loop.tick()
 
     // One finishes properly. The run is still live, so nothing is said.
@@ -757,6 +762,76 @@ struct RunAnnouncementTests {
     let spoken = loop.silence(for: 320)
     #expect(spoken.map(\.event) == [.lostContact(count: 1)])
     #expect(spoken.compactMap(\.sound) == [.warning])
+  }
+
+  /// The accumulator is per host, and it has to be.
+  ///
+  /// It used to be one value for the whole Mac, cleared only when nothing
+  /// anywhere was working or waiting. With four integrations wired up that is a
+  /// state a working day may never reach, so one escaped Codex turn relabelled
+  /// every clean Claude Code run after it as a failure and swapped the
+  /// completion chime for the warning sound — observed live, a `StopFailure` at
+  /// 03:12 still poisoning announcements minutes later because the user's own
+  /// session never let the count reach zero.
+  @Test("one host's bad ending does not relabel another host's clean run")
+  func outcomeIsScopedToItsHost() {
+    var loop = Loop()
+    loop.tick()
+    loop.hook(.codex, "bad", "UserPromptSubmit")
+    loop.hook(.claudeCode, "good", "UserPromptSubmit")
+    loop.tick()
+
+    // Codex's turn is escaped out of. That is Codex's run ending, badly.
+    loop.hook(.codex, "bad", "Interrupt")
+    let codexEnding = loop.tick()
+    #expect(codexEnding?.event == .runEndedBadly(count: 1))
+
+    // Claude Code keeps going, then finishes cleanly. Its run is its own.
+    loop.hook(.claudeCode, "good", "PostToolUse")
+    #expect(loop.tick() == nil)
+    loop.hook(.claudeCode, "good", "Stop")
+    let spoken = loop.tick()
+    #expect(spoken?.event == .allAgentsFinished(count: 1))
+    #expect(spoken?.sound == .completion)
+  }
+
+  /// The same scoping, one tick later rather than one host over: a host whose
+  /// run has already ended and been announced does not carry its outcome into
+  /// its next run.
+  @Test("a host's next run is judged on its own ending")
+  func outcomeClearsWithTheRunThatEarnedIt() {
+    var loop = Loop()
+    loop.tick()
+    loop.hook(.claudeCode, "first", "UserPromptSubmit")
+    loop.tick()
+    loop.hook(.claudeCode, "first", "StopFailure")
+    #expect(loop.tick()?.event == .runEndedBadly(count: 1))
+
+    loop.hook(.claudeCode, "second", "UserPromptSubmit")
+    loop.tick()
+    loop.hook(.claudeCode, "second", "Stop")
+    #expect(loop.tick()?.sound == .completion)
+  }
+
+  /// Two hosts finishing on the same tick are still one sentence and one sound.
+  ///
+  /// Scoping the accumulator per host does not mean announcing per host: the
+  /// sound is a function of one event, which is the whole reason three agents
+  /// finishing together make one noise. Hosts ending on the same tick get the
+  /// same fold — counts added, outcome the worse of the two.
+  @Test("hosts that end together are announced together")
+  func simultaneousEndingsFoldIntoOne() {
+    var loop = Loop()
+    loop.tick()
+    loop.hook(.claudeCode, "a", "UserPromptSubmit")
+    loop.hook(.codex, "b", "UserPromptSubmit")
+    loop.tick()
+
+    loop.hook(.claudeCode, "a", "Stop")
+    loop.hook(.codex, "b", "Interrupt")
+    let spoken = loop.tick()
+    #expect(spoken?.event == .runEndedBadly(count: 2))
+    #expect(spoken?.sound == .warning)
   }
 
   /// A Mac that slept through the end of a run wakes up with the closing event

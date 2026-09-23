@@ -168,7 +168,17 @@ public enum NotificationPolicy {
   }
 
   /// The one event worth sending for this transition, if any.
+  ///
+  /// Guardrails first, then the run ending. The two halves are also reachable
+  /// on their own, because `Watch` asks them different questions: a guardrail
+  /// is a fact about the Mac and is judged once for the whole machine, while a
+  /// run ending is a fact about one host's sessions and is judged per host.
   public static func event(from previous: State, to current: State) -> Event? {
+    guardrailEvent(from: previous, to: current) ?? runEndEvent(from: previous, to: current)
+  }
+
+  /// The guardrail half: a hold a guardrail took away, or never allowed.
+  public static func guardrailEvent(from previous: State, to current: State) -> Event? {
     // A guardrail cutting in while work continues outranks everything: the
     // user's run is at risk and only we can tell them.
     //
@@ -205,6 +215,11 @@ public enum NotificationPolicy {
       return .guardrailPreventedHold(reason: current.reason)
     }
 
+    return nil
+  }
+
+  /// The other half: a run that has finished, however it finished.
+  public static func runEndEvent(from previous: State, to current: State) -> Event? {
     // The run is over. `liveCount`, not `workingCount`, and that is the whole
     // repair: an agent that stops to ask permission leaves `working` without
     // leaving the run, and counting it as finished announced that the Mac could
@@ -337,18 +352,39 @@ extension NotificationPolicy {
     /// later — unplugged again, hot again — is a new thing worth saying.
     public var guardrailRearm: TimeInterval
 
-    /// The last snapshot, so we speak on transitions rather than on every tick.
+    /// The last whole-machine snapshot, so the guardrail rules speak on
+    /// transitions rather than on every tick.
     private var previous: State?
+    /// The same, one per host, for the rule that says a run has ended.
+    ///
+    /// A run belongs to a host, not to the Mac, and that distinction was the
+    /// bug. Everything below that remembers something about "this run" is keyed
+    /// the same way, for the same reason.
+    private var previousPerAgent: [AgentKind: State] = [:]
     /// What each session was doing when we last looked, keyed on
     /// `AgentSession.id`, so an ending can be caught at the moment it happens.
-    private var lastStates: [String: AgentState] = [:]
-    /// The worst thing that has happened to this run so far.
-    private var outcome: SessionOutcome = .finished
-    /// Whether a guardrail has stood between this run and a hold.
-    private var cutShort = false
+    private var lastStates: [String: Seen] = [:]
+    /// The worst thing that has happened to each host's run so far.
+    private var outcome: [AgentKind: SessionOutcome] = [:]
+    /// The hosts whose current run has had a guardrail stand between it and a
+    /// hold.
+    ///
+    /// A guardrail is a fact about the Mac — one battery, one temperature — so
+    /// it is recorded against every host that had something live at the moment
+    /// it bit, and against no host that started afterwards. Cleared with the
+    /// rest of that host's run.
+    private var cutShort: Set<AgentKind> = []
     /// The guardrail Vigil last warned about, and when it stopped applying.
     private var warned: GuardrailKind?
     private var clearSince: Timestamp?
+
+    /// One session as we last saw it. The host is carried because
+    /// `AgentSession.id` is the only key available once the session is gone,
+    /// and reading the host back out of it would mean parsing a separator.
+    private struct Seen: Sendable {
+      let agent: AgentKind
+      let state: AgentState
+    }
 
     public init(guardrailRearm: TimeInterval = 600) {
       self.guardrailRearm = guardrailRearm
@@ -369,37 +405,122 @@ extension NotificationPolicy {
       completionSoundEnabled: Bool,
       now: Timestamp
     ) -> Spoken? {
-      let states = Dictionary(sessions.map { ($0.id, $0.state) }, uniquingKeysWith: { a, _ in a })
-      outcome = max(outcome, endings(among: sessions, expired: expired).max() ?? .finished)
-      if !isHolding, reason.isGuardrail { cutShort = true }
+      let states = Dictionary(
+        sessions.map { ($0.id, Seen(agent: $0.agent, state: $0.state)) },
+        uniquingKeysWith: { a, _ in a })
+      for (agent, ending) in endings(among: sessions, expired: expired) {
+        outcome[agent] = max(outcome[agent] ?? .finished, ending)
+      }
+
+      // Counted once and sliced two ways: whole-machine for the guardrails,
+      // per host for the runs.
+      var live: [AgentKind: (working: Int, waiting: Int)] = [:]
+      for session in sessions {
+        switch session.state {
+        case .working: live[session.agent, default: (0, 0)].working += 1
+        case .waiting: live[session.agent, default: (0, 0)].waiting += 1
+        case .idle: break
+        }
+      }
+      if !isHolding, reason.isGuardrail {
+        // Every host that had something in flight when the guardrail bit, and
+        // only those: one that starts afterwards is a new run in new conditions.
+        for (agent, counts) in live where counts.working + counts.waiting > 0 {
+          cutShort.insert(agent)
+        }
+      }
 
       let current = State(
-        workingCount: sessions.filter { $0.state == .working }.count,
-        waitingCount: sessions.filter { $0.state == .waiting }.count,
+        workingCount: live.values.reduce(0) { $0 + $1.working },
+        waitingCount: live.values.reduce(0) { $0 + $1.waiting },
         isHolding: isHolding,
         reason: reason,
-        outcome: outcome,
-        cutShort: cutShort
+        outcome: outcome.values.max() ?? .finished,
+        cutShort: !cutShort.isEmpty
       )
+      let perAgent = Dictionary(
+        uniqueKeysWithValues: Set(live.keys).union(previousPerAgent.keys).map { agent in
+          (
+            agent,
+            State(
+              workingCount: live[agent]?.working ?? 0,
+              waitingCount: live[agent]?.waiting ?? 0,
+              isHolding: isHolding,
+              reason: reason,
+              outcome: outcome[agent] ?? .finished,
+              cutShort: cutShort.contains(agent)
+            )
+          )
+        })
       rearmGuardrail(inForce: isHolding ? nil : GuardrailKind(reason), now: now)
 
       // No previous snapshot means this is the first tick after launch. Finding
       // agents already running is not a transition worth announcing.
-      let event = previous.flatMap { NotificationPolicy.event(from: $0, to: current) }
-      let spoken = event.flatMap { record($0, completionSoundEnabled: completionSoundEnabled) }
+      let spoken =
+        previous.flatMap { was in
+          // A guardrail cutting in outranks a run ending, and it is judged for
+          // the Mac as a whole because that is what a battery floor is about.
+          if let event = NotificationPolicy.guardrailEvent(from: was, to: current) {
+            return record(
+              event, cutShort: current.cutShort, completionSoundEnabled: completionSoundEnabled)
+          }
+          return runEnding(perAgent: perAgent, completionSoundEnabled: completionSoundEnabled)
+        }
 
       previous = current
+      previousPerAgent = perAgent
       lastStates = states
-      // The run is over, whatever it was. Everything accumulated about it goes
-      // with it, so tomorrow's run is not judged on today's battery.
-      if current.liveCount == 0 {
-        outcome = .finished
-        cutShort = false
+      // That host's run is over, whatever it was. Everything accumulated about
+      // it goes with it, so its next run is not judged on this one's battery —
+      // and, unlike before, neither is anybody else's. This used to wait for
+      // every host on the Mac to fall quiet at once, which with four
+      // integrations wired up is a state a working day may never reach: one
+      // escaped Codex turn relabelled every clean run after it as a failure and
+      // swapped the completion chime for the warning sound, for as long as the
+      // user's own session kept something live.
+      for (agent, state) in perAgent where state.liveCount == 0 {
+        outcome.removeValue(forKey: agent)
+        cutShort.remove(agent)
       }
       return spoken
     }
 
-    /// How every session that left the run in this tick ended.
+    /// The one thing worth saying about the runs that ended this tick.
+    ///
+    /// Per host, then folded back into a single announcement. The fold is not a
+    /// compromise: `sound(for:…)` is a function of one event, and that is the
+    /// whole reason three agents finishing within a few seconds of each other
+    /// make one sound rather than three. Two hosts finishing on the same tick
+    /// is the same situation one tick tighter, so it gets the same treatment —
+    /// one sentence, the counts added, and the outcome the worse of the two,
+    /// which is the same `max` a single host already applies across its own
+    /// sessions.
+    private mutating func runEnding(
+      perAgent: [AgentKind: State],
+      completionSoundEnabled: Bool
+    ) -> Spoken? {
+      var count = 0
+      var worst = SessionOutcome.finished
+      var wasCutShort = false
+      for (agent, current) in perAgent {
+        guard let was = previousPerAgent[agent],
+          NotificationPolicy.runEndEvent(from: was, to: current) != nil
+        else { continue }
+        count += was.liveCount
+        worst = max(worst, current.outcome)
+        wasCutShort = wasCutShort || current.cutShort
+      }
+      guard count > 0 else { return nil }
+      let event: Event =
+        switch worst {
+        case .finished: .allAgentsFinished(count: count)
+        case .endedBadly: .runEndedBadly(count: count)
+        case .lostContact: .lostContact(count: count)
+        }
+      return record(event, cutShort: wasCutShort, completionSoundEnabled: completionSoundEnabled)
+    }
+
+    /// How every session that left its run in this tick ended, per host.
     ///
     /// A session leaves by going `idle`, or by being pruned. The two are the
     /// same question asked a moment apart, and a Mac that slept through the
@@ -410,19 +531,27 @@ extension NotificationPolicy {
     private func endings(
       among sessions: [AgentSession],
       expired: [AgentSession]
-    ) -> [SessionOutcome] {
+    ) -> [AgentKind: SessionOutcome] {
       let here = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
       let gone = Dictionary(expired.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-      return lastStates.compactMap { id, was in
+      var worst: [AgentKind: SessionOutcome] = [:]
+      for (id, was) in lastStates {
         // Only a session that was part of the run can leave it. One that was
         // already idle ended at the tick it went idle, and is not ending twice.
-        guard was != .idle else { return nil }
+        guard was.state != .idle else { continue }
         // Still in the store: nil while it is live, its own outcome once it is
         // not. Gone from the store: pruned, and a session that vanished without
         // even being handed to us is one Vigil cannot vouch for either.
-        if let session = here[id] { return session.outcome }
-        return gone[id]?.outcome ?? .lostContact
+        let ending: SessionOutcome?
+        if let session = here[id] {
+          ending = session.outcome
+        } else {
+          ending = gone[id]?.outcome ?? .lostContact
+        }
+        guard let ending else { continue }
+        worst[was.agent] = max(worst[was.agent] ?? .finished, ending)
       }
+      return worst
     }
 
     /// Let a guardrail warning fire again once its condition has been clear for
@@ -445,7 +574,15 @@ extension NotificationPolicy {
 
     /// Note that this is about to be said, and refuse a guardrail warning that
     /// is the same one all over again.
-    private mutating func record(_ event: Event, completionSoundEnabled: Bool) -> Spoken? {
+    ///
+    /// `cutShort` is passed in rather than read off the instance: it is now a
+    /// per-host condition, and the caller is the only one that knows whose run
+    /// this sentence is about.
+    private mutating func record(
+      _ event: Event,
+      cutShort: Bool,
+      completionSoundEnabled: Bool
+    ) -> Spoken? {
       if case .guardrailStoppedHold(let reason) = event {
         let kind = GuardrailKind(reason)
         guard kind != warned else { return nil }

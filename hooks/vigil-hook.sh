@@ -8,8 +8,11 @@
 # command, so this script does not need to know one agent's vocabulary from
 # another's — and the mapping stays in Swift where it is typed and tested.
 #
-# Exits 0 on every path. This runs inside someone's coding agent, on their
-# critical path: if it hangs or fails loudly, they blame the agent.
+# Exits 0 on every path, and returns in bounded time on every path. Reading the
+# host's stdin is the only place this script can wait at all, and that read is
+# bounded three ways — bytes, lines and wall clock. This runs inside someone's
+# coding agent, on their critical path: if it hangs or fails loudly, they blame
+# the agent.
 set -u
 
 AGENT="${1:-unknown}"
@@ -82,12 +85,32 @@ if [ ! -t 0 ]; then
   # failure the top of this file says must not happen. The same input now takes
   # about a twentieth of a second.
   #
-  # Two bounds, and both earn their place: `bytes` stops a large payload, and
-  # `lines` stops a host that streams blank lines forever — those cost no bytes
-  # at all, so the byte bound alone would never trip.
+  # Three bounds, and each one stops a runaway the other two cannot see.
+  # `bytes` stops a large payload. `lines` stops a host that streams blank
+  # lines forever — those cost no bytes at all, so the byte bound alone would
+  # never trip. `SECONDS` stops the shape neither of them bounds: `-t 1` is a
+  # timeout *per line*, so a host emitting a line more often than once a second
+  # resets it every time and the loop never ends on its own. Measured on the
+  # volume bounds alone, a line every 0.9s ran for 10.99s at ten lines and
+  # 19.49s at twenty — strictly linear, so the 4096-line bound is the real
+  # limit at a little over an hour, spent inside the user's agent, exiting 0
+  # with nothing posted and nothing anywhere to say why.
+  #
+  # `SECONDS` is the whole of bash 3.2's clock: no `EPOCHSECONDS`, no
+  # `EPOCHREALTIME`, and shelling out to `date` on every line would cost more
+  # than the loop. It is enough here — it is assignable, so resetting it to 0
+  # makes it count this loop rather than the life of the shell, and a bound
+  # measured in whole seconds wants no finer resolution than that.
+  #
+  # Two seconds, because the normal case never sees it: a few hundred bytes
+  # arriving at once reaches EOF on the first pass, which is why the ordinary
+  # invocation below still takes about a tenth of a second. Anything still
+  # arriving two seconds in is a host that is streaming rather than handing
+  # over a payload, and the event it is holding up is already late.
   lines=0
   bytes=0
   line=""
+  SECONDS=0
   while IFS= read -r -t 1 line 2>/dev/null || [ -n "$line" ]; do
     parts[$lines]="$line"
     lines=$((lines + 1))
@@ -95,8 +118,14 @@ if [ ! -t 0 ]; then
     line=""
     # A hook payload is a few hundred bytes. Anything past this is a bug or a
     # probe, and Vigil's socket would refuse it anyway.
+    #
+    # Checked after the line is stored rather than before, deliberately:
+    # compact JSON is a single line, so that one line *is* the whole payload.
+    # Refusing to store it for being over budget would throw away something
+    # that parses perfectly, to save memory `read` has already spent.
     [ "$bytes" -gt 65536 ] && break
     [ "$lines" -ge 4096 ] && break
+    [ "$SECONDS" -ge 2 ] && break
   done
   if [ "$lines" -gt 0 ]; then
     oldifs=$IFS
@@ -108,6 +137,46 @@ fi
 
 # plutil parses JSON safely and is on every Mac; jq is not.
 extract() { printf '%s' "$INPUT" | /usr/bin/plutil -extract "$1" raw -o - - 2>/dev/null || true; }
+
+# The same question, asked of a payload that is no longer JSON.
+#
+# What a read that stops early leaves behind is a *prefix* of an object, and
+# plutil refuses a prefix outright — so every field goes missing at once and
+# the event falls back to the pid key. That is the one key the matching idle
+# event will never use: its payload is small, it parses, and it keys on the
+# real session id. The `working` session left under the pid key therefore has
+# nothing that can ever clear it, and it holds the Mac awake until it goes
+# stale. Scraping the prefix costs one sed and usually recovers the real id,
+# because hosts write it near the front of the object.
+#
+# Only reached for a payload that is not JSON at all. One that parsed has
+# already given its real answer, and a `"session_id"` nested inside some other
+# object is not something this should go looking for.
+#
+# `tr` first, so the match is the *first* occurrence rather than the last: the
+# lines were joined with nothing between them, BSD sed has no non-greedy match,
+# and a leading `.*` would run to the end of what is now one enormous line. A
+# value containing `{` or `,` is split and simply fails to match, which is the
+# safe direction — a partial id would key a session nothing could clear either.
+scrape() {
+  printf '%s' "$INPUT" | LC_ALL=C tr '{,' '\n\n' \
+    | LC_ALL=C sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" \
+    | head -n 1
+}
+
+# Whether what arrived is JSON at all — the difference between "this payload
+# has no session id in it" and "it has one and the read stopped short of it".
+#
+# Every way the read can end early lands here, not just the bounds above: a
+# host that writes half its payload and then holds the pipe open ends the loop
+# on the per-line timeout instead, with exactly the same prefix to show for it.
+#
+# `-lint` is the obvious call and the wrong one: given `-` it reads stdin as a
+# property list first and rejects every JSON document there is with "Unexpected
+# character {". Converting the payload to the format it is already in is the
+# check that answers the question. Only the exit status matters, so the
+# conversion itself goes to /dev/null.
+parses() { printf '%s' "$INPUT" | /usr/bin/plutil -convert json -o /dev/null - 2>/dev/null; }
 
 # Cut to a byte budget without leaving half a character behind.
 #
@@ -128,6 +197,18 @@ SESSION_ID=$(extract session_id)
 [ -z "$SESSION_ID" ] && SESSION_ID=$(extract conversation_id)
 [ -z "$SESSION_ID" ] && SESSION_ID=$(extract conversationId)
 CWD=$(extract cwd)
+
+# Same four names, asked of a payload that stopped mid-object. Nothing above
+# answered and there is something to answer from, so the one extra parse this
+# costs is paid only by a payload that already went wrong.
+if [ -z "$SESSION_ID" ] && [ -n "$INPUT" ] && ! parses; then
+  SESSION_ID=$(scrape session_id)
+  [ -z "$SESSION_ID" ] && SESSION_ID=$(scrape sessionId)
+  [ -z "$SESSION_ID" ] && SESSION_ID=$(scrape conversation_id)
+  [ -z "$SESSION_ID" ] && SESSION_ID=$(scrape conversationId)
+  [ -z "$CWD" ] && CWD=$(scrape cwd)
+fi
+
 [ -z "$CWD" ] && CWD="$PWD"
 
 # Bound everything that came out of the payload. The body has to stay under the

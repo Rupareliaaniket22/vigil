@@ -49,6 +49,24 @@ private let otherToolsHooks = [
   ("UserPromptSubmit", "user_prompt_submit"),
 ]
 
+/// Codex as Vigil registered it on the day the files below were captured.
+///
+/// Pinned rather than taken from `AgentIntegration.codex`, and that is the
+/// point of it: these two tests are about the trust gate and the hash, not
+/// about which events Vigil registers this month. The vocabulary has since
+/// changed — `SessionStart` was dropped because Codex re-fires it mid-turn
+/// after a compaction, and `PermissionRequest` was added — and coupling a
+/// captured artefact to a list that moves means every future change to that
+/// list breaks a test about somebody else's file format.
+private let capturedCodex = AgentIntegration(
+  id: .codex,
+  displayName: "Codex",
+  settingsPath: ".codex/hooks.json",
+  workingEvents: ["UserPromptSubmit", "PreToolUse", "PostToolUse"],
+  idleEvents: ["SessionStart", "Stop", "Interrupt", "SessionEnd"],
+  requiresHookTrust: true
+)
+
 @Suite("Codex hook trust, against a real config.toml")
 struct CodexHookTrustGroundTruthTests {
 
@@ -82,10 +100,10 @@ struct CodexHookTrustGroundTruthTests {
     let settings = parse(realHooksJSON)
     let state = CodexHookTrust.status(
       hooks: settings, hooksPath: hooksPath, configTOML: realConfigTOML,
-      scriptPath: script, integration: .codex)
+      scriptPath: script, integration: capturedCodex)
 
     #expect(
-      state == .untrusted(events: AgentIntegration.codex.allEvents.sorted()),
+      state == .untrusted(events: capturedCodex.allEvents.sorted()),
       "all seven, not the two the event names alone would suggest")
     #expect(!state.isSatisfied)
     #expect(state.blockedEvents.count == 7)
@@ -96,10 +114,10 @@ struct CodexHookTrustGroundTruthTests {
   func untrustedIsNotReady() {
     let settings = parse(realHooksJSON)
     let missing = HookConfiguration.missingEvents(
-      in: settings, scriptPath: script, integration: .codex)
+      in: settings, scriptPath: script, integration: capturedCodex)
     let trust = CodexHookTrust.status(
       hooks: settings, hooksPath: hooksPath, configTOML: realConfigTOML,
-      scriptPath: script, integration: .codex)
+      scriptPath: script, integration: capturedCodex)
 
     #expect(missing.isEmpty, "every hook we want is in the file — that was never the problem")
     // `.untrusted` rather than merely "not `.ready`": the panel offers a
@@ -107,7 +125,7 @@ struct CodexHookTrustGroundTruthTests {
     // `.outOfDate` offers — is precisely the thing that does not fix this.
     #expect(
       HookConfiguration.setupState(
-        missingEvents: missing, expectedEvents: AgentIntegration.codex.allEvents, trust: trust)
+        missingEvents: missing, expectedEvents: capturedCodex.allEvents, trust: trust)
         == .untrusted)
   }
 }
