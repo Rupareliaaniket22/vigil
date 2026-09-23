@@ -65,7 +65,8 @@ struct SettingsView: View {
           integration: integration,
           state: model.setupState(for: integration),
           setUp: { model.installHooks(for: integration) },
-          remove: { model.uninstallHooks(for: integration) }
+          remove: { model.uninstallHooks(for: integration) },
+          trust: { model.reviewTrust(for: integration) }
         )
       }
 
@@ -94,6 +95,40 @@ struct SettingsView: View {
           .padding(.top, Theme.Metrics.tight)
       }
     }
+    // The consent gate, and the reason the button in the row reads "Trust…"
+    // rather than "Trust". The press opens what would be written — the command,
+    // the events it runs on, and the file the approval lands in — and writes
+    // none of it until a second, separate decision. A button that recorded the
+    // approval on the first press is the silent self-approval this whole
+    // feature exists to refuse, with a label stuck on it.
+    //
+    // A system alert rather than something drawn here, and the one place in
+    // Vigil where that is the right answer: this is macOS asking whether a
+    // program may run a command, and it should look like every other time the
+    // user has been asked that — not like a panel Vigil designed for itself.
+    .confirmationDialog(
+      model.pendingTrustApproval?.title ?? "",
+      isPresented: confirmingTrust,
+      titleVisibility: .visible,
+      presenting: model.pendingTrustApproval
+    ) { approval in
+      Button("Approve") { model.trustHooks(for: approval) }
+      Button("Cancel", role: .cancel) { model.cancelTrustReview() }
+    } message: { approval in
+      Text(approval.message)
+    }
+  }
+
+  /// Open for as long as there is something to approve.
+  ///
+  /// Every way out of the dialog other than Approve — Cancel, Escape, the
+  /// window closing — comes back through here as a decline, which is the only
+  /// safe default for a control whose other outcome edits somebody's file.
+  private var confirmingTrust: Binding<Bool> {
+    Binding(
+      get: { model.pendingTrustApproval != nil },
+      set: { if !$0 { model.cancelTrustReview() } }
+    )
   }
 
   // MARK: - Power
@@ -326,15 +361,18 @@ private struct Note: View {
 
 /// One agent, and the one thing to do about it.
 ///
-/// Three states, not two: an agent can be reporting through hooks from an older
+/// Four states, not two. An agent can be reporting through hooks from an older
 /// version of Vigil, which reads as working while quietly sending less than we
-/// now listen for. "Set up" would be wrong for it and "Reporting" would be a
-/// lie, so it gets its own wording and its own action.
+/// now listen for; and it can be wired up perfectly while the host refuses to
+/// run any of it. "Set up" would be wrong for the first and "Reporting" a lie,
+/// and the second is fixed by the opposite action to either — so each gets its
+/// own wording and its own button.
 private struct AgentRow: View {
   let integration: AgentIntegration
   let state: HookSetupState
   let setUp: () -> Void
   let remove: () -> Void
+  let trust: () -> Void
 
   var body: some View {
     SettingsRow(integration.displayName) {
@@ -349,10 +387,12 @@ private struct AgentRow: View {
         case .ready: Button("Remove", action: remove)
         case .outOfDate: Button("Update", action: setUp)
         case .notSetUp: Button("Set up", action: setUp)
-        // No button. Nothing Vigil can press fixes this — the hooks are
-        // installed and correct, and the host is the one declining to run
-        // them. The status text says where to go instead.
-        case .untrusted: EmptyView()
+        // Not "Update": the hooks are installed and correct, and re-running
+        // the install is exactly what does not help. What is missing is the
+        // host's approval of the command, which is the user's to give and
+        // nobody else's — so the button opens it to be read, and the press
+        // that writes it is the one in the dialog.
+        case .untrusted: Button("Trust…", action: trust)
         }
       }
       .buttonStyle(.vigil)

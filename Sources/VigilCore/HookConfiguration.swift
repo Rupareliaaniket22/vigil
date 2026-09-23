@@ -311,6 +311,471 @@ public enum HookTrustState: Sendable, Equatable {
   }
 }
 
+/// Enough of TOML's shape to find one table, and nothing beyond that.
+///
+/// Reading `config.toml` and writing it used to be two scans with a
+/// `split(separator: "\n")` each, and two copies of the same logic share every
+/// blind spot: a CRLF file never split at all — `"\r\n"` is a *single* Swift
+/// `Character` — so the reader saw no records, reported "untrusted", and the
+/// writer then appended a table that was already in the file. One scanner used
+/// by both is the fix for that whole class: the reader can no longer see less
+/// than the writer, and what the scanner cannot account for the writer refuses
+/// to write beside rather than guessing.
+///
+/// It is a scanner for statements, not a TOML parser. It resolves key syntax
+/// and where a statement ends — a value may span lines, and a line beginning
+/// with `[` inside one is not a table header — and it knows nothing about
+/// types, defaults or what a document means. Anything it cannot account for
+/// ends the scan with `isComplete` false instead of being guessed at, which is
+/// what lets `CodexTrustWriter` refuse. Refusing costs the user one `/hooks`
+/// command; a wrong guess costs them every hook Codex would have run.
+enum CodexTOML {
+
+  /// One physical line, with the ending it arrived with.
+  ///
+  /// Terminators are carried rather than normalised so a file can be rebuilt
+  /// byte for byte, and lines are cut on the newline *scalar*: anything that
+  /// goes through `Character` treats CRLF as one element and never cuts at all.
+  struct Line: Equatable {
+    var text: String
+    var terminator: String
+  }
+
+  /// One statement, and the physical lines it occupies.
+  enum Element {
+    /// `[a.b.c]`, with every part of the key path unquoted.
+    case header(path: [String], line: Int)
+    /// `[[a.b.c]]`. Never a table this writer can add a key to.
+    case arrayHeader(path: [String], line: Int)
+    /// `key = value`, occupying `first` through `last` inclusive.
+    case assignment(path: [String], value: String, first: Int, last: Int)
+  }
+
+  /// What a scan found, and whether it got to the end.
+  struct Scan {
+    var elements: [Element]
+    /// False once the scanner met something it could not account for.
+    /// `elements` then stops there and says nothing about the rest of the file.
+    var isComplete: Bool
+  }
+
+  // MARK: - Lines
+
+  /// Split into physical lines, keeping each line's ending.
+  static func lines(of toml: String) -> [Line] {
+    var out: [Line] = []
+    var current = String.UnicodeScalarView()
+    for scalar in toml.unicodeScalars {
+      guard scalar == "\n" else {
+        current.append(scalar)
+        continue
+      }
+      if current.last == "\r" {
+        current.removeLast()
+        out.append(Line(text: String(current), terminator: "\r\n"))
+      } else {
+        out.append(Line(text: String(current), terminator: "\n"))
+      }
+      current = String.UnicodeScalarView()
+    }
+    if !current.isEmpty { out.append(Line(text: String(current), terminator: "")) }
+    return out
+  }
+
+  /// The file those lines came from, byte for byte.
+  static func joined(_ lines: [Line]) -> String {
+    var out = ""
+    for line in lines {
+      out += line.text
+      out += line.terminator
+    }
+    return out
+  }
+
+  /// The ending to give a line we add: whichever the file already uses most.
+  static func dominantTerminator(_ lines: [Line]) -> String {
+    var crlf = 0
+    var lf = 0
+    for line in lines {
+      if line.terminator == "\r\n" {
+        crlf += 1
+      } else if line.terminator == "\n" {
+        lf += 1
+      }
+    }
+    return crlf > lf ? "\r\n" : "\n"
+  }
+
+  // MARK: - Scanning
+
+  /// Every statement in the file, in order.
+  static func scan(_ lines: [Line]) -> Scan {
+    var elements: [Element] = []
+    var index = 0
+
+    while index < lines.count {
+      guard isScannable(lines[index]) else { return Scan(elements: elements, isComplete: false) }
+      let scalars = Array(lines[index].text.unicodeScalars)
+      var cursor = 0
+      skipBlanks(scalars, &cursor)
+      if cursor == scalars.count || scalars[cursor] == "#" {
+        index += 1
+        continue
+      }
+
+      if scalars[cursor] == "[" {
+        guard let header = parseHeader(scalars, from: cursor) else {
+          return Scan(elements: elements, isComplete: false)
+        }
+        elements.append(
+          header.isArray
+            ? .arrayHeader(path: header.path, line: index)
+            : .header(path: header.path, line: index))
+        index += 1
+        continue
+      }
+
+      guard let path = parseKeyPath(scalars, &cursor), !path.isEmpty,
+        cursor < scalars.count, scalars[cursor] == "="
+      else { return Scan(elements: elements, isComplete: false) }
+      cursor += 1
+
+      var value = text(scalars[cursor...])
+      var reader = ValueScanner()
+      guard reader.consume(scalars, from: cursor) else {
+        return Scan(elements: elements, isComplete: false)
+      }
+      var last = index
+      while !reader.isComplete {
+        last += 1
+        guard last < lines.count, isScannable(lines[last]) else {
+          return Scan(elements: elements, isComplete: false)
+        }
+        value += "\n" + lines[last].text
+        guard reader.consume(Array(lines[last].text.unicodeScalars), from: 0) else {
+          return Scan(elements: elements, isComplete: false)
+        }
+      }
+
+      elements.append(.assignment(path: path, value: value, first: index, last: last))
+      index = last + 1
+    }
+
+    return Scan(elements: elements, isComplete: true)
+  }
+
+  /// Whether a line can be believed at all.
+  ///
+  /// A carriage return that survived the split is one TOML does not allow
+  /// anywhere: not between statements, not inside a string of any of the four
+  /// kinds. Codex cannot parse such a file either, so refusing costs nothing —
+  /// and it buys the invariant the rest of this rests on, that every statement
+  /// Codex can see is a statement we saw too. Without it a lone `\r` hides the
+  /// statement after it from us alone, which is how a record already in the
+  /// file gets written a second time.
+  private static func isScannable(_ line: Line) -> Bool {
+    !line.text.unicodeScalars.contains("\r")
+  }
+
+  /// How far through a value the scan is, carried across physical lines.
+  ///
+  /// The only thing this has to get right is where a value *ends*. A multi-line
+  /// string or a nested array can hold a line that begins with `[`, and reading
+  /// one of those as a table header is what cleared the scanner's idea of which
+  /// table it was in and made it insert a second `trusted_hash` into a table
+  /// that already had one.
+  private struct ValueScanner {
+    private enum Mode {
+      case open
+      case basicMultiline
+      case literalMultiline
+    }
+
+    private var mode: Mode = .open
+    private var depth = 0
+
+    /// Whether the value has ended.
+    var isComplete: Bool { mode == .open && depth == 0 }
+
+    /// Read one physical line. False means the line holds something this
+    /// scanner cannot account for, and nothing after it should be believed.
+    mutating func consume(_ scalars: [Unicode.Scalar], from start: Int) -> Bool {
+      var i = start
+      while i < scalars.count {
+        switch mode {
+        case .basicMultiline:
+          if scalars[i] == "\\" {
+            i += 2
+          } else if CodexTOML.matches(scalars, at: i, "\"\"\"") {
+            mode = .open
+            i = CodexTOML.skipQuoteRun(scalars, at: i, "\"")
+          } else {
+            i += 1
+          }
+        case .literalMultiline:
+          if CodexTOML.matches(scalars, at: i, "'''") {
+            mode = .open
+            i = CodexTOML.skipQuoteRun(scalars, at: i, "'")
+          } else {
+            i += 1
+          }
+        case .open:
+          switch scalars[i] {
+          case "#":
+            return true
+          case "\"":
+            if CodexTOML.matches(scalars, at: i, "\"\"\"") {
+              mode = .basicMultiline
+              i += 3
+            } else {
+              guard let end = CodexTOML.basicString(scalars, at: i)?.end else { return false }
+              i = end
+            }
+          case "'":
+            if CodexTOML.matches(scalars, at: i, "'''") {
+              mode = .literalMultiline
+              i += 3
+            } else {
+              guard let end = CodexTOML.literalString(scalars, at: i)?.end else { return false }
+              i = end
+            }
+          case "[", "{":
+            depth += 1
+            i += 1
+          case "]", "}":
+            depth -= 1
+            if depth < 0 { return false }
+            i += 1
+          default:
+            i += 1
+          }
+        }
+      }
+      return true
+    }
+  }
+
+  // MARK: - Keys
+
+  /// `[a.b.c]` or `[[a.b.c]]`, whole and unambiguous, or nothing.
+  ///
+  /// The key is read with TOML's own rules rather than by stopping at the first
+  /// `]`, which is what made a path containing a bracket — `we]ird` is a legal
+  /// directory name on macOS — produce a table this writer could not read back,
+  /// so a second press appended the same table again.
+  static func parseHeader(
+    _ scalars: [Unicode.Scalar], from start: Int
+  ) -> (path: [String], isArray: Bool)? {
+    var i = start
+    guard i < scalars.count, scalars[i] == "[" else { return nil }
+    i += 1
+    var isArray = false
+    if i < scalars.count, scalars[i] == "[" {
+      isArray = true
+      i += 1
+    }
+    guard let path = parseKeyPath(scalars, &i), !path.isEmpty else { return nil }
+    guard i < scalars.count, scalars[i] == "]" else { return nil }
+    i += 1
+    if isArray {
+      guard i < scalars.count, scalars[i] == "]" else { return nil }
+      i += 1
+    }
+    skipBlanks(scalars, &i)
+    guard i == scalars.count || scalars[i] == "#" else { return nil }
+    return (path, isArray)
+  }
+
+  /// A dotted key — bare, basic-quoted or literal-quoted parts — from `i`.
+  static func parseKeyPath(_ scalars: [Unicode.Scalar], _ i: inout Int) -> [String]? {
+    var parts: [String] = []
+    while true {
+      skipBlanks(scalars, &i)
+      guard i < scalars.count else { return nil }
+      switch scalars[i] {
+      case "\"":
+        guard let part = basicString(scalars, at: i) else { return nil }
+        parts.append(part.text)
+        i = part.end
+      case "'":
+        guard let part = literalString(scalars, at: i) else { return nil }
+        parts.append(part.text)
+        i = part.end
+      default:
+        guard isBareKey(scalars[i]) else { return nil }
+        var end = i
+        while end < scalars.count, isBareKey(scalars[end]) { end += 1 }
+        parts.append(text(scalars[i..<end]))
+        i = end
+      }
+      skipBlanks(scalars, &i)
+      guard i < scalars.count, scalars[i] == "." else { return parts }
+      i += 1
+    }
+  }
+
+  // MARK: - Strings
+
+  /// A `"…"` basic string starting at `index`, with its escapes resolved.
+  static func basicString(
+    _ scalars: [Unicode.Scalar], at index: Int
+  ) -> (text: String, end: Int)? {
+    var i = index + 1
+    var out = String.UnicodeScalarView()
+    while i < scalars.count {
+      if scalars[i] == "\"" { return (String(out), i + 1) }
+      guard scalars[i] == "\\" else {
+        out.append(scalars[i])
+        i += 1
+        continue
+      }
+      i += 1
+      guard i < scalars.count else { return nil }
+      switch scalars[i] {
+      case "\"": out.append("\"")
+      case "\\": out.append("\\")
+      case "b": out.append("\u{08}")
+      case "f": out.append("\u{0C}")
+      case "n": out.append("\n")
+      case "r": out.append("\r")
+      case "t": out.append("\t")
+      case "u", "U":
+        let digits = scalars[i] == "u" ? 4 : 8
+        guard let decoded = escapedScalar(scalars, at: i + 1, digits: digits) else { return nil }
+        out.append(decoded)
+        i += digits
+      default:
+        return nil
+      }
+      i += 1
+    }
+    return nil
+  }
+
+  /// A `'…'` literal string starting at `index`. No escapes: a Windows path in
+  /// a key means exactly what it says.
+  static func literalString(
+    _ scalars: [Unicode.Scalar], at index: Int
+  ) -> (text: String, end: Int)? {
+    var i = index + 1
+    while i < scalars.count {
+      if scalars[i] == "'" { return (text(scalars[(index + 1)..<i]), i + 1) }
+      i += 1
+    }
+    return nil
+  }
+
+  /// The string a value holds, if the value is one plain string and nothing
+  /// else. Nil for anything else, which reads as "no record here" rather than
+  /// as a hash we half-understood.
+  static func stringValue(_ raw: String) -> String? {
+    let scalars = Array(raw.unicodeScalars)
+    var i = 0
+    skipBlanks(scalars, &i)
+    guard i < scalars.count else { return nil }
+    switch scalars[i] {
+    case "\"":
+      guard !matches(scalars, at: i, "\"\"\"") else { return nil }
+      return basicString(scalars, at: i)?.text
+    case "'":
+      guard !matches(scalars, at: i, "'''") else { return nil }
+      return literalString(scalars, at: i)?.text
+    default:
+      return nil
+    }
+  }
+
+  /// `value` as a TOML basic string.
+  ///
+  /// Codex's keys are absolute paths. A quote or a backslash would end the key
+  /// early and file the approval against a different entry; a newline — also
+  /// legal in a macOS path — cannot appear in a basic string at all, so writing
+  /// one raw stops the whole file parsing on the line we just wrote.
+  static func quotedString(_ value: String) -> String {
+    var out = "\""
+    for scalar in value.unicodeScalars {
+      switch scalar {
+      case "\"": out += "\\\""
+      case "\\": out += "\\\\"
+      case "\u{08}": out += "\\b"
+      case "\t": out += "\\t"
+      case "\n": out += "\\n"
+      case "\u{0C}": out += "\\f"
+      case "\r": out += "\\r"
+      default:
+        if scalar.value < 0x20 || scalar.value == 0x7F {
+          out += String(format: "\\u%04X", scalar.value)
+        } else {
+          out.unicodeScalars.append(scalar)
+        }
+      }
+    }
+    return out + "\""
+  }
+
+  // MARK: - Small things
+
+  /// Spaces, tabs, and a byte-order mark.
+  ///
+  /// U+FEFF is in neither `CharacterSet.whitespaces` nor TOML's own definition
+  /// of whitespace, but Rust's lexer strips one before parsing, so Codex reads
+  /// a file that starts with one perfectly well. Skipping it here is what stops
+  /// such a file's first table from being invisible to us alone.
+  static func skipBlanks(_ scalars: [Unicode.Scalar], _ i: inout Int) {
+    while i < scalars.count, scalars[i] == " " || scalars[i] == "\t" || scalars[i] == "\u{FEFF}" {
+      i += 1
+    }
+  }
+
+  static func matches(_ scalars: [Unicode.Scalar], at index: Int, _ needle: String) -> Bool {
+    var i = index
+    for scalar in needle.unicodeScalars {
+      guard i < scalars.count, scalars[i] == scalar else { return false }
+      i += 1
+    }
+    return true
+  }
+
+  /// Past a run of quotes closing a multi-line string. TOML lets the content
+  /// end with up to two of them, so the delimiter is the last three of the run.
+  private static func skipQuoteRun(
+    _ scalars: [Unicode.Scalar], at index: Int, _ quote: Unicode.Scalar
+  ) -> Int {
+    var i = index
+    var run = 0
+    while i < scalars.count, scalars[i] == quote, run < 5 {
+      i += 1
+      run += 1
+    }
+    return i
+  }
+
+  private static func escapedScalar(
+    _ scalars: [Unicode.Scalar], at index: Int, digits: Int
+  ) -> Unicode.Scalar? {
+    guard index + digits <= scalars.count else { return nil }
+    var value: UInt32 = 0
+    for offset in 0..<digits {
+      guard let digit = Character(scalars[index + offset]).hexDigitValue else { return nil }
+      value = value * 16 + UInt32(digit)
+    }
+    return Unicode.Scalar(value)
+  }
+
+  private static func isBareKey(_ scalar: Unicode.Scalar) -> Bool {
+    switch scalar {
+    case "A"..."Z", "a"..."z", "0"..."9", "_", "-": true
+    default: false
+    }
+  }
+
+  private static func text(_ slice: ArraySlice<Unicode.Scalar>) -> String {
+    var view = String.UnicodeScalarView()
+    view.append(contentsOf: slice)
+    return String(view)
+  }
+}
+
 /// Codex's per-entry hook trust, read rather than guessed at.
 ///
 /// Codex will not run a hook it has not been told to trust. It keeps the
@@ -368,6 +833,23 @@ public enum CodexHookTrust {
   /// finish inside the shutdown budget.
   static func defaultTimeoutSeconds(for event: String) -> Int {
     (event == "SessionEnd" || event == "Interrupt") ? 1 : 600
+  }
+
+  /// The timeout Codex hashes, which is not always the one written in the file.
+  ///
+  /// `normalize_command_hook` resolves the default and then clamps, and the two
+  /// clamps are not the same: `timeout_sec.unwrap_or(600).max(1)` for most
+  /// events, but `timeout_sec.unwrap_or(1).clamp(1, SESSION_END_MAX_TIMEOUT_SEC)`
+  /// — three seconds — for `SessionEnd` and `Interrupt`, both of which run
+  /// inside the shutdown budget. Hashing the written number instead reports a
+  /// hook Codex is perfectly happy with as `modified`, which is a false
+  /// accusation, and then writes a hash Codex will never accept.
+  ///
+  /// Only reachable for a hand-written `timeout`: Codex's integration leaves
+  /// `timeoutMilliseconds` nil, so Vigil's own installs carry no timeout at all.
+  static func normalisedTimeoutSeconds(_ timeout: Int, for event: String) -> Int {
+    guard event == "SessionEnd" || event == "Interrupt" else { return max(1, timeout) }
+    return min(max(1, timeout), 3)
   }
 
   /// The key Codex files this entry's trust decision under.
@@ -438,48 +920,44 @@ public enum CodexHookTrust {
 
   /// Every `trusted_hash` in a `config.toml`, keyed the way Codex keys them.
   ///
-  /// A reader for one table rather than a TOML parser, which is the right size
-  /// for the job: this needs `hooks.state` and nothing else, and a general
-  /// parser would be a great deal of surface area to maintain in a menu bar
-  /// app for one lookup. It reads the three shapes the table can take — the
-  /// standard-table form Codex itself writes, a dotted key under
-  /// `[hooks.state]`, and an inline table — and anything else it simply does
-  /// not see, which `status` then reports as `unknown` rather than as trouble.
+  /// A reader for one table rather than a TOML parser, which is still the right
+  /// size for the job: this needs `hooks.state` and nothing else. What changed
+  /// is that the scanning is `CodexTOML`'s and is shared with `CodexTrustWriter`
+  /// — two hand-rolled scanners agreed with each other right up until a CRLF
+  /// file, where this one saw no records, said "untrusted", and sent the user
+  /// to a writer that then appended a record already in the file.
+  ///
+  /// Every shape a record can take falls out of one rule: a table header and a
+  /// dotted key are the same path written two ways, so the header's path and
+  /// the assignment's, concatenated, name the same thing either way. That reads
+  /// the standard-table form Codex itself writes, a dotted key under
+  /// `[hooks.state]`, an inline table, `[hooks]` with `state."…".trusted_hash`,
+  /// and a top-level dotted key, without a branch for each. Anything else is
+  /// simply not seen, which `status` reports as `untrusted` rather than as an
+  /// accusation — and the writer refuses to append beside it.
   static func trustRecords(inConfigTOML toml: String) -> [String: String] {
     var records: [String: String] = [:]
-    /// The `[hooks.state."…"]` table we are currently inside, if any.
-    var currentKey: String?
-    var insideStateTable = false
+    var table: [String] = []
+    var insideArrayTable = false
 
-    for rawLine in toml.split(separator: "\n", omittingEmptySubsequences: false) {
-      let line = rawLine.trimmingCharacters(in: .whitespaces)
-      if line.hasPrefix("#") { continue }
-
-      if line.hasPrefix("[") {
-        currentKey = nil
-        insideStateTable = false
-        let header = String(line.dropFirst().prefix(while: { $0 != "]" }))
-          .trimmingCharacters(in: .whitespaces)
-        if header == "hooks.state" {
-          insideStateTable = true
-        } else if header.hasPrefix("hooks.state.") {
-          currentKey = unquote(String(header.dropFirst("hooks.state.".count)))
-        }
-        continue
-      }
-
-      guard let equals = line.firstIndex(of: "=") else { continue }
-      let name = String(line[line.startIndex..<equals]).trimmingCharacters(in: .whitespaces)
-      let value = String(line[line.index(after: equals)...]).trimmingCharacters(in: .whitespaces)
-
-      if let currentKey, name == "trusted_hash" {
-        records[currentKey] = unquote(value)
-      } else if insideStateTable {
-        // `"key".trusted_hash = "…"`, or `"key" = { trusted_hash = "…" }`.
-        if name.hasSuffix(".trusted_hash") {
-          records[unquote(String(name.dropLast(".trusted_hash".count)))] = unquote(value)
-        } else if value.hasPrefix("{"), let hash = inlineTrustedHash(value) {
-          records[unquote(name)] = hash
+    for element in CodexTOML.scan(CodexTOML.lines(of: toml)).elements {
+      switch element {
+      case .header(let path, _):
+        table = path
+        insideArrayTable = false
+      case .arrayHeader(let path, _):
+        // `[[hooks.state]]` is an array of tables, and a record inside one is
+        // not addressed by the key we would look it up under.
+        table = path
+        insideArrayTable = true
+      case .assignment(let path, let value, _, _):
+        guard !insideArrayTable else { continue }
+        let full = table + path
+        guard full.count >= 3, full[0] == "hooks", full[1] == "state" else { continue }
+        if full.count == 4, full[3] == "trusted_hash" {
+          records[full[2]] = CodexTOML.stringValue(value)
+        } else if full.count == 3, value.trimmingCharacters(in: .whitespaces).hasPrefix("{") {
+          records[full[2]] = inlineTrustedHash(value)
         }
       }
     }
@@ -494,41 +972,6 @@ public enum CodexHookTrust {
     let quote = rest.first!
     let body = rest.dropFirst().prefix { $0 != quote }
     return body.isEmpty ? nil : String(body)
-  }
-
-  /// Strip one layer of TOML quoting from a key or a value.
-  ///
-  /// Basic strings honour `\\` and `\"`; literal strings — single quotes — mean
-  /// exactly what they say, which is why a Windows path in a key survives.
-  static func unquote(_ value: String) -> String {
-    var text = value.trimmingCharacters(in: .whitespaces)
-    if let comment = text.firstIndex(of: "#"), !text.hasPrefix("\""), !text.hasPrefix("'") {
-      text = String(text[text.startIndex..<comment]).trimmingCharacters(in: .whitespaces)
-    }
-    if text.hasPrefix("'"), text.hasSuffix("'"), text.count >= 2 {
-      return String(text.dropFirst().dropLast())
-    }
-    guard text.hasPrefix("\""), text.count >= 2 else { return text }
-    var out = ""
-    var escaped = false
-    for character in text.dropFirst() {
-      if escaped {
-        switch character {
-        case "n": out.append("\n")
-        case "t": out.append("\t")
-        case "r": out.append("\r")
-        default: out.append(character)
-        }
-        escaped = false
-      } else if character == "\\" {
-        escaped = true
-      } else if character == "\"" {
-        break
-      } else {
-        out.append(character)
-      }
-    }
-    return out
   }
 
   /// Where each of our hook entries sits in a hooks file, and what it says.
@@ -575,7 +1018,7 @@ public enum CodexHookTrust {
           found.append(
             Entry(
               event: event, group: group, handler: handler, command: command,
-              timeoutSeconds: max(1, timeout)))
+              timeoutSeconds: normalisedTimeoutSeconds(timeout, for: event)))
         }
       }
     }

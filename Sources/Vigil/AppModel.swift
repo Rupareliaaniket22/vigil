@@ -138,6 +138,62 @@ final class AppModel {
     (trustStates[integration.id] ?? .notRequired).explanation(host: integration.displayName)
   }
 
+  /// Exactly what one press of "Trust" would record, held while it is read.
+  ///
+  /// State on the model rather than a flag in a row, because it is not a
+  /// presentation detail: the records are captured at the moment they are put
+  /// in front of the user and carried through to the write, so that what the
+  /// confirmation names is what lands in the file. Anything that re-derived
+  /// them on the way out would be a consent dialog describing one thing and
+  /// approving another.
+  private(set) var pendingTrustApproval: TrustApproval?
+
+  /// One host's hooks, as a sentence somebody can decide on.
+  struct TrustApproval: Equatable, Identifiable {
+    let integration: AgentIntegration
+    /// Approved verbatim. Nothing between here and disk recomputes them.
+    let records: [CodexTrustWriter.Record]
+    /// The command being approved, written the way the user knows it.
+    let command: String
+    /// The file the approval is written into.
+    let configPath: String
+
+    var id: AgentKind { integration.id }
+    var host: String { integration.displayName }
+    var events: [String] { records.map(\.event) }
+
+    var title: String { "Let \(host) run Vigil's hooks?" }
+
+    /// What will run, and when. The command leads: approving a hook is a
+    /// statement about a command, and a dialog that named only the file would
+    /// be asking for consent to the paperwork.
+    var summary: String {
+      "\(host) will run \(command) on \(Self.list(events))."
+    }
+
+    /// What the press does to the file, and what it leaves alone.
+    var consequence: String {
+      "Approving writes one trust record per event into \(configPath). "
+        + "Nothing else in that file changes."
+    }
+
+    /// The two together, as the confirmation shows them.
+    ///
+    /// Assembled here rather than in the view so that a `String` reaches
+    /// `Text` — interpolating into it there would resolve to the
+    /// `LocalizedStringKey` overload and send a sentence built at runtime
+    /// through a lookup table, which is not what any other line in this app
+    /// does with text it has just composed.
+    var message: String { summary + "\n\n" + consequence }
+
+    /// "A, B and C", no Oxford comma — the house style everywhere else.
+    private static func list(_ items: [String]) -> String {
+      guard let last = items.last else { return "" }
+      guard items.count > 1 else { return last }
+      return items.dropLast().joined(separator: ", ") + " and " + last
+    }
+  }
+
   func isInstalled(_ integration: AgentIntegration) -> Bool {
     installedAgents.contains(integration.id)
   }
@@ -408,6 +464,57 @@ final class AppModel {
     refreshInstalledAgents()
   }
 
+  /// Work out what the host would be told to trust, and put it in front of the
+  /// user. Writes nothing.
+  ///
+  /// The two halves are separate calls on purpose. A single `trust()` that
+  /// read the hooks and wrote the record in one press would be the thing this
+  /// feature exists not to be — the competitor's silent self-approval with a
+  /// button in front of it. Nothing reaches `config.toml` until someone has
+  /// seen the command, the events and the file, and said yes to those.
+  func reviewTrust(for integration: AgentIntegration) {
+    let installer = HookInstaller.live(for: integration)
+    do {
+      let records = try installer.trustRecords()
+      setupError = nil
+      pendingTrustApproval = TrustApproval(
+        integration: integration,
+        records: records,
+        // The installer's own script path, not a second lookup of the same
+        // constant: the command shown has to be the command hashed.
+        command: Self.underHome(installer.scriptPath),
+        configPath: Self.underHome(HookInstaller.codexConfigFilePath)
+      )
+    } catch {
+      pendingTrustApproval = nil
+      setupError = error.localizedDescription
+    }
+  }
+
+  /// The user read it and closed it without approving. Nothing happened.
+  func cancelTrustReview() {
+    pendingTrustApproval = nil
+  }
+
+  /// Record the approval the user has just read.
+  ///
+  /// Takes the approval rather than reading `pendingTrustApproval`, because
+  /// dismissing the confirmation and running its action are two events whose
+  /// order SwiftUI does not promise — and the one ordering that loses the
+  /// records would write nothing while the row went on saying "Not trusted".
+  func trustHooks(for approval: TrustApproval) {
+    pendingTrustApproval = nil
+    do {
+      try HookInstaller.live(for: approval.integration).recordTrust(approval.records)
+      setupError = nil
+    } catch {
+      setupError = error.localizedDescription
+    }
+    // Re-read rather than assume, the same as `installHooks`: the row must not
+    // claim the host is running our hooks until the host's own file says so.
+    refreshInstalledAgents()
+  }
+
   // MARK: - The loop
 
   func reevaluate() {
@@ -518,6 +625,18 @@ final class AppModel {
   /// both of those render UTF-8. The power assertion deliberately does not use
   /// this — see `reevaluate`.
   var statusLine: String { decision.reason.statusLine }
+
+  /// A path the way its owner knows it: `~` rather than `/Users/them`.
+  ///
+  /// Shared with the panel's project paths. A home directory spelled out in
+  /// full is three components of noise in front of the one that carries the
+  /// meaning, and in the trust confirmation it is the file name that has to be
+  /// recognisable at a glance.
+  static func underHome(_ path: String) -> String {
+    guard !path.isEmpty else { return path }
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
+  }
 
   var workingCount: Int {
     sessions.filter { $0.state == .working }.count

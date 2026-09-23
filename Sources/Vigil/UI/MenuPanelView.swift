@@ -132,7 +132,7 @@ struct MenuPanelView: View {
             AwakeRow(
               isActive: session.state == .working,
               primary: AgentIntegration.displayName(for: session.agent),
-              secondary: session.cwd.map(Self.shorten),
+              secondary: session.cwd.map(AppModel.underHome),
               // Paths truncate from the head: the last two components say which
               // project this is, and the first two say nothing you don't know.
               secondaryTruncation: .head,
@@ -354,12 +354,6 @@ struct MenuPanelView: View {
   private static func held(_ assertion: SystemAssertion, until now: Date) -> String {
     guard let seconds = assertion.held(until: now), seconds >= 0 else { return "" }
     return Elapsed.short(seconds)
-  }
-
-  private static func shorten(_ path: String) -> String {
-    guard !path.isEmpty else { return path }
-    let home = FileManager.default.homeDirectoryForCurrentUser.path
-    return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
   }
 
   // MARK: - What VoiceOver hears

@@ -35,6 +35,23 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   which is the whole of what a hash mismatch means — writing to
   `/Library/PrivilegedHelperTools` already needs root, so it is not evidence of
   anything worse
+- One press in Vigil to let Codex run its hooks, with what is being approved
+  shown first. Codex keeps a `trusted_hash` per hook entry and silently drops
+  every entry it has no record for, so the only fix used to be to leave Vigil,
+  open Codex and run `/hooks`. An agent reading "Not trusted" in Settings now
+  carries a "Trust…" button: pressing it opens what would be written — the
+  command, the events it would run on, and the file the records land in — and
+  writes none of it until Approve. The two presses are deliberately separate.
+  A button that recorded the approval on the first one would be an app granting
+  itself the permission the gate exists to ask a human for, which is the thing
+  Vigil already refuses to do on install, and it would go on granting it to a
+  future Vigil whose hook script had been tampered with. `config.toml` is
+  copied before it is touched, is written atomically so an interrupted press
+  cannot truncate it, and comes back byte-for-byte apart from the
+  `trusted_hash` lines — comments, ordering and every other setting included.
+  Where it already records a hook in a shape Vigil cannot rewrite without
+  risking a file Codex can no longer parse at all, Vigil changes nothing and
+  says to use `/hooks` instead
 
 ### Changed
 - The panel is 340 points wide and about a third shorter than it was. The width
@@ -121,16 +138,17 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   matcher index 0, the record that looked like ours belonged to them. On the
   machine this was found on that meant five trust records, seven Vigil entries,
   and not one of them trusted. Vigil now computes the same identity hash Codex
-  does and says so in its own words: the agent reads "Not trusted", with no
-  button, and a line underneath saying to open Codex and run `/hooks`. Its own
-  state rather than a fold into "Out of date", because the two are fixed by
-  opposite actions and an "Update" button here re-installs a file that was
-  never the problem. It never writes a trust record: the gate exists so that a human read
-  the command before their agent ran it, and an app granting itself that
-  approval would have removed the only thing it is for.
-  **If you set Codex up with an earlier build, run `/hooks` in Codex and trust
-  Vigil's entries.** Claude Code, Cursor and Gemini CLI were checked for the
-  same gate and have none for the files Vigil writes
+  does and says so in its own words: the agent reads "Not trusted", with a line
+  underneath saying what Codex is doing and what resolves it. Its own state
+  rather than a fold into "Out of date", because the two are fixed by opposite
+  actions and an "Update" button here re-installs a file that was never the
+  problem. Vigil never records the approval on its own — see the trust
+  confirmation under Added: the gate exists so that a human read the command
+  before their agent ran it, and an app granting itself that approval would
+  have removed the only thing it is for.
+  **If you set Codex up with an earlier build, press Trust beside Codex in
+  Settings, or run `/hooks` in Codex.** Claude Code, Cursor and Gemini CLI were
+  checked for the same gate and have none for the files Vigil writes
 - Codex sessions that are interrupted or whose terminal closes release the hold,
   via `Interrupt` and `SessionEnd`
 - Cursor sessions are identified by conversation. Cursor sends

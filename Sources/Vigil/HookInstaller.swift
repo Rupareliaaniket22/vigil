@@ -32,6 +32,10 @@ struct HookInstaller {
     case settingsHasComments(String)
     case settingsNotWritable(String)
     case settingsShapeUnknown(String, [String])
+    case trustNotOffered(String)
+    case trustRecordUnfamiliar(String, String)
+    case trustConfigUnfamiliar(String, String)
+    case trustConfigUnreadable(String)
 
     var errorDescription: String? {
       switch self {
@@ -55,6 +59,30 @@ struct HookInstaller {
           + "them. Remove the comments and try again, or add the hook by hand."
       case .settingsNotWritable(let path):
         "\(path) is read-only. Vigil left it alone — make it writable and try again."
+      case .trustNotOffered(let host):
+        // Reached when the hooks cannot be identified well enough to say what
+        // approving them would mean. There is nothing to show the user, so
+        // there is nothing for them to approve — send them to the host's own
+        // review command rather than writing a record they never read.
+        "Vigil couldn't work out exactly what \(host) would be approving, so it "
+          + "wrote nothing. Open \(host) and run /hooks to review the hooks there."
+      case .trustRecordUnfamiliar(let path, let host):
+        // TOML rejects a file that defines a key twice, and a config.toml
+        // Codex cannot parse costs the user Codex — a far worse outcome than
+        // the one being fixed. Refusing is the whole of CodexTrustWriter's
+        // position; this is where the user hears about it.
+        "\(path) already records that hook in a form Vigil can't rewrite safely. "
+          + "Vigil changed nothing — open \(host) and run /hooks to approve them there."
+      case .trustConfigUnfamiliar(let path, let host):
+        // Not the same sentence as `trustRecordUnfamiliar`: there is no record
+        // of ours in the way, the file itself holds something Vigil couldn't
+        // account for — so "already records that hook" would send the user
+        // looking for a record that isn't there.
+        "Vigil couldn't read all of \(path) with confidence, so it changed "
+          + "nothing rather than risk writing a file \(host) can't parse. "
+          + "Open \(host) and run /hooks to approve them there."
+      case .trustConfigUnreadable(let path):
+        "Couldn't read \(path). Vigil left it untouched."
       }
     }
   }
@@ -104,10 +132,11 @@ struct HookInstaller {
   /// rather than beside the hooks — the one place in this file where answering
   /// a question about one agent means opening a second file.
   ///
-  /// Read-only, always. Vigil has no business writing a trust record: the gate
+  /// Read-only. Writing a record is `recordTrust(_:)`, and it happens only
+  /// once the user has been shown the records and pressed a button: the gate
   /// exists so that a human looked at the command before their agent ran it,
-  /// and an app that granted itself that approval would have removed the only
-  /// thing the mechanism is for.
+  /// and an app that granted itself that approval on install would have
+  /// removed the only thing the mechanism is for.
   ///
   /// A missing script is the same "nothing is firing either way" case
   /// `retiredEvents` treats as empty, and an absent `config.toml` is a Codex
@@ -120,9 +149,7 @@ struct HookInstaller {
       let settings = try? Self.readSettings(at: settingsPath)
     else { return .unknown }
 
-    let configPath = FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent(Self.codexConfigPath).path
-    let toml = (try? String(contentsOfFile: configPath, encoding: .utf8)) ?? ""
+    let toml = (try? Self.readTrustConfig(at: Self.codexConfigFilePath)) ?? ""
 
     return CodexHookTrust.status(
       hooks: settings,
@@ -138,6 +165,12 @@ struct HookInstaller {
 
   /// Where Codex keeps its hook trust records, relative to home.
   static let codexConfigPath = ".codex/config.toml"
+
+  /// The same file, resolved against this user's home directory.
+  static var codexConfigFilePath: String {
+    FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent(codexConfigPath).path
+  }
 
   // MARK: - Install
 
@@ -195,7 +228,69 @@ struct HookInstaller {
     return missing.count < integration.allEvents.count
   }
 
+  // MARK: - Trust
+
+  /// What approving would record, so the user can read it before it is written.
+  ///
+  /// Handed back rather than worked out again inside `recordTrust` on purpose.
+  /// The records shown in the confirmation have to be the records written, and
+  /// two passes over `hooks.json` are two chances for the file to have changed
+  /// in between — which is the one way a consent dialog can lie.
+  func trustRecords() throws -> [CodexTrustWriter.Record] {
+    guard integration.requiresHookTrust else {
+      throw InstallError.trustNotOffered(integration.displayName)
+    }
+    let settings = try Self.readSettings(at: settingsPath)
+    guard
+      let records = CodexTrustWriter.records(
+        hooks: settings,
+        // The path as given, never the symlink-resolved one — same rule, and
+        // the same reason, as `trustState`.
+        hooksPath: settingsPath,
+        scriptPath: scriptPath,
+        integration: integration
+      ), !records.isEmpty
+    else { throw InstallError.trustNotOffered(integration.displayName) }
+    return records
+  }
+
+  /// Write the approval the user has just read into the host's trust file.
+  ///
+  /// Takes the records rather than deriving them, so that what lands on disk
+  /// is exactly what was shown. `CodexTrustWriter.apply` returns every other
+  /// byte of `config.toml` unchanged and refuses the shapes it cannot rewrite,
+  /// which leaves this with only the file handling to get right — and that is
+  /// `writeReplacing`, the same backup and atomic rename a settings file gets.
+  func recordTrust(_ records: [CodexTrustWriter.Record]) throws {
+    let path = Self.codexConfigFilePath
+    let current = try Self.readTrustConfig(at: path)
+
+    let updated: String
+    do {
+      updated = try CodexTrustWriter.apply(records, to: current)
+    } catch CodexTrustWriter.Refusal.unfamiliarRecord {
+      throw InstallError.trustRecordUnfamiliar(path, integration.displayName)
+    } catch CodexTrustWriter.Refusal.unfamiliarConfig {
+      throw InstallError.trustConfigUnfamiliar(path, integration.displayName)
+    } catch {
+      throw InstallError.trustNotOffered(integration.displayName)
+    }
+
+    try Self.writeReplacing(path, with: Data(updated.utf8))
+    Self.log.info("trust recorded for \(integration.displayName, privacy: .public)")
+  }
+
   // MARK: - Files
+
+  /// An absent `config.toml` is an empty one: a Codex that has never been
+  /// asked about anything still has hooks waiting to be approved.
+  private static func readTrustConfig(at path: String) throws -> String {
+    guard FileManager.default.fileExists(atPath: path) else { return "" }
+    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
+      throw InstallError.trustConfigUnreadable(path)
+    }
+    return text
+  }
 
   private func copyScript() throws {
     guard
@@ -239,6 +334,28 @@ struct HookInstaller {
   }
 
   private static func writeSettings(_ settings: [String: Any], to path: String) throws {
+    // withoutEscapingSlashes matters: Foundation writes "\/Users\/..." by
+    // default, which is valid JSON but makes a hand-edited settings file uglier
+    // than we found it and produces noisy diffs for anyone versioning dotfiles.
+    //
+    // sortedKeys is a lesser evil rather than a good one. Serializing a
+    // dictionary reorders keys either way, so the choice is between a stable
+    // order and a different arbitrary one on every write; stable at least means
+    // a second write produces no diff.
+    let data = try JSONSerialization.data(
+      withJSONObject: settings,
+      options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+    )
+    try writeReplacing(path, with: data)
+  }
+
+  /// Put `data` where `path` is, keeping what was there safe.
+  ///
+  /// Every rule below is about editing a file Vigil does not own, so all of
+  /// them apply to all of them: `config.toml` goes through here rather than
+  /// growing its own copy, because each failure these prevent is the same
+  /// failure in someone's TOML as in their JSON.
+  private static func writeReplacing(_ path: String, with data: Data) throws {
     // Follow a symlink to its target before writing. `.atomic` renames over the
     // path, which would replace a link into someone's dotfiles repo with a
     // regular file and leave the real file stale.
@@ -257,19 +374,6 @@ struct HookInstaller {
     if exists, !FileManager.default.isWritableFile(atPath: url.path) {
       throw InstallError.settingsNotWritable(url.path)
     }
-
-    // withoutEscapingSlashes matters: Foundation writes "\/Users\/..." by
-    // default, which is valid JSON but makes a hand-edited settings file uglier
-    // than we found it and produces noisy diffs for anyone versioning dotfiles.
-    //
-    // sortedKeys is a lesser evil rather than a good one. Serializing a
-    // dictionary reorders keys either way, so the choice is between a stable
-    // order and a different arbitrary one on every write; stable at least means
-    // a second write produces no diff.
-    let data = try JSONSerialization.data(
-      withJSONObject: settings,
-      options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-    )
 
     // Nothing to do. Worth checking because Vigil reformats what it writes, and
     // reformatting someone's version-controlled dotfiles to change nothing is a
@@ -294,7 +398,7 @@ struct HookInstaller {
         as? NSNumber
       : nil
 
-    // Atomic, so an interrupted write can't truncate their settings.
+    // Atomic, so an interrupted write can't truncate the file.
     try data.write(to: url, options: .atomic)
 
     if let mode {
