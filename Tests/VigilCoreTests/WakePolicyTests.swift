@@ -326,3 +326,51 @@ struct ImmediateSleepTests {
         conditions: PowerConditions(lidIsClosed: true)))
   }
 }
+
+@Suite("Lid-closed engages when asked")
+struct ClamshellEngagementTests {
+
+  @Test("enabling the setting engages it while an agent works")
+  func engagesWhenWorking() {
+    let d = WakePolicy.decide(
+      sessions: [session(.working)],
+      conditions: PowerConditions(),
+      settings: WakeSettings(allowClamshell: true))
+    #expect(d.holdIdleAssertion)
+    #expect(d.disableClamshellSleep, "the setting was on and an agent is working")
+  }
+
+  @Test("a manual hold engages it too")
+  func engagesOnManualHold() {
+    let d = WakePolicy.decide(
+      sessions: [],
+      conditions: PowerConditions(),
+      settings: WakeSettings(allowClamshell: true),
+      manualOverride: true)
+    #expect(d.disableClamshellSleep)
+  }
+
+  @Test("it disengages the moment the work stops")
+  func disengagesWhenIdle() {
+    let d = WakePolicy.decide(
+      sessions: [session(.idle)],
+      conditions: PowerConditions(),
+      settings: WakeSettings(allowClamshell: true))
+    #expect(!d.disableClamshellSleep)
+  }
+
+  @Test(
+    "every guardrail disengages it",
+    arguments: [
+      PowerConditions(batteryPercent: 5, isPluggedIn: false),
+      PowerConditions(isPluggedIn: false, isLowPowerMode: true),
+      PowerConditions(thermalState: .critical),
+    ])
+  func guardrailsDisengage(conditions: PowerConditions) {
+    let d = WakePolicy.decide(
+      sessions: [session(.working)],
+      conditions: conditions,
+      settings: WakeSettings(allowClamshell: true))
+    #expect(!d.disableClamshellSleep, "a guardrail must release the lid-closed hold")
+  }
+}

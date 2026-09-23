@@ -40,9 +40,14 @@ final class AppModel {
     }
   }
 
-  /// Whether a privileged backend exists to disable clamshell sleep. Without
-  /// one the setting is offered but inert, so the UI disables it and says why.
-  var clamshellSupported: Bool { clamshell.isSupported }
+  /// Whether a privileged backend exists to disable clamshell sleep.
+  ///
+  /// Stored rather than computed: this depends on a file on disk that appears
+  /// when the user runs the installer, and `@Observable` cannot track a
+  /// computed property reading the filesystem — the toggle would have stayed
+  /// greyed out after a successful install until something else forced a
+  /// redraw. Refreshed on every evaluation, so it lights up on its own.
+  private(set) var clamshellSupported = false
 
   /// Mirrors `SMAppService`'s registration.
   ///
@@ -239,6 +244,17 @@ final class AppModel {
 
     let conditions = PowerMonitor.current()
     if conditions != power { power = conditions }
+
+    // Picks up an installer run without needing a restart.
+    let supported = clamshell.isSupported
+    if supported != clamshellSupported { clamshellSupported = supported }
+
+    // A setting the user enabled while the helper was missing must not stay
+    // silently on once it becomes possible — and must not pretend to work
+    // while it isn't.
+    if settings.allowClamshell && !supported {
+      Self.log.notice("lid-closed is enabled but no privileged helper is installed")
+    }
 
     decision = WakePolicy.decide(
       sessions: sessions,
