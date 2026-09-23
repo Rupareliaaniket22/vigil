@@ -161,6 +161,10 @@ public struct WakeSettings: Sendable, Equatable {
 public enum WakeReason: Sendable, Equatable {
   case agentsWorking(count: Int)
   case manualOverride
+  /// A wall-clock `Date`, and the only one left in the policy: this is here to
+  /// be rendered as "Paused until 5:30 PM", never to be compared against
+  /// anything. Whether the pause has expired is decided on the monotonic
+  /// clock, in `decide`.
   case paused(until: Date)
   case noAgents
   case batteryBelowFloor(percent: Int, floor: Int)
@@ -247,20 +251,26 @@ public enum WakePolicy {
   ///
   /// Guardrails are evaluated before intent: no amount of agent activity or
   /// manual override beats a flat battery.
+  ///
+  /// `pausedUntil` is a `Timestamp`, not a `Date`, for the same reason session
+  /// staleness is: it is a deadline set at one moment and tested at another,
+  /// and the wall clock moves in between. Its `wall` half is carried into
+  /// `.paused(until:)` because "Paused until 5:30 PM" is the one thing here a
+  /// person actually reads, and that has to be their own clock.
   public static func decide(
     sessions: [AgentSession],
     conditions: PowerConditions,
     settings: WakeSettings,
     manualOverride: Bool = false,
-    pausedUntil: Date? = nil,
-    now: Date = Date()
+    pausedUntil: Timestamp? = nil,
+    now: Timestamp = .now
   ) -> WakeDecision {
     // What is being asked for, worked out before any safety rule gets a say.
     // Guardrails still win — they are applied first, below — but a guardrail
     // that overrides nothing is not the same event as one that cuts a running
     // hold off, and only this tells them apart.
     let working = sessions.filter { $0.state == .working }.count
-    let isPaused = pausedUntil.map { $0 > now } ?? false
+    let isPaused = pausedUntil.map { now.isBefore($0) } ?? false
     let wouldHold = !isPaused && (manualOverride || working > 0)
 
     func decision(_ reason: WakeReason) -> WakeDecision {
@@ -299,7 +309,9 @@ public enum WakePolicy {
     }
 
     if isPaused, let until = pausedUntil {
-      return decision(.paused(until: until))
+      // `.wall` deliberately: the reason is copy, and copy is read off a
+      // person's own clock. The decision above was not.
+      return decision(.paused(until: until.wall))
     }
 
     // --- Intent. ---

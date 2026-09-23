@@ -20,12 +20,31 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - ⌥⌘L to toggle the manual hold from anywhere
 - Thermal ceiling: the hold is released when the Mac runs hot
 - The panel says when an agent's hooks are out of date, with one action to fix it
+- Vigil notices when a host stops saying its work has finished. `HookSetupState`
+  has only ever watched *our* expected event set drift; this watches the host's,
+  by tracking how sessions end — because it told us, or because we gave up on
+  it. A host that has quietly renamed or dropped an idle event shows up as
+  sessions that consistently run out the clock. It is a ratio over the last
+  twenty endings rather than a count, because an agent genuinely killed
+  mid-run expires exactly the same way, and it says nothing at all below eight
+  endings or at a timeout share of half or less
+- Vigil checks the lid-closed helper against the copy it ships. The helper runs
+  as root behind a passwordless `sudoers` rule and is installed once and never
+  looked at again, so an app updated without it drifts apart from it in silence.
+  A hash mismatch now reads as "installed by a different version of Vigil",
+  which is the whole of what a hash mismatch means — writing to
+  `/Library/PrivilegedHelperTools` already needs root, so it is not evidence of
+  anything worse
 
 ### Changed
-- The panel is 340 × 375 instead of 340 × 558. Nothing was dropped: the agents
-  and the processes holding your Mac awake are now one row at one height, the
-  battery meter moved onto the status line, and the out-of-date banner became a
-  line in the Agents heading that fixes every affected agent at once
+- The panel is 340 points wide and about a third shorter than it was. The width
+  is the fixed half and `make smoke` fails the build if it moves; the height has
+  always followed the content, which is what a single number here was hiding.
+  Today `make smoke` measures 280 points with nothing running and 435 with five
+  agent rows and three ledger rows. Nothing was dropped: the agents and the
+  processes holding your Mac awake are now one row at one height, the battery
+  meter moved onto the status line, and the out-of-date banner became a line in
+  the Agents heading that fixes every affected agent at once
 - The manual switch moved from beside the headline into the footer, reading
   "Always keep awake". While a guardrail is holding it down it says which one,
   rather than being greyed out with no explanation
@@ -93,6 +112,22 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   unparseable tool call — is dispatched instead of `Stop`, so those turns ended
   in silence and held the Mac awake for the full staleness window. In one
   afternoon's trace that was 33 turns out of 76
+- Codex is no longer reported as "Reporting" when Codex is running none of
+  Vigil's hooks. Codex keeps a `trusted_hash` for each hook entry in
+  `~/.codex/config.toml` and drops every entry without a matching one before it
+  assembles the hooks it will run, so writing the entry is not the same as
+  installing it — and Vigil was reading `hooks.json` alone. Worse, the record is
+  keyed on the entry's *position*, so where another tool's hook already held
+  matcher index 0, the record that looked like ours belonged to them. On the
+  machine this was found on that meant five trust records, seven Vigil entries,
+  and not one of them trusted. Vigil now computes the same identity hash Codex
+  does and reports an untrusted install as needing attention instead of as
+  working. It never writes a trust record: the gate exists so that a human read
+  the command before their agent ran it, and an app granting itself that
+  approval would have removed the only thing it is for.
+  **If you set Codex up with an earlier build, run `/hooks` in Codex and trust
+  Vigil's entries.** Claude Code, Cursor and Gemini CLI were checked for the
+  same gate and have none for the files Vigil writes
 - Codex sessions that are interrupted or whose terminal closes release the hold,
   via `Interrupt` and `SessionEnd`
 - Cursor sessions are identified by conversation. Cursor sends
@@ -152,3 +187,23 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   permissions are preserved, and a file with comments in it says so
 - Vigil no longer rewrites a settings file when the contents would not change
 - The assertion ledger is only sampled while the panel is open
+- Quitting is safe from a signal handler again. The handler that clears the
+  lid-close flag on `SIGINT`, `SIGTERM` and `SIGHUP` went through `FileManager`,
+  `URL` and `Process` — all three allocate and all three touch the Objective-C
+  runtime, none of which is safe in a signal context. A signal arriving while
+  the allocator was busy could wedge the very path that stops a Mac being left
+  unable to sleep. Everything the handler needs is now worked out at launch, and
+  the handler itself uses only calls `sigaction(2)` lists as async-signal safe
+- A pause ends when it says it does. It was measured on the wall clock, so an
+  NTP correction backwards — which a laptop takes within seconds of waking from
+  a week asleep — silently extended a ten-minute pause by the size of the step,
+  leaving agents working with nothing holding the Mac awake. Pauses are measured
+  on the monotonic clock now, like everything else that expires; "Paused until
+  5:30 PM" still reads off your own clock
+- Vigil says when it is *not* holding your Mac awake, not only when it stops.
+  Starting a run with the battery already below the floor produced no hold and
+  no word about it, because nothing transitioned — the warning only ever watched
+  a hold end. It now also speaks up when work begins underneath a guardrail
+- The panel copes with a first responder that refuses to let go. Clearing the
+  focus on open could fail silently, and the visible result was the focus ring
+  it exists to prevent

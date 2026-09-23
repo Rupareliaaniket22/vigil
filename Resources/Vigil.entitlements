@@ -2,8 +2,40 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- Not sandboxed: we drive IOKit power assertions and talk to a local
-       socket that CLI hooks write to. Sandboxing would break both. -->
-  <key>com.apple.security.automation.apple-events</key><false/>
+  <!-- Deliberately empty. Vigil claims no entitlements.
+
+       Nothing here needs one. Not sandboxed: we drive IOKit power assertions
+       and talk to a local socket that CLI hooks write to, and sandboxing would
+       break both. But "not sandboxed" was never the reason this file could
+       safely carry com.apple.security.automation.apple-events set to false.
+       That key belongs to the Hardened Runtime as well as to the sandbox
+       (Apple files it under Resource Access and tells you to reach it by
+       enabling the Hardened Runtime capability first), and bundle.sh signs
+       this app with the hardened runtime on. It was never inert here.
+
+       Removed rather than corrected, because Apple's instruction to anyone
+       signing by hand is explicit: "The default value of these Boolean
+       entitlements is false. When Xcode signs your code, it includes an
+       entitlement only if the value is true. If you're manually signing code,
+       follow this convention to ensure maximum compatibility. Don't include
+       an entitlement if the value is false."
+       https://developer.apple.com/documentation/security/hardened-runtime
+
+       Absent and present-but-false are not the same thing to every checker
+       that reads a signature, and the first notarised build is the wrong place
+       to find out which. The one caller that could have cared is
+       ClamshellInstaller, which drives NSAppleScript; the value it would ever
+       want is true, never false, and it needs neither. Apple again: "Your app
+       doesn't need the Apple Events entitlement if it only sends Apple events
+       to itself or to other processes signed with the same team ID."
+       https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.automation.apple-events
+
+       So: if something here ever genuinely needs an entitlement, add it with
+       the value true. Never add one set to false in order to record a
+       decision. That is what this comment is for.
+
+       (Keep this comment free of double hyphens and of angle brackets. The
+       parser codesign hands it to is not a full XML parser and rejects both,
+       with a line number and no explanation.) -->
 </dict>
 </plist>

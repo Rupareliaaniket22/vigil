@@ -97,6 +97,48 @@ struct HookInstaller {
       in: settings, scriptPath: scriptPath, integration: integration)
   }
 
+  /// Whether the host will run the hooks we installed.
+  ///
+  /// `.notRequired` for three of the four. For Codex it reads
+  /// `~/.codex/config.toml`, because Codex files its trust decisions there
+  /// rather than beside the hooks — the one place in this file where answering
+  /// a question about one agent means opening a second file.
+  ///
+  /// Read-only, always. Vigil has no business writing a trust record: the gate
+  /// exists so that a human looked at the command before their agent ran it,
+  /// and an app that granted itself that approval would have removed the only
+  /// thing the mechanism is for.
+  ///
+  /// A missing script is the same "nothing is firing either way" case
+  /// `retiredEvents` treats as empty, and an absent `config.toml` is a Codex
+  /// that has never been asked about anything — which is untrusted, not
+  /// unknown, and `status` reaches that conclusion on its own from a file with
+  /// no records in it.
+  var trustState: HookTrustState {
+    guard integration.requiresHookTrust else { return .notRequired }
+    guard FileManager.default.isExecutableFile(atPath: scriptPath),
+      let settings = try? Self.readSettings(at: settingsPath)
+    else { return .unknown }
+
+    let configPath = FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent(Self.codexConfigPath).path
+    let toml = (try? String(contentsOfFile: configPath, encoding: .utf8)) ?? ""
+
+    return CodexHookTrust.status(
+      hooks: settings,
+      // Codex keys trust on the path *it* resolved the hooks file to, so this
+      // has to be the same string it printed — the settings path as given, not
+      // the symlink-resolved one `writeSettings` uses.
+      hooksPath: settingsPath,
+      configTOML: toml,
+      scriptPath: scriptPath,
+      integration: integration
+    )
+  }
+
+  /// Where Codex keeps its hook trust records, relative to home.
+  static let codexConfigPath = ".codex/config.toml"
+
   // MARK: - Install
 
   func install() throws {

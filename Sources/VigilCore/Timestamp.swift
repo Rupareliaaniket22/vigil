@@ -37,6 +37,21 @@ public struct Timestamp: Sendable, Equatable {
     max(0, earlier.uptime.duration(to: uptime).seconds)
   }
 
+  /// Whether `deadline` is still ahead of this moment.
+  ///
+  /// Monotonic, like every other decision here, and for the same reason one
+  /// step further on: a deadline is *set* at one moment and *checked* at
+  /// another, so a wall-clock comparison is wrong by however far the clock
+  /// moved in between. An NTP step backwards — the thing a laptop does within
+  /// seconds of waking from a week asleep — silently extends a ten-minute
+  /// pause by the size of the step.
+  ///
+  /// Deliberately not a `Comparable` conformance. `==` compares both clocks,
+  /// and an ordering that consulted only one of them would not agree with it.
+  public func isBefore(_ deadline: Timestamp) -> Bool {
+    uptime < deadline.uptime
+  }
+
   /// A timestamp this far ahead on both clocks. Lets a test move time without
   /// waiting for it.
   public func advanced(by seconds: TimeInterval) -> Timestamp {

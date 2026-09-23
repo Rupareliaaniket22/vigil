@@ -18,6 +18,10 @@ enum Notifier {
     /// We stopped holding the Mac awake while work was still running. This one
     /// matters: their run may not survive, and nothing else would tell them.
     case guardrailStoppedHold(reason: String)
+    /// Work began with a guardrail already in force, so we never started
+    /// holding. Same stakes, different sentence — nothing stopped, because
+    /// nothing had started.
+    case guardrailPreventedHold(reason: String)
   }
 
   /// Ask the first time we actually have something to say, rather than at
@@ -73,6 +77,22 @@ enum Notifier {
       // Their work is genuinely at risk; this one should cut through.
       content.interruptionLevel = .timeSensitive
       content.sound = .default
+
+    case .guardrailPreventedHold(let reason):
+      // "isn't", not "stopped". Nothing stopped — there was never a hold to
+      // stop. Reporting a state as an event is how an app ends up describing
+      // something that did not happen, and someone who catches it once stops
+      // believing the alert that matters.
+      content.title = "Vigil isn't holding your Mac awake"
+      content.body =
+        "\(NotificationPolicy.detail(inStatusLine: reason)). "
+        + "An agent has started, and your Mac may sleep before it finishes."
+      // Not time-sensitive, and silent, unlike the one above. This fires the
+      // instant work begins — the person is still at the keyboard, and can
+      // plug in or change the setting from the banner's own app. A sound at
+      // the moment they pressed return reads as an error chime for having
+      // pressed it.
+      content.interruptionLevel = .active
     }
 
     do {

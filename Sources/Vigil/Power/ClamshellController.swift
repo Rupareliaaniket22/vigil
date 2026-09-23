@@ -108,6 +108,108 @@ struct XPCClamshellBackend: ClamshellBackend {
   }
 }
 
+// MARK: - Restoring sleep from a signal handler
+
+// A signal handler runs on whatever thread the signal happened to interrupt,
+// at whatever instruction it happened to interrupt. If that thread was inside
+// `malloc`, or inside the Objective-C runtime's lock, anything the handler does
+// that needs the same lock deadlocks — and this is the handler whose whole job
+// is to stop a Mac being left unable to sleep. `sigaction(2)` lists what may be
+// called from one, and that list is the rule everything below is measured
+// against.
+//
+// What that rules out is most of Foundation: `FileManager`, `URL` and
+// `Process` each allocate and each touch the Objective-C runtime, and the
+// previous version of this code called all three.
+//
+// `fork()` and `execve()` are on the list and would be the obvious shape, but
+// Swift's Darwin overlay marks `fork()` unavailable ("Please use threads or
+// posix_spawn*()"). `posix_spawn` is the supported spelling on this platform
+// and, called the way it is called here — no file actions, no attributes — it
+// is a thin wrapper that marshals nothing and allocates nothing before
+// trapping into the kernel. (The `posix_spawn` that is *not* safe to call here
+// is glibc's, which emulates it with clone/exec in userspace.)
+
+/// The argument vector for `sudo -n <helper> off`, built before any handler
+/// exists.
+///
+/// A `@convention(c)` handler cannot capture, so the handler's inputs have to
+/// live in globals. Reading a Swift global runs its one-time initialiser, which
+/// takes a lock and may allocate — precisely what must not happen in a signal
+/// context — so the ordering in `installSignalHandlers` is load-bearing:
+/// `prepareSignalSafeRestore()` runs first and forces all three of these, and
+/// only then is a handler armed. There is no window in which a signal can
+/// arrive to find one of them half-initialised, because until `sigaction`
+/// returns there is no handler to run.
+private nonisolated(unsafe) var restoreArgv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+/// A fixed, minimal environment rather than the process's own. `environ` is a
+/// pointer any thread can replace by calling `setenv`, so reading it from a
+/// handler means reading an array something else may be halfway through
+/// swapping out. `sudo` resets the environment anyway.
+private nonisolated(unsafe) var restoreEnvp: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+/// The helper's own path, for the existence check. Separate from `restoreArgv`
+/// so that reordering the argument vector cannot silently change what is being
+/// checked.
+private nonisolated(unsafe) var restoreHelperPath: UnsafeMutablePointer<CChar>?
+
+/// Fills the three globals above, exactly once, however many callers race.
+///
+/// Every line of this allocates, which is the entire reason it happens here
+/// rather than in the handler. Nothing is ever freed: it has to outlive any
+/// signal that could arrive, which means the life of the process.
+private let signalSafeRestoreIsPrepared: Bool = {
+  func vector(_ words: [String]) -> UnsafeMutablePointer<UnsafeMutablePointer<CChar>?> {
+    let out = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
+      .allocate(capacity: words.count + 1)
+    for (index, word) in words.enumerated() { out[index] = strdup(word) }
+    out[words.count] = nil  // posix_spawn wants the vector NULL-terminated.
+    return out
+  }
+
+  restoreHelperPath = strdup(SudoersClamshellBackend.helperPath)
+  restoreArgv = vector(["/usr/bin/sudo", "-n", SudoersClamshellBackend.helperPath, "off"])
+  restoreEnvp = vector(["PATH=/usr/bin:/bin:/usr/sbin:/sbin"])
+  return true
+}()
+
+/// Do the allocating half now, so the signal-context half never has to.
+private func prepareSignalSafeRestore() {
+  _ = signalSafeRestoreIsPrepared
+}
+
+/// Clear `SleepDisabled` from a context where almost nothing is safe to call.
+///
+/// `access` and `waitpid` are on `sigaction(2)`'s list verbatim; `posix_spawn`
+/// stands in for the `fork`/`execve` pair that is, for the reason set out
+/// above. Nothing else is called at all.
+///
+/// Requires `prepareSignalSafeRestore()` to have run. Does nothing if it has
+/// not, rather than reaching for a lock to fix it.
+private func restoreSleepSignalSafely() {
+  // sigaction(2): "it is good practice to make a copy of the global variable
+  // errno and restore it before returning from the signal handler." The code
+  // we interrupted may be between a failing syscall and its own errno check.
+  let saved = errno
+  defer { errno = saved }
+
+  guard let argv = restoreArgv, let envp = restoreEnvp, let helper = restoreHelperPath
+  else { return }
+
+  // `access` is on the safe list; `FileManager.isExecutableFile`, which this
+  // replaces, is not. Checked here rather than once at launch because the user
+  // can install the helper from Settings hours after the app started.
+  guard access(helper, X_OK) == 0 else { return }
+
+  var child: pid_t = 0
+  guard posix_spawn(&child, argv[0], nil, nil, argv, envp) == 0 else { return }
+
+  // Wait for it. The point of running at all is that the flag is actually
+  // clear before we let the signal through and die; spawning `sudo` and
+  // immediately exiting would leave the race this exists to close.
+  var status: Int32 = 0
+  while waitpid(child, &status, 0) < 0 && errno == EINTR {}
+}
+
 /// Reads `SleepDisabled` from `IOPMrootDomain`.
 ///
 /// Reading needs no privileges — only writing does. This is what makes it
@@ -172,18 +274,38 @@ final class ClamshellController {
 
   /// Restore on the signals that skip `applicationWillTerminate`.
   ///
-  /// The handler runs in a signal context, so it does the smallest possible
-  /// thing: shell out to the helper synchronously, then re-raise with the
-  /// default disposition so the process still dies as expected.
+  /// The handler runs in a signal context, where almost nothing is safe to
+  /// call, so everything it needs is worked out here first — see the notes
+  /// above `restoreArgv`. Priming before `sigaction`, never after, is the part
+  /// that makes the handler safe rather than merely smaller.
   nonisolated func installSignalHandlers() {
+    prepareSignalSafeRestore()
+
     let restore: @convention(c) (Int32) -> Void = { signal in
-      ClamshellController.restoreSynchronously()
+      restoreSleepSignalSafely()
+      // Put the default disposition back and let the signal through, so the
+      // process still dies exactly as it would have. `signal()` and `raise()`
+      // are both on sigaction(2)'s safe list. The signal is blocked while we
+      // are in here, so it lands the moment this returns.
       Foundation.signal(signal, SIG_DFL)
       raise(signal)
     }
 
-    for sig in [SIGINT, SIGTERM, SIGHUP] {
-      Foundation.signal(sig, restore)
+    let handled = [SIGINT, SIGTERM, SIGHUP]
+
+    // `sigaction` rather than `signal`, only so the mask can be stated: a
+    // Ctrl-C that also hangs up the terminal would otherwise deliver two of
+    // these at once and run the handler nested inside itself.
+    var mask = sigset_t()
+    sigemptyset(&mask)
+    for sig in handled { sigaddset(&mask, sig) }
+
+    for sig in handled {
+      var action = sigaction()
+      action.__sigaction_u = __sigaction_u(__sa_handler: restore)
+      action.sa_mask = mask
+      action.sa_flags = 0
+      sigaction(sig, &action, nil)
     }
   }
 
@@ -272,18 +394,14 @@ final class ClamshellController {
 
   /// Restore normal sleep with a blocking call and no concurrency machinery.
   ///
-  /// Shared by the quit path and the signal handlers, which run in a context
-  /// where almost nothing else is safe to do.
+  /// The same implementation the signal handlers use, deliberately: quit and a
+  /// SIGTERM are the same job, and two implementations of it would mean the
+  /// one that runs less often is the one that rots. Off the signal path there
+  /// is no harm in the setup being allocating, so this door primes the storage
+  /// on the way through — `stop()` can reach here on a run where `start()`
+  /// never did.
   nonisolated static func restoreSynchronously() {
-    let helper = SudoersClamshellBackend.helperPath
-    guard FileManager.default.isExecutableFile(atPath: helper) else { return }
-
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-    process.arguments = ["-n", helper, "off"]
-    process.standardOutput = FileHandle.nullDevice
-    process.standardError = FileHandle.nullDevice
-    try? process.run()
-    process.waitUntilExit()
+    prepareSignalSafeRestore()
+    restoreSleepSignalSafely()
   }
 }

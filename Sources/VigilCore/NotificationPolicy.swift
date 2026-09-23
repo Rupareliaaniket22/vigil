@@ -13,6 +13,10 @@ public enum NotificationPolicy {
     /// A guardrail released the hold while work was still running — their run
     /// may not survive, and nothing else would tell them.
     case guardrailStoppedHold(reason: WakeReason)
+    /// Work started with a guardrail already in force, so no hold was ever
+    /// taken. Nothing transitioned, which is exactly why this has to be its
+    /// own case: the rule above watches a hold end, and here one never began.
+    case guardrailPreventedHold(reason: WakeReason)
   }
 
   /// A snapshot of what matters for deciding whether to speak up.
@@ -44,6 +48,22 @@ public enum NotificationPolicy {
       current.reason.isGuardrail
     {
       return .guardrailStoppedHold(reason: current.reason)
+    }
+
+    // The guardrail that was already in force when the work arrived. Battery
+    // at 12%, someone starts a run and walks away: no hold is taken, no hold
+    // ends, so the rule above never sees it and the app says nothing at all
+    // about the one thing it exists to do. That silence is worse than the
+    // interruption — they find out when they come back to a sleeping Mac.
+    //
+    // `previous.workingCount == 0` makes this strictly the moment work begins,
+    // so it fires once rather than on every five-second tick for as long as
+    // the battery stays low; and `!previous.isHolding` keeps it disjoint from
+    // the rule above, which owns every case where a hold actually ended.
+    if !previous.isHolding, !current.isHolding, previous.workingCount == 0,
+      current.workingCount > 0, current.reason.isGuardrail
+    {
+      return .guardrailPreventedHold(reason: current.reason)
     }
 
     // Work finished. Only when it genuinely went to zero — going from three

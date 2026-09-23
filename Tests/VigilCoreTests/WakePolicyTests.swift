@@ -103,16 +103,66 @@ struct WakePolicyTests {
 
   @Test("an active pause suppresses the hold until it expires")
   func pauseSuppressesWake() {
-    let now = Date()
+    let now = Timestamp.now
     let paused = WakePolicy.decide(
       sessions: [session(.working)], conditions: PowerConditions(), settings: WakeSettings(),
-      pausedUntil: now.addingTimeInterval(600), now: now)
+      pausedUntil: now.advanced(by: 600), now: now)
     #expect(!paused.holdIdleAssertion)
 
     let expired = WakePolicy.decide(
       sessions: [session(.working)], conditions: PowerConditions(), settings: WakeSettings(),
-      pausedUntil: now.addingTimeInterval(-1), now: now)
+      pausedUntil: now.advanced(by: -1), now: now)
     #expect(expired.holdIdleAssertion)
+  }
+
+  /// The reason a pause deadline is a `Timestamp` and not a `Date`.
+  ///
+  /// NTP steps the wall clock backwards — a laptop does it within seconds of
+  /// waking from a week asleep, which is exactly the machine this app runs on.
+  /// Compared on the wall clock, every such step pushes the deadline further
+  /// away by the size of the step: a ten-minute pause taken before an hour's
+  /// correction silently becomes a seventy-minute one, during which agents
+  /// work and the Mac is not held awake.
+  @Test("a pause ends on time even when the clock is stepped backwards")
+  func pauseSurvivesAClockStepBackwards() {
+    let start = Timestamp.now
+    let until = start.advanced(by: 600)  // ten minutes
+
+    // Eleven minutes later on the clock that cannot be adjusted, while the
+    // wall clock has been corrected an hour backwards in the meantime — so by
+    // `Date` alone this is forty-nine minutes *before* the pause was even set.
+    let afterTheStep = Timestamp(
+      wall: start.wall.addingTimeInterval(660 - 3600),
+      uptime: start.uptime.advanced(by: .seconds(660))
+    )
+    #expect(afterTheStep.wall < until.wall, "the step has to move the wall clock backwards")
+
+    let d = WakePolicy.decide(
+      sessions: [session(.working)], conditions: PowerConditions(), settings: WakeSettings(),
+      pausedUntil: until, now: afterTheStep)
+    #expect(d.holdIdleAssertion, "the pause was over eleven minutes of real time ago")
+    #expect(d.reason == .agentsWorking(count: 1))
+  }
+
+  /// And the other direction, so the fix above cannot be mistaken for "pauses
+  /// no longer work". A clock stepped *forwards* must not end one early.
+  @Test("a pause is not cut short when the clock is stepped forwards")
+  func pauseSurvivesAClockStepForwards() {
+    let start = Timestamp.now
+    let until = start.advanced(by: 600)
+
+    // One minute of real time; the wall clock has jumped an hour ahead.
+    let afterTheStep = Timestamp(
+      wall: start.wall.addingTimeInterval(60 + 3600),
+      uptime: start.uptime.advanced(by: .seconds(60))
+    )
+    #expect(afterTheStep.wall > until.wall, "the step has to move the wall clock past the deadline")
+
+    let d = WakePolicy.decide(
+      sessions: [session(.working)], conditions: PowerConditions(), settings: WakeSettings(),
+      pausedUntil: until, now: afterTheStep)
+    #expect(!d.holdIdleAssertion, "nine minutes of the pause are still to run")
+    #expect(d.reason == .paused(until: until.wall))
   }
 
   @Test("clamshell is never disabled unless we are also holding an idle assertion")
@@ -257,10 +307,10 @@ struct GuardrailClassificationTests {
 
   @Test("a pause is the user's choice, not a safety cutoff")
   func pauseIsNotAGuardrail() {
-    let now = Date()
+    let now = Timestamp.now
     let paused = WakePolicy.decide(
       sessions: [session(.working)], conditions: PowerConditions(), settings: WakeSettings(),
-      pausedUntil: now.addingTimeInterval(600), now: now)
+      pausedUntil: now.advanced(by: 600), now: now)
     #expect(!paused.reason.isGuardrail)
   }
 }
@@ -278,9 +328,9 @@ struct ImmediateSleepTests {
     conditions: PowerConditions,
     settings: WakeSettings = WakeSettings(allowClamshell: true),
     manualOverride: Bool = false,
-    pausedUntil: Date? = nil
+    pausedUntil: Timestamp? = nil
   ) -> Bool {
-    let now = Date()
+    let now = Timestamp.now
     let decision = WakePolicy.decide(
       sessions: sessions,
       conditions: conditions,
@@ -353,7 +403,7 @@ struct ImmediateSleepTests {
     // The pause had already released the hold. The guardrail arrived to find
     // nothing to take.
     #expect(
-      !asksForSleep(conditions: cutOff, pausedUntil: Date().addingTimeInterval(600)))
+      !asksForSleep(conditions: cutOff, pausedUntil: Timestamp.now.advanced(by: 600)))
   }
 
   @Test("work simply finishing does not ask for sleep")
@@ -366,7 +416,7 @@ struct ImmediateSleepTests {
     #expect(
       !asksForSleep(
         conditions: PowerConditions(lidIsClosed: true),
-        pausedUntil: Date().addingTimeInterval(600)))
+        pausedUntil: Timestamp.now.advanced(by: 600)))
   }
 
   @Test("we never ask for sleep while still holding the lid open ourselves")
@@ -404,11 +454,11 @@ struct DecisionMatrixTests {
 
   @Test("every combination of every input obeys the same six rules")
   func sweep() {
-    let now = Date()
-    let soon = now.addingTimeInterval(600)
-    let past = now.addingTimeInterval(-1)
+    let now = Timestamp.now
+    let soon = now.advanced(by: 600)
+    let past = now.advanced(by: -1)
 
-    let intents: [(label: String, sessions: [AgentSession], manual: Bool, paused: Date?)] = [
+    let intents: [(label: String, sessions: [AgentSession], manual: Bool, paused: Timestamp?)] = [
       ("nothing running", [], false, nil),
       ("one working", [session(.working)], false, nil),
       ("two working", [session(.working, id: "a"), session(.working, id: "b")], false, nil),
@@ -465,7 +515,7 @@ struct DecisionMatrixTests {
                             now: now
                           )
                           let working = intent.sessions.filter { $0.state == .working }.count
-                          let isPaused = intent.paused.map { $0 > now } ?? false
+                          let isPaused = intent.paused.map { now.isBefore($0) } ?? false
                           let wouldHold = !isPaused && (intent.manual || working > 0)
 
                           func fail(_ what: String) {
@@ -503,7 +553,7 @@ struct DecisionMatrixTests {
                           if !guarded {
                             let expected: WakeReason =
                               isPaused
-                              ? .paused(until: intent.paused!)
+                              ? .paused(until: intent.paused!.wall)
                               : intent.manual
                                 ? .manualOverride
                                 : working > 0 ? .agentsWorking(count: working) : .noAgents
@@ -580,7 +630,7 @@ struct DecisionMatrixTests {
   ) {
     let d = WakePolicy.decide(
       sessions: [session(.working)], conditions: conditions, settings: settings,
-      manualOverride: true, pausedUntil: Date().addingTimeInterval(600))
+      manualOverride: true, pausedUntil: Timestamp.now.advanced(by: 600))
     #expect(d.reason == expected)
     #expect(!d.holdIdleAssertion)
   }
@@ -613,11 +663,11 @@ struct DecisionMatrixTests {
 
   @Test("a pause that has already expired is no pause at all")
   func expiredPause() {
-    let now = Date()
+    let now = Timestamp.now
     let d = WakePolicy.decide(
       sessions: [session(.working)], conditions: PowerConditions(), settings: WakeSettings(),
       pausedUntil: now, now: now)
-    // Exactly at the boundary: `until > now` is false, so the pause is over.
+    // Exactly at the boundary: `now.isBefore(until)` is false, so it is over.
     #expect(d.reason == .agentsWorking(count: 1))
   }
 }

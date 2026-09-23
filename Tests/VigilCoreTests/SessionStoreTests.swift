@@ -56,7 +56,7 @@ struct SessionStoreTests {
       sessions: store.all(now: later),
       conditions: PowerConditions(),
       settings: WakeSettings(),
-      now: later.wall)
+      now: later)
     #expect(!decision.holdIdleAssertion)
   }
 
@@ -200,7 +200,7 @@ struct SessionIdentityTests {
       sessions: store.all(now: now),
       conditions: PowerConditions(),
       settings: WakeSettings(),
-      now: now.wall)
+      now: now)
     #expect(decision.holdIdleAssertion)
     #expect(decision.reason == .agentsWorking(count: 1))
   }
@@ -233,7 +233,7 @@ struct SessionLifecycleTests {
     func holds(at t: Timestamp) -> Bool {
       WakePolicy.decide(
         sessions: store.all(now: t), conditions: PowerConditions(), settings: WakeSettings(),
-        now: t.wall
+        now: t
       ).holdIdleAssertion
     }
 
@@ -280,7 +280,7 @@ struct SessionLifecycleTests {
     func holds(at t: Timestamp) -> Bool {
       WakePolicy.decide(
         sessions: store.all(now: t), conditions: PowerConditions(), settings: WakeSettings(),
-        now: t.wall
+        now: t
       ).holdIdleAssertion
     }
 
@@ -366,7 +366,7 @@ struct SessionLifecycleTests {
     #expect(Set(live.map(\.id)).count == live.count, "no two rows share an id")
 
     let d = WakePolicy.decide(
-      sessions: live, conditions: PowerConditions(), settings: WakeSettings(), now: now.wall)
+      sessions: live, conditions: PowerConditions(), settings: WakeSettings(), now: now)
     #expect(d.reason == .agentsWorking(count: live.filter { $0.state == .working }.count))
     #expect(d.holdIdleAssertion)
 
@@ -379,7 +379,7 @@ struct SessionLifecycleTests {
     #expect(
       !WakePolicy.decide(
         sessions: store.all(now: muchLater), conditions: PowerConditions(),
-        settings: WakeSettings(), now: muchLater.wall
+        settings: WakeSettings(), now: muchLater
       ).holdIdleAssertion)
   }
 

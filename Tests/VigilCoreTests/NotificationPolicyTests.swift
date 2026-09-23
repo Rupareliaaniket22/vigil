@@ -51,6 +51,84 @@ struct NotificationPolicyTests {
     #expect(event == nil)
   }
 
+  /// Battery already at 12% when the run is started. Nothing transitions — no
+  /// hold begins, so no hold ends — and the app used to say nothing at all
+  /// about the one job it has. The person finds out by coming back to a Mac
+  /// that went to sleep an hour into a two-hour run.
+  @Test("warns when work starts with a guardrail already in force")
+  func warnsWhenAGuardrailWasAlreadyThere() {
+    let reason = WakeReason.batteryBelowFloor(percent: 12, floor: 20)
+    let event = NotificationPolicy.event(
+      from: state(working: 0, holding: false, reason: reason),
+      to: state(working: 1, holding: false, reason: reason))
+    #expect(event == .guardrailPreventedHold(reason: reason))
+  }
+
+  /// Every guardrail, not just the battery one it was found with.
+  @Test(
+    "every guardrail warns when work starts underneath it",
+    arguments: [
+      WakeReason.batteryBelowFloor(percent: 12, floor: 20),
+      .onBatteryAndPluggedInRequired,
+      .lowPowerMode,
+      .tooHot(state: .serious),
+    ])
+  func everyGuardrailWarnsOnStart(reason: WakeReason) {
+    let event = NotificationPolicy.event(
+      from: state(working: 0, holding: false, reason: reason),
+      to: state(working: 2, holding: false, reason: reason))
+    #expect(event == .guardrailPreventedHold(reason: reason))
+  }
+
+  /// The model re-evaluates every five seconds, and a low battery stays low.
+  @Test("the blocked-hold warning fires once, not for every tick or every agent")
+  func warnsOnceWhileTheGuardrailPersists() {
+    let reason = WakeReason.lowPowerMode
+    let idle = state(working: 0, holding: false, reason: reason)
+    let started = state(working: 1, holding: false, reason: reason)
+    #expect(NotificationPolicy.event(from: idle, to: started) != nil)
+    // Same tick repeated.
+    #expect(NotificationPolicy.event(from: started, to: started) == nil)
+    // A second agent joining is not a second occasion to say it.
+    #expect(
+      NotificationPolicy.event(from: started, to: state(working: 2, holding: false, reason: reason))
+        == nil)
+  }
+
+  /// A pause is not a guardrail, here either — starting work during one is the
+  /// user's own arrangement, and the app has already been told.
+  @Test("starting work during a pause says nothing")
+  func startingDuringAPauseIsSilent() {
+    let paused = WakeReason.paused(until: Date())
+    let event = NotificationPolicy.event(
+      from: state(working: 0, holding: false, reason: paused),
+      to: state(working: 1, holding: false, reason: paused))
+    #expect(event == nil)
+  }
+
+  /// Work starting normally still says nothing — the case this sits next to.
+  @Test("starting work with no guardrail is still silent")
+  func startingNormallyIsSilent() {
+    let event = NotificationPolicy.event(
+      from: state(working: 0, holding: false, reason: .noAgents),
+      to: state(working: 1, holding: true, reason: .agentsWorking(count: 1)))
+    #expect(event == nil)
+  }
+
+  /// The two guardrail warnings must never both be candidates for the same
+  /// transition: one needs a hold that ended, the other needs one that never
+  /// began. This is the transition that looks like both from a distance.
+  @Test("a hold that ended is the stopped warning, not the prevented one")
+  func theTwoGuardrailWarningsAreDisjoint() {
+    let reason = WakeReason.tooHot(state: .serious)
+    // A manual hold with nothing running, then work starts and heat cuts in:
+    // a hold did end, so this belongs to the other rule.
+    let event = NotificationPolicy.event(
+      from: state(working: 0, holding: true, reason: .manualOverride),
+      to: state(working: 1, holding: false, reason: reason))
+    #expect(event == .guardrailStoppedHold(reason: reason))
+  }
+
   @Test("the at-risk warning wins when both could fire")
   func guardrailOutranksCompletion() {
     // Work stops in the same tick a guardrail cuts in, but one agent remains.

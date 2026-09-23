@@ -36,9 +36,51 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
   /// Events that mean it has stopped.
   public let idleEvents: [String]
   /// Some hosts want a per-hook timeout in their config.
+  ///
+  /// Written verbatim as `"timeout"`, and the name of this field is only
+  /// correct for the one host that uses it. Gemini CLI documents `timeout` as
+  /// "execution timeout in milliseconds (default: 60000)", so 10,000 there
+  /// means ten seconds. Codex reads the same key as *seconds* — its default is
+  /// 600, and 1 for the two teardown events — so the same number would ask
+  /// Codex for a timeout of nearly three hours. Nothing is broken today
+  /// because Codex leaves this nil, and `CodexHookTrust.defaultTimeoutSeconds`
+  /// therefore has the whole answer. Anyone setting it for Codex has to
+  /// convert, and would be better off renaming this field first.
   public let timeoutMilliseconds: Int?
   /// Hosts do not agree on the shape of a hook entry.
   public let entryFormat: HookEntryFormat
+  /// Whether writing the hook entry is enough to make the host run it.
+  ///
+  /// True for Codex alone, and it is not a detail: Codex keeps a `trusted_hash`
+  /// per hook entry in `config.toml` and drops any entry without a matching one
+  /// before it builds its handler list, so an untrusted entry never fires. A
+  /// settings file that reads as perfectly installed can therefore be wired to
+  /// a host that will not run a line of it — which is precisely what Vigil was
+  /// reporting as "Reporting". `CodexHookTrust` is the check.
+  ///
+  /// The other three were read before this was left false for them:
+  ///
+  /// - **Claude Code** has no hook trust gate at all. Its documentation states
+  ///   that "direct edits to hooks in settings files are normally picked up
+  ///   automatically by the file watcher"; the only trust mechanism it
+  ///   documents is workspace trust, and that governs hooks declared in a
+  ///   project subagent's frontmatter, not `~/.claude/settings.json`.
+  /// - **Cursor** gates *project* hooks on a trusted workspace. User hooks —
+  ///   `~/.cursor/hooks.json`, which is the only file Vigil writes — carry no
+  ///   trust record, no hash and no prompt.
+  /// - **Gemini CLI** keeps `~/.gemini/trusted_hooks.json`, which looks like a
+  ///   gate and is not one. `TrustedHooksManager` is consulted only for
+  ///   *project* hooks, it warns rather than refuses — "These hooks will be
+  ///   executed" — and it then trusts what it just warned about so it will not
+  ///   warn twice. Folder trust can disable hooks wholesale, but that is a
+  ///   decision about a workspace rather than a record about one entry, it is
+  ///   off unless the user turns it on, and it is not something re-running
+  ///   Vigil's installer could fix.
+  ///
+  /// Recorded here rather than branched on at the call site so the next host to
+  /// grow a gate is one field, the way every other difference between hosts in
+  /// this file is one field.
+  public let requiresHookTrust: Bool
 
   public var allEvents: [String] { workingEvents + waitingEvents + idleEvents }
 
@@ -70,7 +112,8 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
     waitingEvents: [String] = [],
     idleEvents: [String],
     timeoutMilliseconds: Int? = nil,
-    entryFormat: HookEntryFormat = .nested
+    entryFormat: HookEntryFormat = .nested,
+    requiresHookTrust: Bool = false
   ) {
     self.id = id
     self.displayName = displayName
@@ -81,6 +124,7 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
     self.idleEvents = idleEvents
     self.timeoutMilliseconds = timeoutMilliseconds
     self.entryFormat = entryFormat
+    self.requiresHookTrust = requiresHookTrust
   }
 }
 
@@ -124,7 +168,13 @@ extension AgentIntegration {
     // left the session reading `working` until it went stale — the same shape
     // as Claude Code's missing `Stop`, and the same five minutes of holding the
     // Mac awake for work that finished.
-    idleEvents: ["SessionStart", "Stop", "Interrupt", "SessionEnd"]
+    idleEvents: ["SessionStart", "Stop", "Interrupt", "SessionEnd"],
+    // All seven are names Codex actually knows. Its `HookEventsToml` has one
+    // field per event and ignores anything else in the file, so a misspelling
+    // here would be silently dropped rather than reported — worth having
+    // checked, and worth `CodexHookTrust.eventLabel` refusing a name it does
+    // not recognise instead of inventing a snake_case form for it.
+    requiresHookTrust: true
   )
 
   public static let gemini = AgentIntegration(

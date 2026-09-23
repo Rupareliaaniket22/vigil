@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import SwiftUI
 
 /// The dropdown window, anchored under the status item.
@@ -8,6 +9,7 @@ import SwiftUI
 /// or the assertion ledger, and offers no way to dismiss itself
 /// programmatically. DESIGN.md records this as a deliberate deviation.
 final class FloatingPanel: NSPanel {
+  private static let log = Logger(subsystem: Vigil.subsystem, category: "panel")
 
   /// Called whenever the panel goes away, including the click-outside path
   /// that `resignKey` handles without anyone asking us to close.
@@ -166,8 +168,28 @@ final class FloatingPanel: NSPanel {
   /// window itself the first responder is what SwiftUI reads as "nothing
   /// focused", and the key-view loop is untouched, so Tab still reaches the
   /// first row.
+  ///
+  /// The result is checked because it can be `false`. Apple documents that
+  /// passing `nil` still sends `resignFirstResponder()` to whatever holds the
+  /// status, and that "if the current first responder refuses to resign, it
+  /// remains the first responder and this method immediately returns `false`"
+  /// — and a refusal here is silent and looks exactly like the focus-ring bug
+  /// this method was written to fix.
   private func openWithNothingFocused() {
-    makeFirstResponder(nil)
+    if makeFirstResponder(nil) { return }
+
+    // A field editor mid-validation is the usual refuser. AppKit's own
+    // documented order for that is the order here: ask the window nicely
+    // first, and reach for `endEditing(for:)` "only as a last resort if the
+    // field editor refuses to resign first responder status".
+    endEditing(for: nil)
+    if makeFirstResponder(nil) { return }
+
+    // Twice refused. Nothing left to try that would not be worse than the
+    // symptom, so record it: the visible result is a focus ring around a row
+    // nobody touched, which has been reported as "the panel looks wrong" and
+    // is hard to recognise from a screenshot alone.
+    Self.log.notice("panel opened with something still focused; first responder refused to resign")
   }
 
   /// Arrow keys from nothing focused start keyboard navigation, the way they

@@ -90,7 +90,24 @@ final class AppModel {
     didSet { reevaluate() }
   }
 
-  private(set) var pausedUntil: Date?
+  /// When the pause ends, on the clock that cannot be adjusted.
+  ///
+  /// Monotonic rather than wall-clock for the same reason session staleness is.
+  /// A pause is set now and tested later, and `Date` moves in between: an NTP
+  /// step backwards — which a laptop takes within seconds of waking from a
+  /// week asleep — would push the deadline further away by the size of the
+  /// step, quietly turning a ten-minute pause into an hour of not holding the
+  /// Mac awake while agents worked.
+  private(set) var pauseDeadline: Timestamp?
+
+  /// The same moment on the user's own clock, for "Paused until 5:30 PM".
+  ///
+  /// Computed rather than stored, so there is one deadline and no second copy
+  /// to drift. Observation still works: reading this reads `pauseDeadline`,
+  /// and that is the access `@Observable` records. (The stored-not-computed
+  /// rule elsewhere in this file is about properties that answer from the
+  /// filesystem, which `@Observable` genuinely cannot see change.)
+  var pausedUntil: Date? { pauseDeadline?.wall }
 
   /// Which agents are wired up to report to us. Until at least one is, Vigil
   /// can only be driven by the manual toggle.
@@ -108,6 +125,19 @@ final class AppModel {
   /// `refreshInstalledAgents`, not on every render.
   private(set) var setupStates: [AgentKind: HookSetupState] = [:]
 
+  /// Whether each host will actually run the hooks we installed.
+  ///
+  /// Separate from `setupStates` because it answers a different question.
+  /// `setupStates` reads our own file and says the entries are present;
+  /// this reads the host's trust record and says whether the host will honour
+  /// them. Codex is the only one that gates, and it fails closed and silently.
+  private(set) var trustStates: [AgentKind: HookTrustState] = [:]
+
+  /// A sentence for the panel when a host is holding our hooks at arm's length.
+  func trustNotice(for integration: AgentIntegration) -> String? {
+    (trustStates[integration.id] ?? .notRequired).explanation(host: integration.displayName)
+  }
+
   func isInstalled(_ integration: AgentIntegration) -> Bool {
     installedAgents.contains(integration.id)
   }
@@ -120,6 +150,21 @@ final class AppModel {
   /// Surfaced in the panel rather than logged, so a failed setup is visible.
   private(set) var setupError: String?
 
+  /// Set when the installed root helper does not match the one in this bundle.
+  ///
+  /// Refreshed on the loop but measured at most once per install: hashing two
+  /// files every five seconds is not a thing a power utility should do.
+  private(set) var helperNotice: String?
+
+  /// Hosts that have stopped sending the event that ends a turn.
+  ///
+  /// Derived rather than stored — it is read only while the panel is open, and
+  /// the verdict depends on the clock.
+  var hookHealthWarnings: [String] {
+    let now = Timestamp.now
+    return hookHealth.suspectAgents(now: now).compactMap { hookHealth.warning(for: $0, now: now) }
+  }
+
   /// Why agent events are not arriving, when they are not.
   private(set) var bridgeError: String?
 
@@ -131,6 +176,9 @@ final class AppModel {
   // MARK: - Collaborators
 
   private var store = SessionStore()
+  /// Watches what `prune` throws away, so a host that stops sending its idle
+  /// event shows up as a warning rather than as a Mac that never sleeps.
+  private var hookHealth = HookHealth()
   private let assertion = PowerAssertion()
   private let clamshell = ClamshellController()
   private var bridge: EventBridge?
@@ -250,18 +298,18 @@ final class AppModel {
   }
 
   func pause(for duration: TimeInterval) {
-    pausedUntil = Date().addingTimeInterval(duration)
+    pauseDeadline = Timestamp.now.advanced(by: duration)
     reevaluate()
   }
 
   func resume() {
-    pausedUntil = nil
+    pauseDeadline = nil
     reevaluate()
   }
 
   var isPaused: Bool {
-    guard let until = pausedUntil else { return false }
-    return until > Date()
+    guard let until = pauseDeadline else { return false }
+    return Timestamp.now.isBefore(until)
   }
 
   /// Turn lid-closed support on or off, installing the privileged helper the
@@ -281,6 +329,8 @@ final class AppModel {
 
     do {
       try ClamshellInstaller.install()
+      // The file HelperDrift hashed is the one we just replaced.
+      HelperDrift.invalidate()
       clamshellSupported = clamshell.isSupported
       settings.allowClamshell = clamshellSupported
       setupError =
@@ -303,13 +353,22 @@ final class AppModel {
 
   func refreshInstalledAgents() {
     var states: [AgentKind: HookSetupState] = [:]
+    var trusts: [AgentKind: HookTrustState] = [:]
     for integration in AgentIntegration.all {
+      // One installer per integration: each accessor below re-reads the file,
+      // and there are three of them now.
+      let installer = HookInstaller.live(for: integration)
+      let trust = installer.trustState
+      trusts[integration.id] = trust
       states[integration.id] = HookConfiguration.setupState(
-        missingEvents: HookInstaller.live(for: integration).missingEvents,
-        expectedEvents: integration.allEvents
+        missingEvents: installer.missingEvents,
+        expectedEvents: integration.allEvents,
+        retiredEvents: installer.retiredEvents,
+        trust: trust
       )
     }
     if states != setupStates { setupStates = states }
+    if trusts != trustStates { trustStates = trusts }
 
     let installed = Set(states.filter { $0.value == .ready }.map(\.key))
     if installed != installedAgents { installedAgents = installed }
@@ -352,7 +411,7 @@ final class AppModel {
   // MARK: - The loop
 
   func reevaluate() {
-    store.prune()
+    hookHealth.record(expired: store.prune(), now: .now)
 
     // @Observable notifies on every assignment, equal or not, so guard each
     // one. Without this the panel re-renders every five seconds forever.
@@ -366,6 +425,9 @@ final class AppModel {
     let supported = clamshell.isSupported
     if supported != clamshellSupported { clamshellSupported = supported }
 
+    let notice = HelperDrift.notice
+    if notice != helperNotice { helperNotice = notice }
+
     // A setting the user enabled while the helper was missing must not stay
     // silently on once it becomes possible — and must not pretend to work
     // while it isn't.
@@ -378,7 +440,7 @@ final class AppModel {
       conditions: power,
       settings: settings,
       manualOverride: manualOverride,
-      pausedUntil: pausedUntil
+      pausedUntil: pauseDeadline
     )
 
     if decision.holdIdleAssertion {
@@ -437,6 +499,8 @@ final class AppModel {
       Notifier.notify(.allAgentsFinished(count: count))
     case .guardrailStoppedHold:
       Notifier.notify(.guardrailStoppedHold(reason: statusLine))
+    case .guardrailPreventedHold:
+      Notifier.notify(.guardrailPreventedHold(reason: statusLine))
     }
   }
 
