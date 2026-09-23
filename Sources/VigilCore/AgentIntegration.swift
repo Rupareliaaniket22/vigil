@@ -20,8 +20,6 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
   public let displayName: String
   /// Settings file, relative to the user's home directory.
   public let settingsPath: String
-  /// Hook script name, as shipped in the app bundle.
-  public let scriptName: String
   /// Events that mean the agent is mid-task.
   public let workingEvents: [String]
   /// Events that mean it is blocked on the user. Deliberately not a reason to
@@ -107,7 +105,6 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
     id: AgentKind,
     displayName: String,
     settingsPath: String,
-    scriptName: String,
     workingEvents: [String],
     waitingEvents: [String] = [],
     idleEvents: [String],
@@ -118,7 +115,6 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
     self.id = id
     self.displayName = displayName
     self.settingsPath = settingsPath
-    self.scriptName = scriptName
     self.workingEvents = workingEvents
     self.waitingEvents = waitingEvents
     self.idleEvents = idleEvents
@@ -133,7 +129,6 @@ extension AgentIntegration {
     id: .claudeCode,
     displayName: "Claude Code",
     settingsPath: ".claude/settings.json",
-    scriptName: "vigil-hook",
     workingEvents: [
       "UserPromptSubmit", "PreToolUse", "PostToolUse", "SubagentStart", "SubagentStop",
     ],
@@ -159,7 +154,6 @@ extension AgentIntegration {
     id: .codex,
     displayName: "Codex",
     settingsPath: ".codex/hooks.json",
-    scriptName: "vigil-codex-hook",
     workingEvents: ["UserPromptSubmit", "PreToolUse", "PostToolUse"],
     // SessionStart means a session opened, not that work began.
     //
@@ -181,7 +175,6 @@ extension AgentIntegration {
     id: .gemini,
     displayName: "Gemini CLI",
     settingsPath: ".gemini/settings.json",
-    scriptName: "vigil-gemini-hook",
     workingEvents: ["BeforeAgent", "BeforeTool", "AfterTool"],
     // A session that is torn down without a closing `AfterAgent` — the terminal
     // closed, the host crashed — would otherwise stay `working` until it went
@@ -195,7 +188,6 @@ extension AgentIntegration {
     id: .cursor,
     displayName: "Cursor",
     settingsPath: ".cursor/hooks.json",
-    scriptName: "vigil-hook",
     // Every one of these is an *observing* hook. Cursor divides its events in
     // two, and the division is the whole reason this list looks the way it
     // does: `beforeShellExecution`, `beforeReadFile`, `beforeMCPExecution` and

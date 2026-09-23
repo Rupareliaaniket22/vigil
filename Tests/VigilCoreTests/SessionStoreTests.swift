@@ -402,3 +402,136 @@ struct SessionLifecycleTests {
     #expect(store.prune(now: later).map(\.agent) == [.claudeCode])
   }
 }
+
+@Suite("How a session's work ended")
+struct SessionOutcomeTests {
+
+  private func session(
+    _ agent: AgentKind, _ event: String, now: Timestamp = .now
+  ) -> AgentSession {
+    guard let integration = AgentIntegration.all.first(where: { $0.id == agent }) else {
+      Issue.record("no integration for \(agent.rawValue)")
+      return AgentSession(
+        event: AgentEvent(agent: agent, sessionID: "s", state: .idle), now: now)
+    }
+    var store = SessionStore()
+    return store.apply(
+      AgentEvent(
+        agent: agent, sessionID: "s", state: integration.state(for: event), event: event),
+      now: now)
+  }
+
+  @Test("a session still in flight has no outcome yet")
+  func liveSessionsHaveNoOutcome() {
+    #expect(session(.claudeCode, "PostToolUse").outcome == nil)
+    // The one that matters: an agent stopped on a permission prompt has not
+    // finished, and reading it as finished is what announced the end of a run
+    // on every approval.
+    #expect(session(.claudeCode, "Notification").outcome == nil)
+    #expect(session(.claudeCode, "Notification").isLive)
+  }
+
+  @Test("a host reporting its ordinary ending reports a finish")
+  func cleanEndings() {
+    #expect(session(.claudeCode, "Stop").outcome == .finished)
+    #expect(session(.claudeCode, "SessionEnd").outcome == .finished)
+    #expect(session(.codex, "Stop").outcome == .finished)
+    #expect(session(.gemini, "AfterAgent").outcome == .finished)
+    #expect(session(.cursor, "afterAgentResponse").outcome == .finished)
+  }
+
+  @Test("the two endings that are not finishes")
+  func unfinishedEndings() {
+    #expect(session(.claudeCode, "StopFailure").outcome == .endedBadly)
+    #expect(session(.codex, "Interrupt").outcome == .endedBadly)
+  }
+
+  /// The names belong to somebody else's vocabulary, so nothing stops the next
+  /// host Vigil learns using `Interrupt` to mean something else entirely.
+  @Test("an ending name is read only for the host that sends it")
+  func namesAreNotSharedBetweenHosts() {
+    #expect(session(.codex, "StopFailure").outcome == .finished)
+    #expect(session(.claudeCode, "Interrupt").outcome == .finished)
+  }
+
+  /// An event name Vigil does not recognise still ends the turn — `state(for:)`
+  /// calls anything unknown idle — and there is nothing in it to say the turn
+  /// went wrong. Failing towards `finished` is the reading Vigil had before it
+  /// could tell the two apart at all.
+  @Test("an ending Vigil cannot classify reads as a finish")
+  func unknownEndingsAreFinishes() {
+    var store = SessionStore()
+    let s = store.apply(
+      AgentEvent(agent: .claudeCode, sessionID: "s", state: .idle, event: "SomethingNew"))
+    #expect(s.outcome == .finished)
+    let nameless = store.apply(
+      AgentEvent(agent: .gemini, sessionID: "g", state: .idle))
+    #expect(nameless.outcome == .finished)
+  }
+
+  /// `SessionOutcome` names two events that `AgentIntegration` also names, and
+  /// the duplication is only safe while the two agree. This is the check that
+  /// makes a disagreement a build failure instead of a chime on a dead run.
+  @Test("every unfinished ending is an event that host actually sends")
+  func theTableAgreesWithTheIntegrations() {
+    for (agent, events) in SessionOutcome.unfinishedEndings {
+      let integration = AgentIntegration.all.first { $0.id == agent }
+      #expect(integration != nil, "\(agent.rawValue) is not an agent Vigil ships")
+      for event in events {
+        #expect(
+          integration?.idleEvents.contains(event) == true,
+          "\(agent.rawValue) does not send \(event) as an ending")
+      }
+    }
+  }
+
+  /// And the other direction, so the table cannot quietly stop covering a host:
+  /// everything else a host sends to end a turn is a finish, by construction.
+  @Test("every other ending a host sends is a finish")
+  func everythingElseIsAFinish() {
+    for integration in AgentIntegration.all {
+      let unfinished = SessionOutcome.unfinishedEndings[integration.id] ?? []
+      for event in integration.idleEvents where !unfinished.contains(event) {
+        #expect(
+          session(integration.id, event).outcome == .finished,
+          "\(integration.id.rawValue) \(event)")
+      }
+    }
+  }
+
+  /// `state` alone cannot answer this: `Stop` and `StopFailure` both arrive as
+  /// idle, and only the name says which one happened.
+  @Test("the host's own event name survives into the session")
+  func theEventNameIsKept() {
+    var store = SessionStore()
+    store.apply(
+      AgentEvent(agent: .claudeCode, sessionID: "s", state: .working, event: "UserPromptSubmit"))
+    #expect(store.all().first?.lastEvent == "UserPromptSubmit")
+    store.apply(
+      AgentEvent(agent: .claudeCode, sessionID: "s", state: .idle, event: "StopFailure"))
+    #expect(store.all().first?.lastEvent == "StopFailure")
+    // A payload with no name leaves the last one rather than blanking it.
+    store.apply(AgentEvent(agent: .claudeCode, sessionID: "s", state: .idle))
+    #expect(store.all().first?.lastEvent == "StopFailure")
+  }
+
+  /// `active` answers the wake decision's question; `live` answers the
+  /// notification's. They differ by exactly the sessions sitting at a prompt.
+  @Test("live and active differ by the sessions waiting on a human")
+  func liveIsNotActive() {
+    var store = SessionStore()
+    let now = Timestamp.now
+    store.apply(
+      AgentEvent(agent: .claudeCode, sessionID: "a", state: .working, event: "PostToolUse"),
+      now: now)
+    store.apply(
+      AgentEvent(agent: .claudeCode, sessionID: "b", state: .waiting, event: "Notification"),
+      now: now)
+    store.apply(
+      AgentEvent(agent: .claudeCode, sessionID: "c", state: .idle, event: "Stop"), now: now)
+
+    #expect(store.all(now: now).count == 3)
+    #expect(store.active(now: now).map(\.sessionID) == ["a"])
+    #expect(Set(store.live(now: now).map(\.sessionID)) == ["a", "b"])
+  }
+}

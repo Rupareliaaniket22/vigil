@@ -46,6 +46,37 @@ enum SettingsStore {
   }
 }
 
+/// Whether Vigil makes a sound when a run finishes.
+///
+/// Deliberately not a field on `WakeSettings`: that value is the input to
+/// `WakePolicy`, and whether the Mac makes a noise has no business being an
+/// argument to a decision about power. Same `UserDefaults` and the same
+/// `object(forKey:)` reading as above, for the same reason — "never set" has
+/// to stay distinguishable from "set to off", or somebody who turned the sound
+/// off would find it back on after the next launch.
+enum SoundSettings {
+  /// Named once. The switch in the settings window binds straight to
+  /// `UserDefaults` through `@AppStorage`, so there is exactly one key and no
+  /// second copy of the value to fall out of step with this one.
+  static let completionSoundKey = "playsCompletionSound"
+
+  /// On.
+  ///
+  /// The sound is the thing that was asked for, and a run that finishes in
+  /// silence is the feature not existing until somebody goes looking for a
+  /// switch. It is also a bounded sort of loud: the chime rides on a
+  /// notification, so Focus, Do Not Disturb and a notification permission that
+  /// was never granted each silence it without anyone touching this — and
+  /// turning it off restores exactly the silent, banner-less notification
+  /// Vigil sent before there was a sound at all.
+  static let playsCompletionSoundByDefault = true
+
+  static var playsCompletionSound: Bool {
+    UserDefaults.standard.object(forKey: completionSoundKey) as? Bool
+      ?? playsCompletionSoundByDefault
+  }
+}
+
 /// Launch at login, via `SMAppService`.
 ///
 /// Read `status` fresh every time rather than caching: the user can toggle this

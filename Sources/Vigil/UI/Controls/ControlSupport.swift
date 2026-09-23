@@ -163,6 +163,23 @@ extension View {
   func vigilFocusRing(_ isFocused: Bool, in shape: some Shape) -> some View {
     modifier(FocusRing(shape: shape, isFocused: isFocused))
   }
+
+  /// Put a trailing `.vigil` plain button's *text* on the rail, not its capsule.
+  ///
+  /// DESIGN.md's last column is a fixed rail — "rather than whatever each value
+  /// happens to measure, which is what lets the eye run down the elapsed times
+  /// as a column". A plain button draws nothing at rest, so its capsule padding
+  /// is invisible and the column simply stops 12pt short on exactly the rows
+  /// that are asking to be clicked. Cancelling the padding lets the capsule
+  /// overhang the margin — it has 16pt in the panel and 24 in Settings to
+  /// overhang into, against 12 of padding and 1.5 of focus ring — while the
+  /// glyphs land where every text value lands.
+  ///
+  /// Only for `.plain`. A `.vigilFilled` button has a visible capsule, and its
+  /// edge is the thing that would then hang off the margin.
+  func vigilOnRail() -> some View {
+    padding(.trailing, -Theme.Metrics.buttonHPadding)
+  }
 }
 
 // MARK: - Gallery scaffolding

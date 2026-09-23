@@ -58,7 +58,6 @@ struct HookSetupStateTests {
       id: .claudeCode,
       displayName: "Claude Code",
       settingsPath: ".claude/settings.json",
-      scriptName: "vigil-hook",
       workingEvents: ["UserPromptSubmit", "PreToolUse", "PostToolUse"],
       idleEvents: ["SessionEnd"]
     )
@@ -108,7 +107,6 @@ struct HookSetupStateTests {
       id: .cursor,
       displayName: "Cursor",
       settingsPath: ".cursor/hooks.json",
-      scriptName: "vigil-hook",
       workingEvents: current.workingEvents + ["beforeShellExecution"],
       idleEvents: current.idleEvents,
       entryFormat: .flat

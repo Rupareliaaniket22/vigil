@@ -133,7 +133,11 @@ final class AppModel {
   /// them. Codex is the only one that gates, and it fails closed and silently.
   private(set) var trustStates: [AgentKind: HookTrustState] = [:]
 
-  /// A sentence for the panel when a host is holding our hooks at arm's length.
+  /// A sentence for when a host is holding our hooks at arm's length.
+  ///
+  /// Settings prints it under the rows. The panel puts it on the hover behind
+  /// a shorter line of its own, because this one names a command inside
+  /// another program and DESIGN.md keeps that vocabulary off the panel.
   func trustNotice(for integration: AgentIntegration) -> String? {
     (trustStates[integration.id] ?? .notRequired).explanation(host: integration.displayName)
   }
@@ -239,8 +243,11 @@ final class AppModel {
   private let clamshell = ClamshellController()
   private var bridge: EventBridge?
   private var tick: Timer?
-  /// Previous snapshot, so we notify on transitions rather than on every tick.
-  private var lastNotificationState: NotificationPolicy.State?
+  /// Everything the notification rules remember between ticks — the previous
+  /// snapshot, what each session was doing, how this run has been going, and
+  /// which guardrail has already been warned about. All of it in `VigilCore`,
+  /// where it can be walked through a whole run in a test.
+  private var watch = NotificationPolicy.Watch()
 
   // MARK: - Lifecycle
 
@@ -353,6 +360,42 @@ final class AppModel {
     otherAssertions = assertions
   }
 
+  /// Put the settings window into the worst shape it can honestly be in, and
+  /// nothing else.
+  ///
+  /// Same rule as `loadSampleSessions`: view state only, no side effects, no
+  /// file touched. It exists because the layout check could otherwise only ever
+  /// measure the machine it ran on — where `setupError` is nil by construction,
+  /// so the one input that can grow without bound is the one input never
+  /// exercised, and a window with a hard height and no scroll view was being
+  /// checked against its easiest case. The panel has
+  /// `MenuPanelDegradedGallery` for exactly this reason; this is the settings
+  /// window's half of it.
+  func loadWorstCaseSetup(
+    trust: [AgentKind: HookTrustState],
+    error: String,
+    helperNotice: String,
+    clamshellSupported: Bool
+  ) {
+    // Every integration offered, because four rows are taller than the
+    // sentence that stands in for them when none is installed.
+    availableIntegrations = AgentIntegration.all
+    trustStates = trust
+    setupStates = AgentIntegration.all.reduce(into: [:]) { states, integration in
+      let state = trust[integration.id] ?? .notRequired
+      states[integration.id] = state.isSatisfied ? .ready : .untrusted
+    }
+    installedAgents = Set(setupStates.filter { $0.value == .ready }.map(\.key))
+    setupError = error
+    self.helperNotice = helperNotice
+    // Which of the two things the lid section can say is on screen. They are
+    // mutually exclusive — a drifted helper is only worth warning about once
+    // the sudoers rule that makes it usable exists, since otherwise turning
+    // the switch on reinstalls it anyway — so the caller passes both in turn
+    // and takes the taller, rather than this guessing which of them it is.
+    self.clamshellSupported = clamshellSupported
+  }
+
   func pause(for duration: TimeInterval) {
     pauseDeadline = Timestamp.now.advanced(by: duration)
     reevaluate()
@@ -367,6 +410,12 @@ final class AppModel {
     guard let until = pauseDeadline else { return false }
     return Timestamp.now.isBefore(until)
   }
+
+  /// What both install paths say when the file lands and the helper still
+  /// cannot be reached. Named once so the two cannot drift into disagreeing
+  /// about the same outcome.
+  private static let helperInstalledButUnusable =
+    "The helper installed but Vigil can't see it. Try quitting and reopening Vigil."
 
   /// Turn lid-closed support on or off, installing the privileged helper the
   /// first time if it isn't there yet.
@@ -389,10 +438,7 @@ final class AppModel {
       HelperDrift.invalidate()
       clamshellSupported = clamshell.isSupported
       settings.allowClamshell = clamshellSupported
-      setupError =
-        clamshellSupported
-        ? nil
-        : "The helper installed but Vigil can't see it. Try quitting and reopening Vigil."
+      setupError = clamshellSupported ? nil : Self.helperInstalledButUnusable
     } catch let error as ClamshellInstaller.InstallError {
       // A cancelled password prompt is a decision, not a fault.
       if case .cancelled = error {
@@ -405,6 +451,42 @@ final class AppModel {
       settings.allowClamshell = false
       setupError = error.localizedDescription
     }
+  }
+
+  /// Replace the installed lid-closed helper with the copy in this bundle.
+  ///
+  /// Separate from `setLidClosed`, which installs only when nothing is
+  /// installed at all: a helper that is present and reachable but is not the
+  /// one this build ships takes the `clamshellSupported` early return, so
+  /// before this existed `helperNotice` named a remedy — "reinstall lid-closed
+  /// support" — that no control in the app performed.
+  ///
+  /// Leaves `settings.allowClamshell` alone on purpose. This replaces a file;
+  /// whether the user wants the feature on is a separate answer they have
+  /// already given, and a reinstall that also flipped their switch would be
+  /// this window changing a setting nobody touched.
+  func reinstallClamshellHelper() {
+    do {
+      try ClamshellInstaller.install()
+      // The file `HelperDrift` hashed is the one we just replaced.
+      HelperDrift.invalidate()
+      clamshellSupported = clamshell.isSupported
+      // The same answer its sibling gives, and the same sentence. An install
+      // that succeeds and leaves the helper unreachable is exactly as useless
+      // here as it is there, and reporting it as a clean reinstall sent the
+      // user back to a switch that still would not work, with nothing on
+      // screen admitting it.
+      setupError = clamshellSupported ? nil : Self.helperInstalledButUnusable
+    } catch let error as ClamshellInstaller.InstallError {
+      // A cancelled password prompt is a decision, not a fault.
+      if case .cancelled = error { return }
+      setupError = error.localizedDescription
+    } catch {
+      setupError = error.localizedDescription
+    }
+    // Re-reads the drift verdict through the loop, so the notice clears itself
+    // rather than waiting for the next tick.
+    reevaluate()
   }
 
   func refreshInstalledAgents() {
@@ -518,11 +600,20 @@ final class AppModel {
   // MARK: - The loop
 
   func reevaluate() {
-    hookHealth.record(expired: store.prune(), now: .now)
+    // One reading of the clock for the whole pass. Pruning, staleness and the
+    // notification rules all measure against it, and three readings taken a few
+    // microseconds apart are three chances for them to disagree about which
+    // side of a deadline this tick is on.
+    let now = Timestamp.now
+    // Kept, not discarded. A session pruned while it was still working is the
+    // only evidence Vigil ever gets that it lost an agent rather than watching
+    // one finish, and this line used to be where that evidence went.
+    let expired = store.prune(now: now)
+    hookHealth.record(expired: expired, now: now)
 
     // @Observable notifies on every assignment, equal or not, so guard each
     // one. Without this the panel re-renders every five seconds forever.
-    let current = store.all()
+    let current = store.all(now: now)
     if current != sessions { sessions = current }
 
     let conditions = PowerMonitor.current()
@@ -584,30 +675,37 @@ final class AppModel {
       if others != otherAssertions { otherAssertions = others }
     }
 
-    notifyIfWorthIt()
+    notifyIfWorthIt(expired: expired, now: now)
   }
 
-  private func notifyIfWorthIt() {
-    let current = NotificationPolicy.State(
-      workingCount: workingCount,
-      isHolding: decision.holdIdleAssertion,
-      reason: decision.reason
-    )
-    defer { lastNotificationState = current }
-
-    // No previous snapshot means this is the first tick after launch. Finding
-    // agents already running is not a transition worth announcing.
-    guard let previous = lastNotificationState,
-      let event = NotificationPolicy.event(from: previous, to: current)
+  /// Hand the whole tick to the policy and post whatever it decides to say.
+  ///
+  /// Everything this used to work out for itself — whether the run is over, how
+  /// it ended, whether a guardrail was in force, which sound that makes — is
+  /// now one call, because each of those questions was being answered here by
+  /// `workingCount` reaching zero and four different things make that happen.
+  private func notifyIfWorthIt(expired: [AgentSession], now: Timestamp) {
+    guard
+      let spoken = watch.observe(
+        sessions: sessions,
+        expired: expired,
+        isHolding: decision.holdIdleAssertion,
+        reason: decision.reason,
+        completionSoundEnabled: SoundSettings.playsCompletionSound,
+        now: now)
     else { return }
 
-    switch event {
+    switch spoken.event {
     case .allAgentsFinished(let count):
-      Notifier.notify(.allAgentsFinished(count: count))
+      Notifier.notify(.allAgentsFinished(count: count), sound: spoken.sound)
+    case .runEndedBadly(let count):
+      Notifier.notify(.runEndedBadly(count: count), sound: spoken.sound)
+    case .lostContact(let count):
+      Notifier.notify(.lostContact(count: count), sound: spoken.sound)
     case .guardrailStoppedHold:
-      Notifier.notify(.guardrailStoppedHold(reason: statusLine))
+      Notifier.notify(.guardrailStoppedHold(reason: statusLine), sound: spoken.sound)
     case .guardrailPreventedHold:
-      Notifier.notify(.guardrailPreventedHold(reason: statusLine))
+      Notifier.notify(.guardrailPreventedHold(reason: statusLine), sound: spoken.sound)
     }
   }
 
@@ -679,10 +777,30 @@ final class AppModel {
   /// working row, a sensible elapsed time — while runs quietly fail to hold the
   /// Mac awake, so something has to say so. Agents with no sessions are absent
   /// on purpose: they have a row of their own, carrying its own button.
+  /// `.untrusted` is deliberately not here, and the header is the reason.
+  /// Everything in this list is fixed by `fixIntegrationsNeedingAttention`,
+  /// which re-runs the install — and `HookConfiguration.setupState` returns
+  /// `.untrusted` precisely when the install is complete and the host will not
+  /// run it, so re-running it cannot change the state. Including it gave the
+  /// header a button reading "Codex needs setting up" that was false, did
+  /// nothing, and went on saying the same thing after every press.
+  /// `untrustedIntegrations` carries that case instead.
   var integrationsNeedingAttention: [AgentIntegration] {
     availableIntegrations.filter {
-      !sessions(for: $0).isEmpty && setupState(for: $0) != .ready
+      !sessions(for: $0).isEmpty
+        && setupState(for: $0) != .ready
+        && setupState(for: $0) != .untrusted
     }
+  }
+
+  /// Hosts that have our hooks and will not run them.
+  ///
+  /// Not filtered by whether anything is running: a host whose trust record
+  /// went stale while a session was live keeps that session for the whole
+  /// staleness window, so the one case where this matters most is the one case
+  /// with no quiet row to hang a button on.
+  var untrustedIntegrations: [AgentIntegration] {
+    availableIntegrations.filter { setupState(for: $0) == .untrusted }
   }
 
   /// What the Agents header's trailing slot says, or nil when it says nothing.

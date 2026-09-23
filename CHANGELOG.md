@@ -52,8 +52,31 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Where it already records a hook in a shape Vigil cannot rewrite without
   risking a file Codex can no longer parse at all, Vigil changes nothing and
   says to use `/hooks` instead
+- A sound when a run finishes. The notification Vigil already sent when the
+  last agent stopped now carries the system "Glass" chime and arrives as a
+  banner instead of silently in Notification Center, with a switch under
+  Agents in Settings to put it back the way it was. It is a
+  `UNNotificationSound` rather than anything Vigil plays itself, so Focus, Do
+  Not Disturb and a notification permission that was never granted each
+  silence it without Vigil deciding when somebody may be disturbed — which is
+  the whole difference between a chime at the end of an overnight run and one
+  at 3am. One sound per run and not per agent: three agents stopping within a
+  few seconds of each other is one ending, not three. A run a guardrail cut
+  short does not get it — that already has its own time-sensitive alert, and a
+  "done" chime a minute after "your run may not finish" is the app
+  contradicting itself. What counts as a finished run, and what the other two
+  kinds of ending say instead, is under Fixed. No audio file is added to the
+  repository: `Glass.aiff` is one macOS has shipped for decades, so there is
+  nothing here to license or keep
 
 ### Changed
+- The settings window's worst-case height check reads the hosts that gate hooks
+  off the integrations instead of assuming Codex is the only one. Each trust
+  notice costs 32pt, so a second gating host measures 680 of 680 and a third
+  fails the build, on the build that introduces it
+- `make smoke` builds the panel in its worst shape — every trust notice and a
+  capped installer error — and the degraded gallery carries the hook-health
+  warnings no fixture can otherwise arrange
 - The panel is 340 points wide and about a third shorter than it was. The width
   is the fixed half and `make smoke` fails the build if it moves; the height has
   always followed the content, which is what a single number here was hiding.
@@ -68,7 +91,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The battery readout is the system battery glyph beside the number, in place
   of a 24-point bar whose empty track was invisible against the panel
 - Pausing is two rows in the panel instead of a submenu that drew outside it
-- Settings is 520 × 580 instead of 420 × 813, which no longer fills a 13"
+- Settings is 520 × 680 instead of 420 × 813, which no longer fills a 13"
   MacBook's screen top to bottom. Agents come first — it is the only section
   with something to do in it — then Power, Lid closed and Starting up
 - The battery floor is chosen from Never, 10%, 15%, 20% and 30% instead of
@@ -76,6 +99,93 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Help text that only restated the control above it is gone
 
 ### Fixed
+- The completion chime fires when a run actually finished, and not otherwise.
+  It was triggered by nothing being in the `working` state, which is four
+  different things wearing one face. An agent that stops to ask permission is
+  not working either, so every approval prompt announced "Agent finished — your
+  Mac can sleep normally now", with the chime, while the agent sat at the
+  prompt: N approvals were N+1 chimes, for everyone not running in
+  bypass-permissions mode. The banner had been doing this since notifications
+  shipped; adding a sound is what made it audible. A turn that ended on Claude
+  Code's `StopFailure` — an API error, a context overflow, an unparseable tool
+  call, a third of the turns in one afternoon's trace — or on Codex's
+  `Interrupt`, which is the user pressing escape, was announced as work waiting
+  to be collected. So was a session Vigil had simply lost: a host that crashed,
+  a terminal that closed, a Mac that woke with the run already gone.
+
+  A run is now live while any session is working *or* waiting on its user, it
+  ends when the last of them does, and how it ended is carried rather than
+  guessed. Three endings, three things to say. A run that finished chimes. A
+  run that stopped without finishing says so. A run Vigil lost track of says
+  that instead — "It stopped reporting, so Vigil is no longer holding your Mac
+  awake. It may not have finished." Both of those make a sound, because
+  somebody in another room is waiting on one, and neither makes *that* sound:
+  the chime is a promise that the work is there when you get back. Neither is
+  time-sensitive either — the one alert that breaks through a Focus is still
+  the one about work that can still be saved
+- A run a guardrail killed no longer chimes just because the guardrail never got
+  a word in. The suppression asked what Vigil had last announced, which missed
+  the case where there was nothing to announce: pause Vigil, let the battery
+  fall below its floor during the pause, and the guardrail is in force having
+  said nothing, because no hold ever ended. The Mac then slept, the agent died,
+  and the run was congratulated. It now asks whether a guardrail stood between
+  this run and a hold at any point — a condition, not a history — and clears
+  when the run ends, so tomorrow's run is not judged on today's battery
+- A battery resting on its floor no longer chatters. The "Vigil stopped holding
+  your Mac awake" alert is the one notification here at time-sensitive
+  priority, which is the one level a Focus does not silence, and a charge
+  hovering at the floor crossed it on a five-second tick — five minutes of that
+  was thirty alerts with sound. The warning trips at once and re-arms only
+  after that guardrail has been out of force for ten minutes, which no amount
+  of chatter can accumulate. Heat and the battery are told apart, so one being
+  quiet does not quiet the other
+- Reinstalling the lid-closed helper reports an install that landed but left the
+  helper unreachable, in the same words the lid-closed switch already used,
+  instead of reporting success and sending you back to a control that still
+  would not work
+- Cmd-W dismisses the menu bar panel. It never did: the panel has no close
+  button, so AppKit disabled Window > Close whenever the panel was the target,
+  and a disabled menu item still matches the key equivalent — the keystroke was
+  swallowed and `performClose` was never called once. The panel now validates
+  that one item for itself
+- Notes in the panel no longer install an empty tooltip when they have no longer
+  text behind them, which also removes an empty VoiceOver help attribute
+- The note about a host that will not run Vigil's hooks now says "Trust them in
+  Settings", the same word as the Trust… button that does it
+- The settings window can no longer cut off its own last control. It is a fixed
+  520 x 680 with no scroll view and no resize handle, and two of the blocks in
+  it are text Vigil did not write — a host's reason for refusing our hooks, and
+  an installer's own output, which `ClamshellInstaller` passes through
+  untouched and which therefore has no length at all. Past the window's height
+  the overflow was clipped by the window edge with nothing indicating it: what
+  went was the bottom, the "Open Vigil at login" switch and the note under it,
+  controls still notionally on screen and out of reach. Both blocks are now
+  capped with the whole of the text on the hover, and `make smoke` measures the
+  worst shape the window can be in rather than whatever the machine that built
+  it happened to be showing — every agent offered, an untrusted host, an error
+  long enough to reach its cap, and each of the two things the lid section can
+  say. That worst case is 648 points against a window of 680; the old check
+  only ever saw this machine's 570, so the one input that can grow without
+  bound was the one input it never exercised
+- Vigil says when the lid-closed helper is not the one it ships. The check has
+  existed for a while and nothing rendered its verdict: a root-owned script
+  that no longer matches the app driving it, computed every five seconds and
+  shown to nobody. The Lid closed section now carries a row for it — what it
+  is, that it is out of date, and the one press that reinstalls it — with the
+  reason on the hover. Reinstalling was not previously reachable either: the
+  switch installs only when nothing is installed at all, so a drifted helper
+  had no route back
+- The right-hand column of the settings window lines up. Every switch track in
+  it sits on the window's own margin, while the buttons beside the agent rows
+  and the value menus stopped 12 points short of it — our plain button draws no
+  background at rest, so the capsule taking that space was invisible and the
+  column simply jumped left on the rows asking to be clicked
+- Cmd-W closes the menu bar panel instead of beeping at you. The panel has no
+  close button for `performClose` to press, so AppKit answered the reflex
+  gesture for dismissing a focused surface with the system error sound
+- The settings window reopens where it was left, including on another display.
+  It kept its position within a session and forgot it on every relaunch,
+  reverting to the centre of the main screen
 - Vigil no longer puts a Mac to sleep that it was never keeping awake. With the
   lid shut — a laptop on a stand driving an external display, all day — any
   guardrail that merely *applied*, with no agent running and nothing

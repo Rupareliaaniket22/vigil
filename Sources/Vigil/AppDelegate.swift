@@ -214,6 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     smokeSettings()
+    smokePanelWorstCase(tallerThan: size.height)
     smokeDegraded()
     smokeTestHookInstall()
 
@@ -267,6 +268,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ])
   }
 
+  /// The hosts whose hooks a trust gate can hold shut.
+  ///
+  /// Derived, not counted. Both worst cases below used to hardcode Codex and
+  /// the number 1 — which made the guard on the settings height unable to fire
+  /// on exactly the build that needs it, since the build that gives a second
+  /// host a trust gate is the build that adds a second notice. Read from the
+  /// integrations, the check measures whatever the app can actually be asked to
+  /// show, and fails on the version that no longer fits.
+  private static let gatingHosts = AgentIntegration.all.filter(\.requiresHookTrust)
+
+  /// Every gating host refusing at once — the worst the trust gate can do.
+  private static var worstCaseTrust: [AgentKind: HookTrustState] {
+    gatingHosts.reduce(into: [:]) { trust, integration in
+      trust[integration.id] = .untrusted(events: integration.allEvents)
+    }
+  }
+
+  /// An installer failure long enough to reach the line cap both the settings
+  /// window and the panel hold it to, which is the number being measured: a
+  /// real error — including `ClamshellInstaller.failed`, which hands an
+  /// installer script's own output through untouched and has no length at all
+  /// — can then only ever measure less. The sentence is the installer's real
+  /// one, with the events an ordinary `~/.claude/settings.json` holds.
+  private static var worstCaseSetupError: String {
+    HookInstaller.InstallError.settingsShapeUnknown(
+      "/Users/somebody/.claude/settings.json",
+      [
+        "PreToolUse", "PostToolUse", "Stop", "SubagentStop", "SessionStart", "SessionEnd",
+        "Notification", "UserPromptSubmit",
+      ]
+    ).localizedDescription
+  }
+
   /// Build the settings window's content and report its size.
   ///
   /// Same argument as the panel: a SwiftUI layout crash only happens when the
@@ -283,9 +317,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // What the sections actually want, with the fixed height taken off. The
     // window can only stay a decision rather than a clipping mask for as long
     // as this number stays under it.
-    let fitted = NSHostingController(rootView: SettingsView(model: model, fitsToContent: true))
-    fitted.view.layoutSubtreeIfNeeded()
-    let content = fitted.view.fittingSize.height
+    let content = measuredSettingsContent()
 
     print("smoke: settings \(Int(size.width))x\(Int(size.height)) (content \(Int(content)))")
     guard size.width == Theme.Metrics.settingsWidth, size.height == Theme.Metrics.settingsHeight
@@ -295,25 +327,157 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
           + "\(Int(Theme.Metrics.settingsWidth))x\(Int(Theme.Metrics.settingsHeight))")
       exit(1)
     }
+
+    // Guarded as well as printed. The worst case below covers this one by
+    // construction, but a machine that overflowed while the worst case did not
+    // would mean the worst case had stopped being the worst case, and that is
+    // worth hearing about from the machine it happened on.
     guard content <= Theme.Metrics.settingsHeight else {
       print(
-        "smoke: FAILED - settings content wants \(Int(content))pt, "
+        "smoke: FAILED - settings content wants \(Int(content))pt on this machine, "
           + "which is \(Int(content - Theme.Metrics.settingsHeight))pt more than the window has")
+      exit(1)
+    }
+
+    // And now the shape that actually decides whether the height holds.
+    //
+    // The measurement above is of this developer's machine, where `setupError`
+    // is nil by construction and every host is trusted if the developer
+    // trusted it — so the one input that can grow without bound was the one
+    // input never exercised, and a window with a hard height and no scroll
+    // view was being checked against its easiest case. The panel has
+    // `MenuPanelDegradedGallery` for exactly this reason; this is the settings
+    // window's half of it.
+    //
+    // Measured here rather than earlier, because it leaves the model holding
+    // sample state. The panel's own worst case is the only thing after it that
+    // reads the model, and it loads its own over the top.
+    //
+    // The lid section says one of two things and never both, so both shapes
+    // are built and the taller one is the answer. Building both is half the
+    // point on its own: a SwiftUI layout fault only happens when the view is
+    // instantiated, and the helper-drift row would otherwise first be drawn on
+    // the Mac of somebody whose root helper had gone out of step.
+    let worst =
+      [true, false].map { supported -> CGFloat in
+        model.loadWorstCaseSetup(
+          // Every host the trust gate can hold shut, all refusing at once. One
+          // is today's answer because Codex is today's only gating host — but
+          // it is read off the integrations, so the build that gives a second
+          // host a gate measures two notices without anybody remembering to
+          // come back here, and says so in points if they do not fit.
+          trust: Self.worstCaseTrust,
+          error: Self.worstCaseSetupError,
+          helperNotice: HelperIntegrity.State.outOfDate.notice ?? "",
+          clamshellSupported: supported
+        )
+        return measuredSettingsContent()
+      }.max() ?? 0
+
+    print(
+      "smoke: settings worst case (content \(Int(worst)), "
+        + "\(Self.gatingHosts.count) trust \(Self.gatingHosts.count == 1 ? "notice" : "notices"))")
+    guard worst <= Theme.Metrics.settingsHeight else {
+      print(
+        "smoke: FAILED - settings content wants \(Int(worst))pt at its worst, "
+          + "which is \(Int(worst - Theme.Metrics.settingsHeight))pt more than the window has")
+      exit(1)
+    }
+  }
+
+  /// The height the sections want, with the fixed frame taken off.
+  private func measuredSettingsContent() -> CGFloat {
+    let fitted = NSHostingController(rootView: SettingsView(model: model, fitsToContent: true))
+    fitted.view.layoutSubtreeIfNeeded()
+    return fitted.view.fittingSize.height
+  }
+
+  /// Build the panel in the worst shape its notes can put it in, and measure it.
+  ///
+  /// The populated panel above is the panel on a good day: every host running
+  /// our hooks, nothing failed, nothing accused. Under the agent rows are three
+  /// notes that are only drawn on a bad one, and two of them are one *per host*
+  /// rather than one at all — so the part of the panel that can grow most was
+  /// the part the layout check never built. The settings window got a worst
+  /// case; this is the panel's half of it.
+  ///
+  /// The third note, the hook-health warning, cannot be reached from here: it
+  /// comes from a signal the model keeps to itself and fills from real sessions
+  /// ageing out, and arranging that inside a live model is exactly what a
+  /// layout check must not do. `MenuPanelDegradedGallery` builds it instead,
+  /// with the rest of the chrome no fixture can reach, and `smokeDegraded`
+  /// measures it.
+  ///
+  /// `tallerThan` is the good-day panel. The notes are the whole point of this
+  /// measurement, so a worst case that did not come out taller is a worst case
+  /// that built nothing.
+  private func smokePanelWorstCase(tallerThan populated: CGFloat) {
+    model.loadWorstCaseSetup(
+      trust: Self.worstCaseTrust,
+      error: Self.worstCaseSetupError,
+      // Not the panel's business — it is the settings window that carries the
+      // helper notice, and the lid section with it.
+      helperNotice: "",
+      clamshellSupported: true
+    )
+
+    // Checked rather than assumed. Every one of these notes is drawn from
+    // model state, and a fixture that stopped producing it would go on
+    // measuring a panel with nothing wrong with it and reporting a number that
+    // looked fine.
+    let notes = model.untrustedIntegrations.count + (model.setupError == nil ? 0 : 1)
+    guard model.untrustedIntegrations.count == Self.gatingHosts.count, model.setupError != nil
+    else {
+      print(
+        "smoke: FAILED - panel worst case built \(model.untrustedIntegrations.count) trust "
+          + "notices and \(model.setupError == nil ? "no" : "an") error note, not "
+          + "\(Self.gatingHosts.count) and one")
+      exit(1)
+    }
+
+    let panel = makePanel()
+    panel.contentView?.layoutSubtreeIfNeeded()
+    let size = panel.measuredContentSize()
+    print("smoke: panel worst case \(Int(size.width))x\(Int(size.height)) (\(notes) notes)")
+
+    guard size.width == Theme.Metrics.panelWidth else {
+      print(
+        "smoke: FAILED - panel worst case is \(Int(size.width))pt wide, not "
+          + "\(Int(Theme.Metrics.panelWidth))")
+      exit(1)
+    }
+    guard size.height > populated else {
+      print(
+        "smoke: FAILED - panel worst case is \(Int(size.height))pt, no taller than the "
+          + "\(Int(populated))pt panel with nothing wrong with it — the notes did not lay out")
       exit(1)
     }
   }
 
   /// Build the panel chrome that only appears when something is wrong.
   ///
-  /// The bridge notice and the blocked switch cannot be reached from a fixture
-  /// — one needs a socket that will not bind and the other a live guardrail,
-  /// and arranging either on the machine running the check is precisely what a
-  /// layout check must not do. `MenuPanelDegradedGallery` holds them instead.
+  /// The bridge notice, the blocked switch and the hook-health note cannot be
+  /// reached from a fixture — one needs a socket that will not bind, one a live
+  /// guardrail, and one a host that has quietly stopped reporting that its work
+  /// is over. Arranging any of them on the machine running the check is
+  /// precisely what a layout check must not do. `MenuPanelDegradedGallery`
+  /// holds all three instead.
   private func smokeDegraded() {
+    let warnings = MenuPanelDegradedGallery.healthWarnings.count
+    // The health notes are composed by `HookHealth` rather than written out
+    // here, so a change to what it takes before it will say anything could
+    // leave this fixture silently measuring no notes at all.
+    guard warnings > 0 else {
+      print("smoke: FAILED - degraded chrome has no hook-health notes to measure")
+      exit(1)
+    }
+
     let hosting = NSHostingView(rootView: MenuPanelDegradedGallery())
     hosting.layoutSubtreeIfNeeded()
     let size = hosting.fittingSize
-    print("smoke: degraded chrome \(Int(size.width))x\(Int(size.height))")
+    print(
+      "smoke: degraded chrome \(Int(size.width))x\(Int(size.height)) "
+        + "(\(warnings) hook-health notes)")
     guard size.width == Theme.Metrics.panelWidth, size.height > 0 else {
       print("smoke: FAILED - degraded chrome is \(Int(size.width))pt wide")
       exit(1)

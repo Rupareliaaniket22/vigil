@@ -108,7 +108,7 @@ Apple publishes no popover width, no corner radius, and no point grid.
 | Panel padding | 16pt across, 5pt top and bottom | *(chosen)* |
 | Row height | 24pt | *(chosen)* |
 | Value rail | 56pt, trailing | *(chosen)* |
-| Settings window | 520 × 580pt | *(chosen)* |
+| Settings window | 520 × 680pt | *(chosen)* |
 | Menu bar height | 24pt | Apple |
 | Status item icon | 16×16pt in a 22pt slot | Apple |
 | Minimum hit target | 44×44pt | Apple |
@@ -127,10 +127,45 @@ with the same four columns, stacked at zero spacing so the row *is* the rhythm.
 The last column is a fixed rail rather than whatever each value happens to
 measure, which is what lets the eye run down the elapsed times as a column.
 
+A rail is a trailing *edge*, so a button sitting on one hangs its capsule over
+the margin and puts its text where the text above it is. Our plain button draws
+no background at rest, so left alone its 12pt of capsule padding is invisible
+and stops the column 12pt short on exactly the rows that are asking to be
+clicked — in the panel and in the settings window both, where the switch tracks
+set the same edge.
+
 **The settings window is a fixed size, not a fitted one.** A window that sizes
 itself is at the mercy of its longest sentence: the grouped `Form` it replaced
 came to 813pt, which on a 13" MacBook very nearly touches the top and bottom of
 the screen. Naming the size makes it something a reviewer can check.
+
+The number has moved twice, and both times for the same reason: the window has
+no scroll view and no resize handle, so content that does not fit is cut off by
+the window edge with nothing saying so, and what gets cut is the bottom — the
+last switch in the last section. 580 became 620 when the agent rows grew a line
+explaining a host that refuses to run Vigil's hooks. 620 became 680 when the
+layout check stopped measuring only the machine it ran on, where nothing is
+ever wrong, and started building the worst shape the window can honestly be in:
+every agent offered, every host that gates hooks refusing at once, an installer
+error long enough to reach its line cap, and each of the two things the lid
+section can say. That measures 648, and 680 carries it with two wrapped footnote
+lines to spare.
+
+Which is the other half of the rule. **Every block of text in that window that
+Vigil did not write is capped**, with the whole of it on `.help()` — an
+installer's output has no length, and one paragraph is enough to push a control
+off the bottom of a window that cannot scroll. `make smoke` measures the capped
+worst case on every build and fails it if the number goes over, so the height
+is a claim the build can falsify rather than a hope.
+
+And the claim is only as good as the worst case it is checked against. Which
+hosts refuse in that shape is read off the integrations rather than written
+down. It was written down — Codex, the only one that gates hooks today — and a
+guard that names the only case that exists cannot fire on the case it guards
+against, because the build that gives a second host a trust gate is the build
+that adds a second notice. Each notice costs 32pt, so the margin above 648 is
+exactly one more of them: two gating hosts measure 680 of 680, and three fail
+the build.
 
 ---
 
@@ -261,8 +296,16 @@ the header states that.
 **The panel opens with nothing focused.** A menu highlights nothing until the
 keyboard asks for something, and this panel is a menu in all but class. The
 first Tab or arrow key lands on the first row (up-arrow on the last), Space or
-Return fires it, Escape closes. A focus ring drawn on open is the loudest thing
-on screen, for a keyboard nobody has touched.
+Return fires it, Escape closes. So does ⌘W, by the same exit — and getting it
+there took two things rather than one. The panel has no close button, so
+`performClose` has nothing to press and is routed to the same dismissal Escape
+uses; and AppKit disables Window ▸ Close for a window with no close button,
+while a disabled menu item still swallows the keystroke rather than passing it
+on. The panel had the first half without the second, and for that whole time ⌘W
+did nothing at all while three places said it dismissed the panel. A window that
+meets the reflex gesture for dismissing a focused surface with silence is
+telling the user they did something wrong when they did not. A focus ring drawn
+on open is the loudest thing on screen, for a keyboard nobody has touched.
 
 **The footer's rows highlight as one shape**: an inset rounded rectangle, 6pt
 in from the panel's edge with a 6pt radius so its corner runs parallel to the
@@ -300,7 +343,18 @@ thing to do:
 
 Raw error text never appears in the panel. A socket error is a path, an errno
 and the word "bind"; it goes on `.help()` and into the log, and the panel shows
-a written sentence and the one action that resolves it.
+a written sentence and the one action that resolves it. A sentence with nothing
+longer behind it carries no hover at all, rather than an empty one. And where
+the sentence asks for something a button in the panel already does, both say it
+with the same word.
+
+**The panel's bad day is measured too.** Under the agent rows sit three notes
+the panel only writes when something is wrong — a host that will not run the
+hooks, a host that has stopped saying its work is over, and a setup that failed
+— and two of them are one per host rather than one apiece. `make smoke` builds
+the panel with every note a fixture can reach showing at once, and the degraded
+gallery holds the one it cannot arrange, so the shape nobody sees until their
+worst day is still drawn by every build.
 
 ---
 

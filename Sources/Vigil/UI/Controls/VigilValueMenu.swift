@@ -49,7 +49,10 @@ struct VigilValueMenu<Value: Hashable>: View {
 
       menu
     }
-    .frame(minHeight: Theme.Metrics.menuRowHeight)
+    // This control only ever appears in the settings window, where a row is 28
+    // and holds a control rather than a line of text. It took the panel's
+    // footer-row token, which is a height for a surface it is never on.
+    .frame(minHeight: Theme.Metrics.settingsRowHeight)
   }
 
   private var menu: some View {
@@ -82,6 +85,11 @@ struct VigilValueMenu<Value: Hashable>: View {
     .buttonStyle(.vigil)
     .menuIndicator(.hidden)
     .fixedSize()
+    // The trigger is a plain `.vigil` button, so it draws nothing at rest and
+    // its capsule padding is invisible — which left the chevron 12pt inside
+    // the rail the switch tracks above and below it land on. DESIGN.md's last
+    // column is a trailing edge, not whatever each control happens to measure.
+    .vigilOnRail()
     .accessibilityLabel(title)
     .accessibilityValue(selectedTitle)
   }

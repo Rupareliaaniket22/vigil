@@ -170,6 +170,36 @@ enum Theme {
     /// Height of a tappable footer row.
     static let menuRowHeight: CGFloat = 24
 
+    /// The horizontal inset inside a button's capsule.
+    ///
+    /// Named because it has to be cancelled as well as applied. A `.vigil`
+    /// plain button draws no background at rest, so on a row whose value is a
+    /// button this padding reads as nothing but the value column jumping 12pt
+    /// left of every row whose value is text — and DESIGN.md's rail is a
+    /// trailing edge, not a suggestion. Wherever a plain button shares a rail
+    /// with non-button content the call site cancels this with a negative
+    /// trailing padding, so the invisible capsule overhangs the margin and the
+    /// visible text lands on the rail the rest of the column is on.
+    static let buttonHPadding: CGFloat = snug + tight
+
+    /// The status block's two line boxes.
+    ///
+    /// The headline is Title 3, whose documented line is 20; the reason under
+    /// it is Callout, whose documented line is 15. Both were literals in the
+    /// view, and the second was 17 — two points above the ramp in DESIGN.md,
+    /// with nothing saying why, one line below a sibling that used the
+    /// documented number correctly.
+    static let statusLine: CGFloat = 20
+    static let statusDetailLine: CGFloat = 15
+
+    /// A section header's line box.
+    ///
+    /// Twenty for a 13pt semibold label whose documented line is 16, because
+    /// the header's trailing slot holds a button and that button's capsule is
+    /// 22pt. Four points of slack keeps the capsule from pushing every row
+    /// below the header down the moment an agent goes out of date.
+    static let sectionHeaderHeight: CGFloat = 20
+
     /// A menu row's highlight is inset from the panel edge, never full-bleed,
     /// and its corner is concentric with the panel's own: an inner radius equal
     /// to the outer radius less the inset keeps the two curves parallel.
@@ -187,14 +217,32 @@ enum Theme {
     /// it something a reviewer can check, and makes content that does not fit a
     /// failure at build time rather than a window nobody can see the bottom of.
     static let settingsWidth: CGFloat = 520
-    /// 620 rather than 580 since the agent rows grew a line that explains a
-    /// host refusing to run our hooks. One of those takes the content to 574,
-    /// which fit the old height with six points to spare — close enough that a
-    /// setup error appearing at the same time would have clipped the window on
-    /// a user's Mac, where nothing checks. Only Codex gates hooks today, so one
-    /// notice is the realistic worst case; a second host adopting a trust
-    /// mechanism is the point to revisit this rather than let it creep.
-    static let settingsHeight: CGFloat = 620
+    /// Sized to the worst shape the window can be in, not to the machine that
+    /// built it.
+    ///
+    /// 580 became 620 when the agent rows grew a line explaining a host that
+    /// refuses to run our hooks, and 620 was still only ever checked against
+    /// whatever the developer's own Mac happened to be showing — where
+    /// `setupError` is nil by construction, so the one input that can grow
+    /// without bound was the one input never exercised. `smokeSettings()` now
+    /// builds the worst case instead: four agents offered, every host that
+    /// gates hooks refusing at once, an installer error long enough to reach
+    /// its line cap, a completion-sound row, and each of the two things the lid
+    /// section can say. That measures 648. 680 carries it with 32 points to
+    /// spare — about two wrapped footnote lines — which is margin for a Mac
+    /// whose text metrics differ from this one's, not room to grow into:
+    /// content is what shrinks, and `make smoke` fails the build rather than
+    /// let a row go off the bottom of a window with no scroll view.
+    ///
+    /// "Every host that gates hooks" is read off `AgentIntegration.all`, not
+    /// written down. It was written down — as Codex, and as the number one —
+    /// and that is exactly the build this guard could not fire on, because the
+    /// build that gives a second host a trust gate is the build that adds a
+    /// second notice. Each notice measures 32 points, so the margin above is
+    /// exactly one more of them: two gating hosts come to 680 of 680, and
+    /// three fail the build by 32 on the day they arrive rather than on
+    /// somebody's Mac afterwards.
+    static let settingsHeight: CGFloat = 680
     static let settingsInset: CGFloat = 24
     /// Taller than a panel row: this one holds controls, not text.
     static let settingsRowHeight: CGFloat = 28

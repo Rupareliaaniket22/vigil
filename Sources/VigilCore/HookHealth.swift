@@ -114,6 +114,15 @@ public struct HookHealth: Sendable, Equatable {
 
   /// Classify a session that has just been pruned.
   ///
+  /// Not the same classification as `AgentSession.outcome`, and deliberately
+  /// not shared with it. This one asks whether a *host* is still saying when
+  /// its work finishes, so `StopFailure` is a perfectly good ending — the host
+  /// spoke — and a session abandoned at a permission prompt is no evidence
+  /// either way. `outcome` asks whether the *user's run* finished, where
+  /// `StopFailure` means it did not and an abandoned prompt means nobody knows.
+  /// Two questions, two answers, and merging them would silently make one of
+  /// them wrong.
+  ///
   /// Returns nil for a session that was `waiting` when it aged out, and that is
   /// the one judgement call in this file. `waiting` means the host told us it
   /// was blocked on the human and the human never came back; the host spoke, it

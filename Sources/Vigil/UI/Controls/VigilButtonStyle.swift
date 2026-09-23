@@ -46,7 +46,10 @@ private struct ButtonBody: View {
     configuration.label
       .font(Theme.Text.detail)
       .foregroundStyle(foreground)
-      .padding(.horizontal, Theme.Metrics.snug + Theme.Metrics.tight)
+      // Named rather than added up here, because a row that shares its trailing
+      // rail with non-button content cancels exactly this much again — see
+      // `Theme.Metrics.buttonHPadding`.
+      .padding(.horizontal, Theme.Metrics.buttonHPadding)
       .padding(.vertical, Theme.Metrics.tight)
       .background { shape.fill(background) }
       .overlay { if configuration.isPressed { shape.fill(Color.vigilPressOverlay) } }

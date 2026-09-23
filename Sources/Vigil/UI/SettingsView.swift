@@ -13,8 +13,10 @@ import VigilCore
 /// inherited an inset per section, a background per section and a row metric
 /// nobody chose, and the four groups it drew came to 813pt — a window that on a
 /// 13" MacBook very nearly touches the top and bottom of the screen. Rows and
-/// whitespace come to 580, say the same things, and are a size somebody
-/// decided on.
+/// whitespace say the same things inside `Theme.Metrics.settingsHeight`, which
+/// is a size somebody decided on and `make smoke` checks. What the sections
+/// actually measure is printed by that check on every build; the numbers are
+/// not repeated here, because a number in a comment is a number that drifts.
 struct SettingsView: View {
   @Bindable var model: AppModel
 
@@ -23,9 +25,21 @@ struct SettingsView: View {
   /// A fixed height is only a design decision for as long as the content still
   /// fits inside it; the moment it does not, it is a window with its last row
   /// cut off and nothing saying so. The layout check builds one of these to ask
-  /// how tall the sections actually want to be, which turns "520 × 580" into
-  /// something that fails at build time rather than on someone's Mac.
+  /// how tall the sections actually want to be, which turns the fixed size into
+  /// something that fails at build time rather than on someone's Mac. It builds
+  /// this machine as it is, and then the worst shape the window can honestly be
+  /// in — every agent offered, an untrusted host, an installer error long
+  /// enough to reach its cap, and each of the two things the lid section can
+  /// say — none of which the developer's own Mac is likely to be showing.
   var fitsToContent = false
+
+  /// Bound straight to the one `UserDefaults` key `Notifier` reads, rather
+  /// than through the model: the sound is not an input to the wake decision,
+  /// so it is not part of `model.settings`, and going through `@AppStorage`
+  /// leaves no second copy of it to keep in step. `SoundSettings` names the
+  /// key and the default; this states neither.
+  @AppStorage(SoundSettings.completionSoundKey)
+  var playsCompletionSound = SoundSettings.playsCompletionSoundByDefault
 
   var body: some View {
     VStack(alignment: .leading, spacing: Theme.Metrics.loose) {
@@ -70,6 +84,20 @@ struct SettingsView: View {
         )
       }
 
+      // Under Agents rather than in a section of its own, and the reason is
+      // measured rather than felt: a fifth section costs a 16pt gap, a 20pt
+      // header and the row itself, in a window whose height is fixed and whose
+      // spare points are already spoken for by the notices below. It is not
+      // homeless here: what it announces is these agents finishing, and every
+      // row in the section already shares one trailing rail with it.
+      //
+      // Above the notices, with the rows, rather than below them where it
+      // landed when it arrived. Every other section in this window reads
+      // controls first and explanation last, and a switch underneath a wrapped
+      // installer error is a control that moves down the window by two lines
+      // the first time something goes wrong.
+      SettingsSwitch("Play a sound when your agents finish") { $playsCompletionSound }
+
       // Below the rows rather than inside one: each sentence names its own
       // host, and the thing it asks for happens in that host's window, not in
       // this one. A row can only say that something is wrong; this says what to
@@ -79,8 +107,15 @@ struct SettingsView: View {
           Text(notice)
             .font(Theme.Text.footnote)
             .foregroundStyle(.vigilSecondary)
+            // Two, which is what it wraps to. Codex is the only host that
+            // gates hooks, so this is one of two fixed sentences with one
+            // fixed name in it and the cap is never reached — which is the
+            // point: the number the layout check measures is the number this
+            // can cost, rather than a cap with unmeasured room above it.
+            .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.top, Theme.Metrics.tight)
+            .help(notice)
         }
       }
 
@@ -91,8 +126,21 @@ struct SettingsView: View {
         Text(error)
           .font(Theme.Text.footnote)
           .foregroundStyle(.vigilPrimary)
+          // The one string in this window that is not ours. `ClamshellInstaller
+          // .failed` passes an installer script's own output straight through,
+          // so there is no length this can be trusted to stay under — and this
+          // window is a fixed size with no scroll view and no resize handle,
+          // where overflow is clipped by the window edge with nothing saying
+          // so. What gets cut is the bottom: the "Open Vigil at login" switch
+          // and the ⌥⌘L note, controls still notionally on screen and out of
+          // reach. Three lines is the most it can cost, and the whole of it is
+          // one hover away — the same rule `MenuPanelView.RowNote` holds the
+          // panel's copy of this string to, one line looser because this is the
+          // window the panel sends people to in order to read it.
+          .lineLimit(3)
           .fixedSize(horizontal: false, vertical: true)
           .padding(.top, Theme.Metrics.tight)
+          .help(error)
       }
     }
     // The consent gate, and the reason the button in the row reads "Trust…"
@@ -215,6 +263,17 @@ struct SettingsView: View {
           "Turning this on asks for your password once, so Vigil can install a small "
             + "root-owned helper that changes this one setting and nothing else."
         )
+      } else if let notice = model.helperNotice {
+        // Drift in the installed helper, which until now was computed on every
+        // tick and rendered by nothing — a root-owned file that no longer
+        // matches the one this build drives, and the user was never told.
+        //
+        // `else`, not a second `if`: the two are only ever both true when the
+        // helper is installed and the sudoers rule that makes it usable is
+        // not, and in that state turning the switch on runs the installer,
+        // which replaces the drifted helper anyway. Saying both would be
+        // warning about a file the note above it is already about to fix.
+        HelperRow(notice: notice, reinstall: model.reinstallClamshellHelper)
       }
     }
   }
@@ -359,6 +418,46 @@ private struct Note: View {
   }
 }
 
+/// The privileged helper, when it is not the one this build ships.
+///
+/// A row rather than a paragraph, and for the same reason the trust notices in
+/// Agents *are* paragraphs. Those name something to go and do in another
+/// program, so a row cannot carry them — "a row can only say that something is
+/// wrong; this says what to go and do about it". This one is resolved by a
+/// button in Vigil, so it is the three parts every agent row in this window
+/// already has: what it is, what state it is in, and the one press that fixes
+/// it. "Out of date" and "Reinstall" rather than a third pair of words for the
+/// state `AgentRow` already calls out of date.
+///
+/// `HelperIntegrity`'s own sentence is what the row is *about* rather than what
+/// it says. It names root, which is the whole reason a cosmetic difference in a
+/// shell script is worth any interface at all — so it goes on the hover and to
+/// VoiceOver, the way the panel puts its longer text one hover away rather than
+/// spending a fixed-height window's remaining points on three wrapped lines.
+private struct HelperRow: View {
+  let notice: String
+  let reinstall: () -> Void
+
+  var body: some View {
+    SettingsRow("Lid-closed helper") {
+      HStack(spacing: Theme.Metrics.snug) {
+        Text("Out of date")
+          .font(Theme.Text.detail)
+          .foregroundStyle(.vigilSecondary)
+          .lineLimit(1)
+        Button("Reinstall", action: reinstall)
+      }
+      .buttonStyle(.vigil)
+      .fixedSize()
+      .vigilOnRail()
+    }
+    .help(notice)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Lid-closed helper, out of date")
+    .accessibilityHint(notice)
+  }
+}
+
 /// One agent, and the one thing to do about it.
 ///
 /// Four states, not two. An agent can be reporting through hooks from an older
@@ -397,6 +496,12 @@ private struct AgentRow: View {
       }
       .buttonStyle(.vigil)
       .fixedSize()
+      // The same rail the switch tracks down this window already sit on. A
+      // `.vigil` plain button draws no background at rest, so without this the
+      // button's invisible capsule takes the rail and the right-hand column
+      // alternates between the switches' edge and 12pt short of it, on exactly
+      // the rows that are asking to be clicked.
+      .vigilOnRail()
     }
     .accessibilityElement(children: .contain)
     .accessibilityLabel("\(integration.displayName), \(spoken)")

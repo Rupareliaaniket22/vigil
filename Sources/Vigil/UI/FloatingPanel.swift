@@ -105,6 +105,46 @@ final class FloatingPanel: NSPanel {
     dismiss()
   }
 
+  /// ⌘W, routed to the one exit this panel has.
+  ///
+  /// The main menu installs a Window ▸ Close item at launch — the settings
+  /// window needs it — with a nil target, so it dispatches down the responder
+  /// chain to whatever window is key. This one is created without `.closable`,
+  /// and `NSWindow.performClose(_:)` on a window with no close button has
+  /// nothing to simulate: it beeps. ⌘W is the reflex gesture for dismissing a
+  /// focused surface, and the panel answered it with an error sound.
+  ///
+  /// Routed here rather than fixed by adding `.closable`: `dismiss()` is the
+  /// one way this panel goes away, and a close that went round it would order
+  /// the window out without `onDismiss`, stranding the display clock exactly
+  /// as that method's own comment describes. Escape already comes through
+  /// `cancelOperation`; this puts ⌘W on the same path.
+  ///
+  /// Unreachable on its own. `validateMenuItem(_:)` below is what lets the
+  /// menu item this hangs off actually fire.
+  override func performClose(_: Any?) {
+    dismiss()
+  }
+
+  /// Let Window ▸ Close fire on this panel.
+  ///
+  /// AppKit validates that item before performing it, and `NSWindow`'s own
+  /// validation answers for `performClose(_:)` by looking for a close button.
+  /// This panel is built without `.closable` and has none, so the item was
+  /// disabled for as long as the panel was the target — and a disabled item
+  /// still *matches* the key equivalent: the menu reported the keystroke
+  /// handled and performed nothing. ⌘W did nothing at all, `performClose(_:)`
+  /// above was never called once, and the method, DESIGN.md and the changelog
+  /// all described a gesture no code was running.
+  ///
+  /// So the panel answers for that one action itself — it can close;
+  /// `dismiss()` is how, whatever its style mask says about buttons — and
+  /// leaves every other item to `NSWindow`.
+  override func validateMenuItem(_ item: NSMenuItem) -> Bool {
+    if item.action == #selector(performClose(_:)) { return true }
+    return super.validateMenuItem(item)
+  }
+
   /// Dismiss when the user clicks elsewhere, the way a popover does.
   override func resignKey() {
     super.resignKey()

@@ -75,13 +75,13 @@ struct MenuPanelView: View {
           BatteryReadout(percent: model.power.batteryPercent, isCharging: model.power.isPluggedIn)
         }
       }
-      .frame(height: 20)
+      .frame(height: Theme.Metrics.statusLine)
 
       Text(model.statusDetail)
         .font(Theme.Text.detail)
         .foregroundStyle(.vigilSecondary)
         .lineLimit(1)
-        .frame(height: 17, alignment: .leading)
+        .frame(height: Theme.Metrics.statusDetailLine, alignment: .leading)
     }
     .padding(.horizontal, pad)
   }
@@ -152,23 +152,52 @@ struct MenuPanelView: View {
             AwakeRow(
               isActive: false,
               primary: integration.displayName,
-              value: Self.quietValue(state) { model.installHooks(for: integration) },
+              value: Self.quietValue(
+                state,
+                fix: { model.installHooks(for: integration) },
+                trust: onSettings
+              ),
               spoken: "\(integration.displayName), \(Self.spokenSetup(state))"
             )
+          }
+
+          // A host holding our hooks at arm's length, named, with the one
+          // press that resolves it on the row above. Derived from the
+          // integrations rather than from the rows, because a host whose trust
+          // record went stale mid-run still has a live session and therefore
+          // no quiet row to carry the button.
+          ForEach(model.untrustedIntegrations) { integration in
+            RowNote(
+              // "Trust", because that is the word on the button one row up —
+              // and on the one in Settings this sentence sends anyone without
+              // that row to. An instruction that shares no word with the thing
+              // that carries it out is two names for one act.
+              "\(integration.displayName) isn't running Vigil's hooks. "
+                + "Trust them in Settings.",
+              // The host's own sentence — it names the command inside that
+              // host that does the same job. DESIGN.md keeps another program's
+              // vocabulary off the panel, so it goes on the hover.
+              detail: model.trustNotice(for: integration)
+            )
+          }
+
+          // A host that has stopped saying its work is over. Nothing else in
+          // the interface would: the row looks healthy, the elapsed time is
+          // sensible, and every finished turn quietly holds the Mac awake for
+          // the whole staleness window.
+          ForEach(model.hookHealthWarnings, id: \.self) { warning in
+            RowNote(warning)
           }
 
           if let error = model.setupError {
             // A written sentence, with the installer's own text on the hover.
             // What it says is true of every failure the installer can report:
             // it refuses before writing rather than half-way through.
-            Text("That didn't finish. Nothing was changed — open Settings to see why.")
-              .font(Theme.Text.footnote)
-              .foregroundStyle(.vigilPrimary)
-              .lineLimit(2)
-              .fixedSize(horizontal: false, vertical: true)
-              .padding(.horizontal, pad)
-              .padding(.top, Theme.Metrics.tight)
-              .help(error)
+            RowNote(
+              "That didn't finish. Nothing was changed — open Settings to see why.",
+              detail: error,
+              lines: 2
+            )
           }
         }
         .padding(.top, Theme.Metrics.tight)
@@ -199,7 +228,10 @@ struct MenuPanelView: View {
     .padding(.horizontal, pad)
     .padding(.top, Theme.Metrics.tight)
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("No agents installed")
+    // The headline on screen, verbatim. It read "No agents installed", so a
+    // sighted user and a VoiceOver user were given two different names for the
+    // same element and could not refer to it by the same one.
+    .accessibilityLabel("Nothing to watch yet")
   }
 
   private static let projectURL = URL(string: "https://github.com/Rupareliaaniket22/vigil")!
@@ -322,12 +354,24 @@ struct MenuPanelView: View {
 
   // MARK: - Row content
 
+  /// The one row in either list whose job is to say the list is longer than it
+  /// looks — so it is the one row that must not break the column.
+  ///
+  /// It holds the dot's gutter open with a hidden dot, exactly as `AwakeRow`
+  /// does for the ledger. DESIGN.md: that gap is what keeps the dot meaning
+  /// one thing, "this is an agent Vigil is watching", rather than drifting into
+  /// "this is a row". Without it this line started 14pt left of every row above
+  /// it. It keeps its own footnote weight, because it is a continuation rather
+  /// than another thing holding the Mac awake.
   private func more(_ count: Int) -> some View {
-    Text("and \(count) more")
-      .font(Theme.Text.footnote)
-      .foregroundStyle(.vigilTertiary)
-      .padding(.horizontal, pad)
-      .frame(height: Theme.Metrics.rowHeight, alignment: .leading)
+    HStack(alignment: .firstTextBaseline, spacing: Theme.Metrics.snug) {
+      StateDot(isActive: false).hidden()
+      Text("and \(count) more")
+        .font(Theme.Text.footnote)
+        .foregroundStyle(.vigilTertiary)
+    }
+    .padding(.horizontal, pad)
+    .frame(height: Theme.Metrics.rowHeight, alignment: .leading)
   }
 
   /// What a live session's value rail says.
@@ -340,14 +384,20 @@ struct MenuPanelView: View {
   }
 
   private static func quietValue(
-    _ state: HookSetupState, fix: @escaping () -> Void
+    _ state: HookSetupState, fix: @escaping () -> Void, trust: @escaping () -> Void
   ) -> AwakeRow.Value {
     switch state {
     case .ready: .text("idle")
     case .outOfDate: .action("Update", fix)
     case .notSetUp: .action("Set up", fix)
-    // Not an action: re-running the install is exactly what does not help.
-    case .untrusted: .text("not trusted")
+    // An action, but not `fix`: re-running the install is exactly what does not
+    // help, because the hooks are installed and correct and what is missing is
+    // the host's approval of them. This used to be a bare "not trusted" —
+    // the one state the code itself says the user cannot resolve from inside
+    // Vigil, rendered as a dead end with nothing saying where the exit was.
+    // The ellipsis is the same promise the Settings button makes: it opens
+    // what would be approved to be read, and writes nothing.
+    case .untrusted: .action("Trust…", trust)
     }
   }
 
@@ -429,13 +479,58 @@ private struct SectionHeader: View {
         Button(action: action) { Text("\(actionTitle) \u{203A}") }
           .buttonStyle(.vigil)
           .fixedSize()
+          // Same rail as the rows underneath, so the chevron ends where their
+          // elapsed times do rather than 12pt short of it.
+          .vigilOnRail()
       }
     }
     .padding(.horizontal, Theme.Metrics.panelPadding)
     // The button's capsule is 22pt and overhangs this by a point top and
     // bottom, into a gap that is four. Letting the header grow instead would
     // move every row below it the moment an agent went out of date.
-    .frame(height: 20)
+    .frame(height: Theme.Metrics.sectionHeaderHeight)
+  }
+}
+
+/// One sentence about the rows above it, in the panel's own words.
+///
+/// DESIGN.md: raw error text never appears in the panel, and neither does
+/// another program's vocabulary — the panel shows a written sentence and the
+/// longer text goes one hover away rather than into the bin. The line cap is
+/// the second half of that rule: a sentence Vigil composed is a known length,
+/// but an installer's output is not, and the panel has no scroll view.
+private struct RowNote: View {
+  let text: String
+  var detail: String?
+  var lines = 3
+
+  init(_ text: String, detail: String? = nil, lines: Int = 3) {
+    self.text = text
+    self.detail = detail
+    self.lines = lines
+  }
+
+  @ViewBuilder
+  var body: some View {
+    let note =
+      Text(text)
+      .font(Theme.Text.footnote)
+      .foregroundStyle(.vigilPrimary)
+      .lineLimit(lines)
+      .fixedSize(horizontal: false, vertical: true)
+      .padding(.horizontal, Theme.Metrics.panelPadding)
+      .padding(.top, Theme.Metrics.tight)
+
+    // `.help("")` is not nothing. It installs a tooltip that never has
+    // anything to say — and an empty `AXHelp` with it, so VoiceOver offers
+    // help on a note that has none. The hook-health warning is already a whole
+    // sentence in Vigil's own words with nothing longer behind it, and a note
+    // like that should have no hover at all rather than an empty one.
+    if let detail, !detail.isEmpty {
+      note.help(detail)
+    } else {
+      note
+    }
   }
 }
 
@@ -448,7 +543,11 @@ private struct Notice: View {
   var action: (() -> Void)?
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 2) {
+    // The same three parts, at the same spacing, as the "nothing to watch"
+    // empty state: a headline, one sentence, and one thing to do. They were
+    // built with different internal gaps, one of which was a literal on no
+    // grid, for two things DESIGN.md describes in one paragraph.
+    VStack(alignment: .leading, spacing: Theme.Metrics.tight) {
       Text(title)
         .font(Theme.Text.body)
         .foregroundStyle(.vigilPrimary)
@@ -586,6 +685,10 @@ struct AwakeRow: View {
       Button(title, action: perform)
         .buttonStyle(.vigil)
         .fixedSize()
+        // The rail is a trailing edge. Without this the button's invisible
+        // capsule takes it, and the column jumps 12pt left on every row whose
+        // value is something to press.
+        .vigilOnRail()
     }
   }
 }
@@ -783,14 +886,44 @@ private struct BatteryReadout: View {
 
 /// Stands in for `#Preview` — see ControlSupport.swift for why it has to.
 ///
-/// The two pieces of panel chrome no fixture can reach. The bridge notice needs
-/// a socket that will not bind, and the blocked switch needs a guardrail that is
-/// actually holding — neither of which a layout check is allowed to arrange on
-/// the machine running it. Gathered here so they are still built by something
-/// before they ship, rather than first drawn on a user's Mac on the worst day
-/// they have had with it.
+/// The pieces of panel chrome no fixture can reach. The bridge notice needs a
+/// socket that will not bind, the blocked switch needs a guardrail that is
+/// actually holding, and the hook-health note needs a host that has stopped
+/// saying its work is over — none of which a layout check is allowed to arrange
+/// on the machine running it. Gathered here so they are still built by
+/// something before they ship, rather than first drawn on a user's Mac on the
+/// worst day they have had with it.
+///
+/// The notes a fixture *can* reach — a host the trust gate is holding at arm's
+/// length, and a setup that failed — are built in place instead, in the panel's
+/// own worst case in `AppDelegate.smokePanelWorstCase()`.
 struct MenuPanelDegradedGallery: View {
   @State private var manual = false
+
+  /// Every hook-health warning the panel can be asked to show at once, in the
+  /// words it will actually show them in.
+  ///
+  /// Composed by `HookHealth` rather than copied out of it: the sentence is a
+  /// claim about how a host behaves and lives beside the evidence for it, so a
+  /// fixture that restated it here would be measuring a sentence the panel
+  /// does not use. Eight timed-out endings is what the signal needs before it
+  /// will say anything at all.
+  ///
+  /// One per agent, and unbounded in the same way the panel's list is: the
+  /// records are keyed by whatever agent sent the events, so a tool Vigil
+  /// ships no integration for gets a line too — under its raw name, which is
+  /// the longest any of these can be.
+  static let healthWarnings: [String] = {
+    var health = HookHealth()
+    let now = Timestamp.now
+    let agents = AgentIntegration.all.map(\.id) + [AgentKind(rawValue: "some-new-tool")]
+    for agent in agents {
+      for _ in 0..<health.minimumEndings {
+        health.record(.expiredWhileWorking, for: agent, now: now)
+      }
+    }
+    return health.suspectAgents(now: now).compactMap { health.warning(for: $0, now: now) }
+  }()
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -801,6 +934,15 @@ struct MenuPanelDegradedGallery: View {
         actionTitle: "Try again",
         action: {}
       )
+
+      // Every host that could be accused at once, each note at the length the
+      // longest name gives it. These wrap, and the panel does not scroll.
+      VStack(alignment: .leading, spacing: 0) {
+        ForEach(Self.healthWarnings, id: \.self) { warning in
+          RowNote(warning)
+        }
+      }
+      .padding(.top, Theme.Metrics.tight)
 
       Hairline(fullBleed: true)
         .padding(.top, Theme.Metrics.snug)

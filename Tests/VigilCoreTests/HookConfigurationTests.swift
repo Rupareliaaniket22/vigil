@@ -132,7 +132,6 @@ struct HookConfigurationTests {
       id: .cursor,
       displayName: "Cursor",
       settingsPath: ".cursor/hooks.json",
-      scriptName: "vigil-hook",
       workingEvents: ["beforeShellExecution", "afterFileEdit"],
       idleEvents: ["stop"],
       entryFormat: .flat
