@@ -222,7 +222,7 @@ is the established convention for countdowns and counts.
 │     Audio is playing     coreaudiod       2h 04m   │
 │                                                    │
 │────────────────────────────────────────────────────│  separatorColor
-│   Keep awake, agents or not                 ( •)   │
+│   Always keep awake                         ( •)   │
 │   Pause 30 minutes                                 │
 │   Pause 1 hour                                     │
 │   Settings…                                  ⌘,    │
@@ -242,10 +242,32 @@ stateful — that the charge has fallen below the number you chose — arrives i
 the reason line underneath, in words, on the one day it matters. On a Mac with
 no battery the meter is absent rather than pinned at full.
 
+The meter is the system battery symbol at the nearest quarter, inline with the
+number and in the same grey. The number is the reading; the glyph is what says
+the number is a battery, and it is the drawing everyone already reads in their
+menu bar at exactly this size. A bar of our own at 24pt had no room to mean
+anything — one percent was a quarter of a point — and its empty track was
+invisible against the panel, so it read as a stray dash rather than a level.
+
 **Exactly one rule**, above the footer, where the content stops being an answer
 and starts being an action. Once both lists are the same row, the rule that used
 to sit above the ledger marked no change of kind — only a change of subject, and
 the header states that.
+
+**The panel opens with nothing focused.** A menu highlights nothing until the
+keyboard asks for something, and this panel is a menu in all but class. The
+first Tab or arrow key lands on the first row (up-arrow on the last), Space or
+Return fires it, Escape closes. A focus ring drawn on open is the loudest thing
+on screen, for a keyboard nobody has touched.
+
+**The footer's rows highlight as one shape**: an inset rounded rectangle, 6pt
+in from the panel's edge with a 6pt radius so its corner runs parallel to the
+panel's own. The four action rows fill it in the selection colour under the
+pointer or keyboard focus, with the text flipped to match, the way a menu item
+does. The switch row is a real switch — it has to report on and off to
+VoiceOver, and its accent-coloured track would vanish on an accent fill — so
+it takes the keyboard focus ring on that same rectangle and no fill; its
+affordance is the switch itself.
 
 **The ledger leaves the dot's gutter empty.** That gap is what keeps the dot
 meaning one thing — *this is an agent Vigil is watching* — rather than drifting

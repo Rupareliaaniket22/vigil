@@ -10,7 +10,7 @@ import VigilCore
 /// from three row types at three heights, which made them look like three
 /// different kinds of information — when in fact both lists answer the same
 /// question, "who is holding your Mac awake", and differ only in the subject
-/// the bold header above them already names. One `AwakeRow` at one height is
+/// the semibold header above them already names. One `AwakeRow` at one height is
 /// the whole reason this panel is 180pt shorter than the one it replaces.
 ///
 /// Groups separate on a semibold header and whitespace. Exactly one rule
@@ -54,8 +54,9 @@ struct MenuPanelView: View {
       // `spacing: 0` with the gap in the spacer, so the minimum between the
       // headline and the meter is the 16 it says and not the 24 a stack
       // spacing either side of a spacer minimum quietly adds up to. The widest
-      // pair this line can hold — "Keeping your Mac awake" and "99% charging" —
-      // leaves 13pt over, and lost 8 of them to that arithmetic.
+      // pair this line can hold — "Keeping your Mac awake" and "99% charging"
+      // behind a 21pt glyph — leaves 19pt over, and would lose 8 of them to
+      // that arithmetic.
       HStack(alignment: .firstTextBaseline, spacing: 0) {
         Text(model.statusHeadline)
           .font(Theme.Text.status)
@@ -223,8 +224,14 @@ struct MenuPanelView: View {
   private var ledger: some View {
     if !shownAssertions.isEmpty {
       VStack(alignment: .leading, spacing: 0) {
+        // `snug`, the same as the gap above "Agents" and above the footer's
+        // rule. This one was `loose`, and the only gap in the panel that was:
+        // a row's 4pt of slack, 16, and the header's 2 made 22pt of white
+        // where every other section break made 11 or 12, and the ledger read
+        // as a second panel that had been pushed down rather than the next
+        // answer in the same one.
         SectionHeader("Also holding your Mac awake")
-          .padding(.top, Theme.Metrics.loose)
+          .padding(.top, Theme.Metrics.snug)
 
         VStack(alignment: .leading, spacing: 0) {
           ForEach(shownAssertions) { assertion in
@@ -293,9 +300,9 @@ struct MenuPanelView: View {
   ///
   /// Not `statusDetail`: that is a sentence for the status line, and the widest
   /// of them is three times the room there is here. These are fragments of the
-  /// row's own grammar — "Keep awake, agents or not · on battery" — which is
-  /// also why they are not in `StatusCopy`, where every string is a sentence
-  /// that has to stand on its own.
+  /// row's own grammar — "Always keep awake · on battery" — which is also why
+  /// they are not in `StatusCopy`, where every string is a sentence that has
+  /// to stand on its own.
   ///
   /// A disabled switch that says nothing is worse than no switch at all: the
   /// user is left to guess whether Vigil is broken or being careful.
@@ -602,7 +609,7 @@ enum Elapsed {
 
 // MARK: - Footer switch
 
-/// "Keep awake, agents or not", with the switch on the right.
+/// "Always keep awake", with the switch on the right.
 ///
 /// It used to sit beside the status headline with a "Keep awake" label, which
 /// cost 101pt of the widest line in the panel to say something the footer says
@@ -610,10 +617,19 @@ enum Elapsed {
 /// the one control that reads correctly in a menu, because it shows its state
 /// as well as offering the change.
 ///
+/// "Always", because the row sits under a headline that already says "Keeping
+/// your Mac awake" whenever an agent is working, and a switch reading "Keep
+/// awake" would look wrong sitting off beneath it. What the switch adds is the
+/// *always*: awake whether or not an agent is working, until you turn it off.
+/// "Keep awake, agents or not" said the same thing as a fragment with a comma
+/// in it, and at 160pt it was two points wider than the room beside "Low Power
+/// Mode", so the one time the row had to explain itself it ended in an
+/// ellipsis. The guardrail phrase beside it is what keeps "always" honest.
+///
 /// Not a `VigilMenuRow`: that row *is* a button, and this row *is* a switch.
 /// Borrowing the menu row would report a button to accessibility, and a button
-/// that says "Keep awake, agents or not" with no on or off in it is useless to
-/// anyone who cannot see the track.
+/// that says "Always keep awake" with no on or off in it is useless to anyone
+/// who cannot see the track.
 private struct KeepAwakeRow: View {
   @Binding var isOn: Bool
   /// Why the switch cannot be used, when it cannot. A manual hold never beats a
@@ -621,98 +637,118 @@ private struct KeepAwakeRow: View {
   /// does nothing.
   var blockedBy: String?
 
-  private let title = "Keep awake, agents or not"
+  private let title = "Always keep awake"
 
   var body: some View {
-    Group {
-      if let blockedBy {
-        // Two elements rather than one disabled `Toggle` with a longer label:
-        // `.disabled()` dims the whole control to 50%, and the one thing the
-        // user needs to read here — why it is down — must not be the half that
-        // fades. So only the switch is disabled, and the words are not.
-        HStack(spacing: Theme.Metrics.snug) {
-          Text(title)
-            .font(Theme.Text.body)
-            .foregroundStyle(.vigilPrimary)
-            .lineLimit(1)
+    if let blockedBy {
+      // Two elements rather than one disabled `Toggle` with a longer label:
+      // `.disabled()` dims the whole control to 50%, and the one thing the
+      // user needs to read here — why it is down — must not be the half that
+      // fades. So only the switch is disabled, and the words are not.
+      HStack(spacing: Theme.Metrics.snug) {
+        Text(title)
+          .font(Theme.Text.body)
+          .foregroundStyle(.vigilPrimary)
+          .lineLimit(1)
 
-          Spacer(minLength: Theme.Metrics.tight)
+        Spacer(minLength: Theme.Metrics.tight)
 
-          Text(blockedBy)
-            .font(Theme.Text.detail)
-            .foregroundStyle(.vigilSecondary)
-            .lineLimit(1)
+        Text(blockedBy)
+          .font(Theme.Text.detail)
+          .foregroundStyle(.vigilSecondary)
+          .lineLimit(1)
 
-          // The user's own setting, shown as it is. A guardrail outranks the
-          // manual hold, it does not clear it — so drawing the switch off
-          // would be telling them they never flipped it, when what they need
-          // to know is that they did and it is not being honoured yet.
-          Toggle(isOn: .constant(isOn)) { EmptyView() }
-            .toggleStyle(.vigil)
-            .controlSize(.mini)
-            .disabled(true)
-            .fixedSize()
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(title)
-        .accessibilityValue("\(isOn ? "on" : "off"), \(blockedBy)")
-        .accessibilityAddTraits(.isToggle)
-      } else {
-        Toggle(isOn: $isOn) {
-          Text(title).font(Theme.Text.body)
-        }
-        .toggleStyle(.vigil)
-        .controlSize(.mini)
-        .accessibilityHint("Holds your Mac awake regardless of what agents are doing")
+        // The user's own setting, shown as it is. A guardrail outranks the
+        // manual hold, it does not clear it — so drawing the switch off
+        // would be telling them they never flipped it, when what they need
+        // to know is that they did and it is not being honoured yet.
+        Toggle(isOn: .constant(isOn)) { EmptyView() }
+          .toggleStyle(.vigil)
+          .controlSize(.mini)
+          .disabled(true)
+          .fixedSize()
       }
+      // The panel's own text margin, so the title starts where every row
+      // above it does. Nothing here can take focus, so nothing needs the
+      // menu-row inset the live switch below carries.
+      .padding(.horizontal, Theme.Metrics.panelPadding)
+      .frame(height: Theme.Metrics.menuRowHeight)
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel(title)
+      .accessibilityValue("\(isOn ? "on" : "off"), \(blockedBy)")
+      .accessibilityAddTraits(.isToggle)
+    } else {
+      Toggle(isOn: $isOn) {
+        Text(title)
+          .font(Theme.Text.body)
+          .foregroundStyle(.vigilPrimary)
+      }
+      // Laid out as a footer row by the style itself, margin included, so its
+      // focus ring is the menu rows' highlight rectangle — 6pt in, 6pt radius
+      // — and not a ring at the text margin that the four rows under it never
+      // draw. The style has to own the margin because the ring goes round
+      // whatever is inside the style, and padding applied out here would be
+      // outside it.
+      .toggleStyle(.vigilMenuRow)
+      .controlSize(.mini)
+      .accessibilityHint("Holds your Mac awake regardless of what agents are doing")
     }
-    // The panel's own text margin, so the title starts where every row above it
-    // does. The switch style draws its focus ring around its content rather
-    // than around this padding, so the ring sits a little tighter here than a
-    // menu row's highlight — the price of the row being a real switch.
-    .padding(.horizontal, Theme.Metrics.panelPadding)
-    .frame(height: Theme.Metrics.menuRowHeight)
   }
 }
 
 // MARK: - Battery
 
-/// The meter and the number, on the status line.
+/// The battery glyph and the number, on the status line.
 ///
 /// Monochrome, always. Colour in this app means one thing — that something is
 /// holding the Mac awake — and a meter that went amber or green would be a
 /// second meaning, after which neither reads at a glance.
 ///
-/// No floor marker. It was a 2pt gap punched through the fill, which at this
-/// width lands under four points of the left end and reads as a rendering
-/// fault; and the floor is a setting, not a state, so printing it permanently
-/// beside a live reading was always the wrong register. It lives in Settings,
-/// and surfaces in the status detail in words on the one day it fires.
+/// The glyph is the system's own battery symbol at the nearest quarter, set
+/// inline so it takes the text's size, colour and baseline. It replaces a
+/// hand-drawn 24×5 pill whose track was `separatorColor` — 1.24:1 against the
+/// panel, so the empty part vanished and what remained was a grey dash of no
+/// fixed meaning floating beside the words, at a width where one percent was
+/// under a quarter of a point. The number was always the reading. What the
+/// glyph is for is saying, in the quarter-second a glance lasts, that the
+/// number is a *battery* — the one thing "67% left" on its own leaves you to
+/// infer — and the symbol everyone already reads in their menu bar does that
+/// at 12pt without inventing a drawing of our own. Quarters, because that is
+/// the resolution a glance has; the digits beside it carry the rest.
+///
+/// No floor marker, as before: the floor is a setting, not a state, and
+/// printing it permanently beside a live reading was always the wrong
+/// register. It lives in Settings, and surfaces in the status detail in words
+/// on the one day it fires.
 private struct BatteryReadout: View {
   let percent: Int
   let isCharging: Bool
 
   var body: some View {
-    HStack(spacing: Theme.Metrics.snug - 2) {
-      Capsule()
-        .fill(Color.vigilSeparator)
-        .frame(width: 24, height: 5)
-        .overlay(alignment: .leading) {
-          Capsule()
-            .fill(Color.vigilSecondary)
-            // Never zero-width: an empty capsule reads as a missing meter
-            // rather than as a flat battery.
-            .frame(width: max(2, 24 * CGFloat(min(max(percent, 0), 100)) / 100))
-        }
+    // One `Text`, not an `Image` beside one: an inline symbol sits on the
+    // digits' baseline and takes their font, where a separate `Image` in a
+    // `.firstTextBaseline` row reports its bottom edge as its baseline and
+    // hangs below them — the same fault `StateDot` has to correct by hand.
+    Text("\(Image(systemName: symbol)) \(label)")
+      .monospacedDigit()
+      .font(Theme.Text.detail)
+      .foregroundStyle(.vigilSecondary)
+      .lineLimit(1)
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel("Battery \(percent) percent\(isCharging ? ", charging" : "")")
+  }
 
-      Text(label)
-        .font(Theme.Text.detail)
-        .foregroundStyle(.vigilSecondary)
-        .monospacedDigit()
-        .lineLimit(1)
-    }
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel("Battery \(percent) percent\(isCharging ? ", charging" : "")")
+  /// `battery.0percent` through `battery.100percent`, in quarters.
+  ///
+  /// Rounded to the nearest, not floored: 67% *is* three-quarters to anyone
+  /// glancing at it, and a glyph showing half beside a number saying 67 would
+  /// be two readings that disagree. Only one symbol is used, whatever the
+  /// charging state: the word beside it already says "charging", and a bolt
+  /// on the glyph would be a second way of saying the same thing.
+  private var symbol: String {
+    let clamped = min(max(percent, 0), 100)
+    let quarter = Int((Double(clamped) / 25).rounded()) * 25
+    return "battery.\(quarter)percent"
   }
 
   /// Three states, and the words are load-bearing twice over.

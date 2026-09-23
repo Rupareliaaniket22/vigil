@@ -27,8 +27,10 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   battery meter moved onto the status line, and the out-of-date banner became a
   line in the Agents heading that fixes every affected agent at once
 - The manual switch moved from beside the headline into the footer, reading
-  "Keep awake, agents or not". While a guardrail is holding it down it says
-  which one, rather than being greyed out with no explanation
+  "Always keep awake". While a guardrail is holding it down it says which one,
+  rather than being greyed out with no explanation
+- The battery readout is the system battery glyph beside the number, in place
+  of a 24-point bar whose empty track was invisible against the panel
 - Pausing is two rows in the panel instead of a submenu that drew outside it
 - Settings is 520 × 580 instead of 420 × 813, which no longer fills a 13"
   MacBook's screen top to bottom. Agents come first — it is the only section
@@ -38,6 +40,14 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Help text that only restated the control above it is gone
 
 ### Fixed
+- The panel opens with nothing focused, like a menu. It used to open with a
+  focus ring around the first footer row every time, and reopen with whichever
+  row was last focused still lit; Tab or an arrow key now brings focus in
+- The footer switch's focus ring sits on the same inset rounded rectangle as
+  the menu rows' highlight, instead of at the text margin
+- The gap above "Also holding your Mac awake" matches every other section break
+- "Always keep awake" fits beside every guardrail phrase; the old label was two
+  points too wide beside "Low Power Mode" and ended in an ellipsis
 - `pmset -g assertions` no longer shows Vigil's reason with a "?" in the middle
   of it: the assertion name is folded to ASCII by construction rather than by
   anyone remembering to

@@ -148,6 +148,49 @@ final class FloatingPanel: NSPanel {
     setFrameOrigin(origin)
     dismissedAt = nil
     makeKeyAndOrderFront(nil)
+    openWithNothingFocused()
+  }
+
+  /// A menu highlights nothing until an arrow key is pressed, and this panel
+  /// is a menu in all but class.
+  ///
+  /// Becoming key hands the first responder to SwiftUI's key-view proxy, which
+  /// then focuses the first focusable view it has — so every open began with a
+  /// focus ring drawn around the first row for a keyboard nobody had touched,
+  /// and it was the loudest thing on screen. Worse, the proxy stays first
+  /// responder while the panel is ordered out, so the *second* open came back
+  /// with whichever row was last lit still lit.
+  ///
+  /// Cleared after `makeKeyAndOrderFront`, not before: becoming key is what
+  /// assigns the focus, so clearing first is undone a line later. Handing the
+  /// window itself the first responder is what SwiftUI reads as "nothing
+  /// focused", and the key-view loop is untouched, so Tab still reaches the
+  /// first row.
+  private func openWithNothingFocused() {
+    makeFirstResponder(nil)
+  }
+
+  /// Arrow keys from nothing focused start keyboard navigation, the way they
+  /// do in a menu: down or right lands on the first row, up or left on the
+  /// last. With the window as first responder AppKit already turns Tab into
+  /// `selectNextKeyView`, but treats arrows as nothing at all, and a panel
+  /// that opens with no focus has to answer the first key that asks for some.
+  /// Once a row holds focus the proxy is first responder and the arrows go to
+  /// SwiftUI, so this never sees them.
+  override func keyDown(with event: NSEvent) {
+    guard firstResponder === self, let key = event.charactersIgnoringModifiers?.unicodeScalars.first
+    else {
+      super.keyDown(with: event)
+      return
+    }
+    switch Int(key.value) {
+    case NSDownArrowFunctionKey, NSRightArrowFunctionKey:
+      selectNextKeyView(nil)
+    case NSUpArrowFunctionKey, NSLeftArrowFunctionKey:
+      selectPreviousKeyView(nil)
+    default:
+      super.keyDown(with: event)
+    }
   }
 
   /// Re-fit after the content grows or shrinks while the panel is open, and

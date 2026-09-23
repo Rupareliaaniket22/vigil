@@ -39,13 +39,30 @@ struct SwitchMetrics: Equatable, Sendable {
 /// Apply with `.toggleStyle(.vigil)`, and size it with `.controlSize(.mini)`
 /// the same way a system switch is sized.
 struct VigilSwitchStyle: ToggleStyle {
+  /// What the focus ring goes round.
+  ///
+  /// A switch in a row somebody else lays out — a settings row — is `inline`,
+  /// and the ring hugs its label and track. A switch that *is* a row of the
+  /// panel's footer is a `menuRow`: it carries the same inset and radius as
+  /// the `VigilMenuRow`s under it, so the ring drawn round it lands exactly
+  /// where those rows' highlight does. Before this existed the footer's first
+  /// row rang at the panel's 16pt text margin and the other four at 6pt in,
+  /// and the one row that did not match was the one with a control in it.
+  enum Placement {
+    case inline
+    case menuRow
+  }
+
+  var placement: Placement = .inline
+
   func makeBody(configuration: Configuration) -> some View {
-    SwitchBody(configuration: configuration)
+    SwitchBody(configuration: configuration, placement: placement)
   }
 }
 
 extension ToggleStyle where Self == VigilSwitchStyle {
   static var vigil: VigilSwitchStyle { VigilSwitchStyle() }
+  static var vigilMenuRow: VigilSwitchStyle { VigilSwitchStyle(placement: .menuRow) }
 }
 
 /// Every environment read lives in here, not in `makeBody`.
@@ -57,6 +74,7 @@ extension ToggleStyle where Self == VigilSwitchStyle {
 /// thing it controls is disabled. A nested `View` is tracked normally.
 private struct SwitchBody: View {
   let configuration: ToggleStyleConfiguration
+  let placement: VigilSwitchStyle.Placement
 
   @Environment(\.isEnabled) private var isEnabled
   @Environment(\.controlSize) private var controlSize
@@ -65,6 +83,7 @@ private struct SwitchBody: View {
   @State private var isPressed = false
 
   private var metrics: SwitchMetrics { .matching(controlSize) }
+  private var isMenuRow: Bool { placement == .menuRow }
 
   /// The whole row is the target — label included, the way a system switch
   /// behaves — so the ring goes round the row rather than round the track. One
@@ -80,6 +99,12 @@ private struct SwitchBody: View {
       Spacer(minLength: Theme.Metrics.tight)
       track
     }
+    // The same two paddings a `VigilMenuRow` splits the text margin into: 10
+    // inside the shape and 6 outside it, so the label still starts on the
+    // panel's 16pt column while the ring stops 6pt short of the panel's edge,
+    // concentric with its corner. Inline, the row around us owns the margin.
+    .padding(.horizontal, isMenuRow ? Theme.Metrics.panelPadding - Theme.Metrics.menuRowInset : 0)
+    .frame(height: isMenuRow ? Theme.Metrics.menuRowHeight : nil)
     .vigilDimmed(isEnabled)
     .contentShape([.focusEffect, .interaction], shape)
     .vigilPressAction(isPressed: $isPressed) { toggle() }
@@ -93,6 +118,7 @@ private struct SwitchBody: View {
       toggle()
       return .handled
     }
+    .padding(.horizontal, isMenuRow ? Theme.Metrics.menuRowInset : 0)
     // `.accessibilityAddTraits(.isToggle)` does nothing here — a custom toggle
     // already reports as AXToggle, and what is missing is AXSwitch. Handing
     // accessibility a real system switch is the only thing that restores it,
@@ -175,6 +201,18 @@ struct VigilSwitchStyleGallery: View {
           .toggleStyle(.vigil)
           .controlSize(.small)
           .font(Theme.Text.body)
+      }
+
+      GallerySpecimen(caption: "as a footer row · tab across: the ring sits on the highlight") {
+        VStack(spacing: 0) {
+          Toggle("Always keep awake", isOn: $on)
+            .toggleStyle(.vigilMenuRow)
+            .controlSize(.mini)
+            .font(Theme.Text.body)
+          VigilMenuRow("Pause 30 minutes") {}
+        }
+        // Rows go edge to edge; the ring and the highlight inset themselves.
+        .padding(.horizontal, -Theme.Metrics.panelPadding)
       }
     }
   }
