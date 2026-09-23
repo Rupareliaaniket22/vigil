@@ -44,8 +44,13 @@ struct SettingsView: View {
       }
 
       Section("Lid closed") {
-        Toggle("Keep working with the lid closed", isOn: $model.settings.allowClamshell)
-          .disabled(!model.clamshellSupported)
+        Toggle(
+          "Keep working with the lid closed",
+          isOn: Binding(
+            get: { model.settings.allowClamshell },
+            set: { model.setLidClosed($0) }
+          )
+        )
 
         if model.clamshellSupported {
           Text("Your Mac will keep running with the lid shut while an agent is working.")
@@ -56,25 +61,14 @@ struct SettingsView: View {
           // Say what to do, not that it is unavailable. Keeping a Mac awake
           // with the lid shut is a privileged change, so it cannot be a switch
           // — but the user can still make it work in one command.
-          VStack(alignment: .leading, spacing: 4) {
-            Text("Closing the lid still sleeps your Mac. Enabling this needs one command:")
-              .font(Theme.Text.footnote)
-              .foregroundStyle(.vigilSecondary)
-              .fixedSize(horizontal: false, vertical: true)
-
-            Text("sudo ./Scripts/install-clamshell.sh")
-              .font(.system(size: 10, design: .monospaced))
-              .textSelection(.enabled)
-              .foregroundStyle(.vigilPrimary)
-
-            Text(
-              "It lets one specific program change the lid-close setting as root. "
-                + "Read SECURITY.md before you run it."
-            )
-            .font(Theme.Text.footnote)
-            .foregroundStyle(.vigilTertiary)
-            .fixedSize(horizontal: false, vertical: true)
-          }
+          Text(
+            "Turning this on asks for your password once. Keeping a Mac awake with "
+              + "the lid shut is a privileged setting, so Vigil installs a small "
+              + "root-owned helper that can change it and nothing else."
+          )
+          .font(Theme.Text.footnote)
+          .foregroundStyle(.vigilSecondary)
+          .fixedSize(horizontal: false, vertical: true)
         }
       }
 

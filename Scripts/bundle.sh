@@ -43,6 +43,11 @@ cp "Resources/$APP_NAME.icns" "$APP/Contents/Resources/"
 # The hook script ships inside the bundle; the installer copies it out to
 # ~/.vigil/hooks so a moved or replaced app doesn't break an installed hook.
 cp hooks/vigil-hook.sh "$APP/Contents/Resources/"
+
+# The clamshell installer and its helper ship inside the bundle so the app can
+# offer to install them itself. Someone who only downloaded the .app has no
+# checkout to run them from.
+cp Scripts/install-clamshell.sh Scripts/clamshell-helper.sh "$APP/Contents/Resources/"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # --- sign, innermost first ---

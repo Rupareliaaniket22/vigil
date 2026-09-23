@@ -29,10 +29,19 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-# The invoking user, not root.
-readonly TARGET_USER="${SUDO_USER:-}"
+# The user the rule is for — never root.
+#
+# SUDO_USER when run from a terminal. Vigil passes VIGIL_TARGET_USER instead,
+# because an authorization prompt runs us as root directly with no sudo in the
+# picture and therefore no SUDO_USER to read.
+readonly TARGET_USER="${VIGIL_TARGET_USER:-${SUDO_USER:-}}"
 if [[ -z "$TARGET_USER" ]]; then
-  echo "error: could not determine the invoking user; run via sudo, not as root directly" >&2
+  echo "error: could not determine which user to grant this to." >&2
+  echo "       Run with sudo, or set VIGIL_TARGET_USER." >&2
+  exit 1
+fi
+if [[ "$TARGET_USER" == "root" ]]; then
+  echo "error: refusing to write a rule for root" >&2
   exit 1
 fi
 

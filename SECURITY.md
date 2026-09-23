@@ -70,7 +70,16 @@ Keeping the Mac awake with the lid shut requires clearing `SleepDisabled` on
   matching Developer ID team, and the listener must set a code-signing
   requirement so arbitrary local processes cannot drive it.
 
-Lid-closed mode is off by default and must be explicitly enabled.
+Lid-closed mode is off by default and must be explicitly enabled. Turning it on
+installs the helper through macOS's own authorization prompt rather than asking
+you to paste a `sudo` command into a terminal — the dialog names the app and
+requires your password, and it avoids teaching the habit of running privileged
+commands copied from a README. The setting is only stored once the helper is
+verified present, so a cancelled or failed install leaves the switch off rather
+than on and inert.
+
+Without a Developer ID this is the honest route; a signed build would use
+`SMAppService` and a real XPC helper instead.
 
 ### Failure mode we care most about
 

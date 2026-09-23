@@ -196,6 +196,43 @@ final class AppModel {
     return until > Date()
   }
 
+  /// Turn lid-closed support on or off, installing the privileged helper the
+  /// first time if it isn't there yet.
+  ///
+  /// The setting is only stored once the helper actually exists — a switch that
+  /// stays on while nothing can act on it is worse than one that refuses.
+  func setLidClosed(_ enabled: Bool) {
+    guard enabled else {
+      settings.allowClamshell = false
+      return
+    }
+    guard !clamshellSupported else {
+      settings.allowClamshell = true
+      return
+    }
+
+    do {
+      try ClamshellInstaller.install()
+      clamshellSupported = clamshell.isSupported
+      settings.allowClamshell = clamshellSupported
+      setupError =
+        clamshellSupported
+        ? nil
+        : "The helper installed but Vigil can't see it. Try quitting and reopening Vigil."
+    } catch let error as ClamshellInstaller.InstallError {
+      // A cancelled password prompt is a decision, not a fault.
+      if case .cancelled = error {
+        settings.allowClamshell = false
+        return
+      }
+      settings.allowClamshell = false
+      setupError = error.localizedDescription
+    } catch {
+      settings.allowClamshell = false
+      setupError = error.localizedDescription
+    }
+  }
+
   func refreshInstalledAgents() {
     installedAgents = Set(
       AgentIntegration.all

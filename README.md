@@ -83,12 +83,12 @@ are reachable by every other user account on the machine.
 
 ## Not done yet
 
-- **Lid-closed operation — needs a one-time setup step.** Run
-  `sudo ./Scripts/install-clamshell.sh`, then turn on "Keep working with the
-  lid closed" in settings. It grants your user permission to run one specific
-  root-owned program with one of three fixed arguments; read
-  [SECURITY.md](SECURITY.md) before you do. Remove it with
-  `sudo ./Scripts/install-clamshell.sh --uninstall`.
+- **Lid-closed operation — asks for your password once.** Turn on "Keep working
+  with the lid closed" in Settings and Vigil installs a small root-owned helper
+  that can change that one setting and nothing else. Read
+  [SECURITY.md](SECURITY.md) for exactly what it grants. If you would rather do
+  it yourself, `sudo ./Scripts/install-clamshell.sh` does the same thing, and
+  `--uninstall` removes it.
 - **Notifications** when a run finishes or the battery floor is hit.
 - **A signed, notarized release.** Until then it is build-from-source only.
 - **OpenCode.** It uses a JavaScript plugin rather than shell hooks, which is a
