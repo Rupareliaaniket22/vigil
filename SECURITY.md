@@ -30,13 +30,13 @@ that limit is either a broken hook or something probing the socket.
 Keeping the Mac awake with the lid shut requires clearing `SleepDisabled` on
 `IOPMrootDomain`, which needs root. Two backends exist:
 
-- **sudoers backend** — a root-owned helper at `/usr/local/libexec/vigil-clamshell`,
+- **sudoers backend** — a root-owned helper at `/Library/PrivilegedHelperTools/vigil-clamshell`,
   permitted by a scoped `/etc/sudoers.d` rule to run exactly two fixed argument
   vectors. Specifically:
 
   ```
-  <user> ALL=(root) NOPASSWD: /usr/local/libexec/vigil-clamshell on, \
-                              /usr/local/libexec/vigil-clamshell off
+  <user> ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/vigil-clamshell on, \
+                              /Library/PrivilegedHelperTools/vigil-clamshell off
   ```
 
   The grant is deliberately narrow. No wildcard, because `vigil-clamshell *`
@@ -47,7 +47,18 @@ Keeping the Mac awake with the lid shut requires clearing `SleepDisabled` on
 
   The installer validates the generated rule with `visudo -cqf` before moving
   it into place — a malformed file in `sudoers.d` can lock you out of `sudo`
-  entirely. It installs the helper root-owned and mode 0755, and Vigil refuses
+  entirely — and builds it in a temporary file outside `sudoers.d` so a partial
+  write is never readable by `sudo`.
+
+  The helper lives in `/Library/PrivilegedHelperTools`, Apple's designated
+  location for privileged helpers, rather than `/usr/local`. Homebrew chowns
+  `/usr/local` to the user on Intel Macs, and renaming a directory needs write
+  permission only on its *parent* — so a writable ancestor would let anything
+  running as you substitute the helper and inherit the passwordless grant.
+  Before installing, every ancestor of the helper path is checked to be
+  root-owned and not group- or world-writable, and installation is refused
+  otherwise. The invoking username is also validated, because `visudo` checks
+  syntax rather than intent. It installs the helper root-owned and mode 0755, and Vigil refuses
   to invoke a helper that is not root-owned or that is group- or
   world-writable, since a NOPASSWD rule pointing at a writable file is a root
   shell.

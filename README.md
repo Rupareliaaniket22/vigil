@@ -86,7 +86,7 @@ are reachable by every other user account on the machine.
 - **Lid-closed operation — needs a one-time setup step.** Run
   `sudo ./Scripts/install-clamshell.sh`, then turn on "Keep working with the
   lid closed" in settings. It grants your user permission to run one specific
-  program with one of two fixed arguments; read
+  root-owned program with one of three fixed arguments; read
   [SECURITY.md](SECURITY.md) before you do. Remove it with
   `sudo ./Scripts/install-clamshell.sh --uninstall`.
 - **Notifications** when a run finishes or the battery floor is hit.

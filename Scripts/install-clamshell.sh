@@ -16,7 +16,12 @@
 set -euo pipefail
 
 readonly HELPER_SRC="$(cd "$(dirname "$0")" && pwd)/clamshell-helper.sh"
-readonly HELPER_DST=/usr/local/libexec/vigil-clamshell
+# /Library/PrivilegedHelperTools is Apple's designated location for privileged
+# helpers: root:wheel, mode 1755, and every ancestor root-owned. /usr/local is
+# not — Homebrew chowns it to the user on Intel Macs, and renaming a directory
+# needs write permission only on its parent, so an attacker could swap the
+# helper out from under a NOPASSWD rule.
+readonly HELPER_DST=/Library/PrivilegedHelperTools/vigil-clamshell
 readonly SUDOERS_FILE=/etc/sudoers.d/vigil-clamshell
 
 if [[ $EUID -ne 0 ]]; then
@@ -45,31 +50,71 @@ fi
 
 [[ -f "$HELPER_SRC" ]] || { echo "error: $HELPER_SRC not found" >&2; exit 1; }
 
-install -d -o root -g wheel -m 0755 /usr/local/libexec
+# A username is interpolated into a sudoers rule below. visudo validates syntax,
+# not intent — a crafted name containing a newline would widen the grant and
+# still parse. Refuse anything that is not a plain username.
+if [[ ! "$TARGET_USER" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+  echo "error: refusing to build a sudoers rule for unusual username '$TARGET_USER'" >&2
+  exit 1
+fi
+
+# Every directory on the path to the helper must be root-owned and writable by
+# nobody else. Checking the helper alone is not enough: renaming a directory
+# needs write permission only on its parent, so a writable ancestor lets an
+# attacker substitute the whole tree and inherit the NOPASSWD grant.
+assert_ancestors_are_safe() {
+  local path="$1" dir owner perms
+  dir="$(dirname "$path")"
+  while :; do
+    if [[ -e "$dir" ]]; then
+      owner="$(stat -f '%u' "$dir")"
+      perms="$(stat -f '%OLp' "$dir")"
+      if [[ "$owner" != "0" ]]; then
+        echo "error: $dir is not owned by root (uid $owner)." >&2
+        echo "       Anything able to write there could replace the helper and" >&2
+        echo "       gain passwordless root. Refusing to install." >&2
+        exit 1
+      fi
+      # Group- or other-writable, ignoring the sticky bit which is fine.
+      if (( 8#$perms & 8#022 )); then
+        echo "error: $dir is writable by group or others (mode $perms)." >&2
+        echo "       Refusing to install." >&2
+        exit 1
+      fi
+    fi
+    [[ "$dir" == "/" ]] && break
+    dir="$(dirname "$dir")"
+  done
+}
+
+install -d -o root -g wheel -m 0755 "$(dirname "$HELPER_DST")"
+assert_ancestors_are_safe "$HELPER_DST"
+
 # root-owned and not writable by anyone else. A NOPASSWD rule pointing at a
 # user-writable file is a root shell, so this ownership is the whole safeguard.
 install -o root -g wheel -m 0755 "$HELPER_SRC" "$HELPER_DST"
 
 # Three literal argument vectors. No wildcards: `vigil-clamshell *` would let any
 # argument through, and the helper is only safe because its input is fixed.
-cat > "$SUDOERS_FILE.tmp" <<RULE
+TMP_RULE="$(mktemp /tmp/vigil-sudoers.XXXXXX)"
+trap 'rm -f "$TMP_RULE"' EXIT
+cat > "$TMP_RULE" <<RULE
 # Installed by Vigil (https://github.com/Rupareliaaniket22/vigil)
 # Lets $TARGET_USER toggle lid-close sleep without a password prompt.
 $TARGET_USER ALL=(root) NOPASSWD: $HELPER_DST on, $HELPER_DST off, $HELPER_DST sleep
 RULE
 
-chmod 0440 "$SUDOERS_FILE.tmp"
-chown root:wheel "$SUDOERS_FILE.tmp"
+chmod 0440 "$TMP_RULE"
+chown root:wheel "$TMP_RULE"
 
 # Validate before moving it into place. A malformed file in sudoers.d can lock
 # the user out of sudo entirely, so this check is not optional.
-if ! /usr/sbin/visudo -cqf "$SUDOERS_FILE.tmp"; then
-  rm -f "$SUDOERS_FILE.tmp"
+if ! /usr/sbin/visudo -cqf "$TMP_RULE"; then
   echo "error: generated sudoers rule failed validation; nothing was installed" >&2
   exit 1
 fi
 
-mv "$SUDOERS_FILE.tmp" "$SUDOERS_FILE"
+mv "$TMP_RULE" "$SUDOERS_FILE"
 
 echo "Installed."
 echo "  helper:  $HELPER_DST"

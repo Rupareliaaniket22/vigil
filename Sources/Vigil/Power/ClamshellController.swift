@@ -37,7 +37,7 @@ enum ClamshellError: LocalizedError {
 /// else. No wildcards, no shell interpolation — the classic way these rules turn
 /// into privilege escalation.
 struct SudoersClamshellBackend: ClamshellBackend {
-  static let helperPath = "/usr/local/libexec/vigil-clamshell"
+  static let helperPath = "/Library/PrivilegedHelperTools/vigil-clamshell"
 
   var displayName: String { "sudoers helper" }
 
