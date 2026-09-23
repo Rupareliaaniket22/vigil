@@ -293,33 +293,59 @@ final class AppModel {
 
   // MARK: - Presentation
 
-  /// Plain-language status, in the user's terms rather than IOKit's. Shown in
-  /// the panel and used as the assertion's own name, so `pmset -g assertions`
-  /// explains itself too.
-  var statusLine: String {
+  /// The headline. Deliberately short enough never to wrap in a 340pt panel —
+  /// a two-line headline breaks the baseline everything beside it aligns to.
+  var statusHeadline: String {
+    decision.holdIdleAssertion ? "Keeping your Mac awake" : "Your Mac can sleep"
+  }
+
+  /// The reason, underneath. Splitting headline from detail means the panel
+  /// always answers "what" first and "why" second, instead of one long
+  /// sentence that has to wrap.
+  var statusDetail: String {
     switch decision.reason {
     case .agentsWorking(let count):
-      "Awake - \(count) agent\(count == 1 ? "" : "s") working"
+      "\(count) agent\(count == 1 ? "" : "s") working"
     case .manualOverride:
-      "Awake - kept awake manually"
+      "Kept awake manually"
     case .paused(let until):
       "Paused until \(until.formatted(date: .omitted, time: .shortened))"
     case .noAgents:
-      "No agents running - your Mac can sleep normally"
+      "No agents are running"
     case .batteryBelowFloor(let percent, let floor):
-      "Sleeping - battery \(percent)% is below the \(floor)% floor"
+      "Battery \(percent)% is below your \(floor)% floor"
     case .onBatteryAndPluggedInRequired:
-      "Sleeping - set to run only on mains power"
+      "Set to run only on mains power"
     case .lowPowerMode:
-      "Sleeping - Low Power Mode is on"
+      "Low Power Mode is on"
     case .tooHot(let state):
-      state == .critical
-        ? "Sleeping - your Mac is too hot to keep awake safely"
-        : "Sleeping - your Mac is running hot"
+      state == .critical ? "Your Mac is too hot to stay awake safely" : "Your Mac is running hot"
     }
   }
 
+  /// One line, for the menu bar tooltip and the power assertion's own name, so
+  /// `pmset -g assertions` explains itself too.
+  var statusLine: String { "\(statusHeadline) - \(statusDetail)" }
+
   var workingCount: Int {
     sessions.filter { $0.state == .working }.count
+  }
+
+  /// Live sessions belonging to one agent.
+  func sessions(for integration: AgentIntegration) -> [AgentSession] {
+    sessions.filter { $0.agent == integration.id }
+  }
+
+  /// What to show beside an agent's name: how many sessions, or that it is idle.
+  func summary(for integration: AgentIntegration) -> String {
+    let mine = sessions(for: integration)
+    let working = mine.filter { $0.state == .working }.count
+    if working > 0 { return "\(working) working" }
+    if !mine.isEmpty { return "\(mine.count) session\(mine.count == 1 ? "" : "s")" }
+    return isInstalled(integration) ? "idle" : "not set up"
+  }
+
+  func isWorking(_ integration: AgentIntegration) -> Bool {
+    sessions(for: integration).contains { $0.state == .working }
   }
 }

@@ -51,8 +51,9 @@ enum Theme {
   /// Values marked "chosen" in DESIGN.md are our conventions. Apple publishes
   /// no popover width, no corner radius and no point grid.
   enum Metrics {
-    /// Chosen: fits a project path plus elapsed time without truncating.
-    static let panelWidth: CGFloat = 320
+    /// Chosen: fits an agent name, its status and a project path without
+    /// truncating. 320 was too tight — the assertion reasons all ellipsised.
+    static let panelWidth: CGFloat = 340
     static let panelPadding: CGFloat = 16
     static let cornerRadius: CGFloat = 12
     static let rowHeight: CGFloat = 32

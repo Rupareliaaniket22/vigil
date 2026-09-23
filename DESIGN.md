@@ -91,7 +91,7 @@ Apple publishes no popover width, no corner radius, and no point grid.
 
 | | Value | |
 | --- | --- | --- |
-| Panel width | 320pt | *(chosen — fits a path plus elapsed time without truncating)* |
+| Panel width | 340pt | *(chosen — 320 truncated the assertion reasons)* |
 | Corner radius | 12pt, `cornerCurve = .continuous` | *(chosen)* |
 | Grid | 8pt multiples | *(chosen convention)* |
 | Panel padding | 16pt | *(chosen)* |
@@ -200,7 +200,10 @@ is the established convention for countdowns and counts.
 └────────────────────────────────────────────┘
 ```
 
-Amber appears exactly three times: the status word, and the two working dots.
+Amber appears only where state is: the headline while the Mac is held awake,
+the dot beside a working agent, and the battery bar once the floor has cut in.
+The bar stays monochrome otherwise — a green battery bar would be a second
+colour with a second meaning, and the whole design rests on there being one.
 
 **The ledger is the point.** That second section — assertions held by *other*
 processes — is what turns this from a switch into an explanation. It is also
