@@ -53,7 +53,7 @@ install -o root -g wheel -m 0755 "$HELPER_SRC" "$HELPER_DST"
 # Three literal argument vectors. No wildcards: `vigil-clamshell *` would let any
 # argument through, and the helper is only safe because its input is fixed.
 cat > "$SUDOERS_FILE.tmp" <<RULE
-# Installed by Vigil (https://github.com/AniketRuparelia22/vigil)
+# Installed by Vigil (https://github.com/Rupareliaaniket22/vigil)
 # Lets $TARGET_USER toggle lid-close sleep without a password prompt.
 $TARGET_USER ALL=(root) NOPASSWD: $HELPER_DST on, $HELPER_DST off, $HELPER_DST sleep
 RULE

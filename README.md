@@ -34,7 +34,7 @@ by other apps, not just its own.
 Requires macOS 14 or later. There is no signed release yet, so build it:
 
 ```sh
-git clone https://github.com/AniketRuparelia22/vigil
+git clone https://github.com/Rupareliaaniket22/vigil
 cd vigil
 make run
 ```
