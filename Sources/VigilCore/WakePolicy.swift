@@ -117,6 +117,23 @@ public struct WakeDecision: Sendable, Equatable {
 }
 
 public enum WakePolicy {
+
+  /// Whether to ask the Mac to sleep right now, rather than merely permitting it.
+  ///
+  /// Needed because macOS only re-evaluates clamshell sleep on a lid event: with
+  /// the lid already shut, clearing `SleepDisabled` leaves the machine awake
+  /// with nothing asking it to stop, and it keeps draining.
+  ///
+  /// Gated on the lid actually being closed. With it open the user is sitting in
+  /// front of the machine, and sleeping it mid-keystroke reads as a crash.
+  public static func shouldRequestImmediateSleep(
+    decision: WakeDecision,
+    conditions: PowerConditions
+  ) -> Bool {
+    guard conditions.lidIsClosed == true else { return false }
+    guard !decision.disableClamshellSleep else { return false }
+    return decision.reason.isGuardrail
+  }
   /// Decide whether to hold the Mac awake.
   ///
   /// Guardrails are evaluated before intent: no amount of agent activity or

@@ -66,15 +66,14 @@ public enum HookConfiguration {
       var matchers = hooks[event] as? [[String: Any]] ?? []
 
       // Drop any previous entry of ours before adding, so a changed script path
-      // replaces the old one instead of accumulating beside it.
-      matchers = matchers.filter { matcher in
-        guard let inner = matcher["hooks"] as? [[String: Any]] else { return true }
-        return !inner.contains { entry in
-          (entry["command"] as? String).map { isVigilHook($0, scriptPath: scriptPath) } ?? false
-        }
-      }
+      // replaces the old one instead of accumulating beside it. Uses the same
+      // shape-aware check as uninstall — the nested-only version silently
+      // failed for Cursor's flat entries, duplicating them on every install.
+      matchers = matchers.filter { !isOurs($0, scriptPath: scriptPath) }
 
-      let command = "\(scriptPath) \(integration.id.rawValue) \(event) \(state.rawValue)"
+      // Quoted: an unquoted path containing a space made the shell try to run
+      // its first word, so every hook failed silently.
+      let command = "'\(scriptPath)' \(integration.id.rawValue) \(event) \(state.rawValue)"
 
       switch integration.entryFormat {
       case .nested:

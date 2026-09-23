@@ -105,6 +105,11 @@ final class AppModel {
   /// Why agent events are not arriving, when they are not.
   private(set) var bridgeError: String?
 
+  /// Set when another app already owns the global shortcut.
+  private(set) var shortcutUnavailable = false
+
+  func noteShortcutUnavailable() { shortcutUnavailable = true }
+
   // MARK: - Collaborators
 
   private var store = SessionStore()
@@ -253,11 +258,11 @@ final class AppModel {
     // for sleep. macOS only re-evaluates clamshell sleep on a lid event, so
     // merely clearing the flag would leave the Mac awake and draining — the
     // exact failure a battery floor exists to prevent.
-    let forcedOff = !decision.disableClamshellSleep && decision.reason.isGuardrail
-    Task {
-      await clamshell.setSleepDisabled(
-        decision.disableClamshellSleep, requestSleep: forcedOff)
-    }
+    let forcedOff = WakePolicy.shouldRequestImmediateSleep(
+      decision: decision, conditions: power)
+    // Not wrapped in a Task: the controller is single-flight and records the
+    // desired state synchronously, so calls can no longer interleave.
+    clamshell.setSleepDisabled(decision.disableClamshellSleep, requestSleep: forcedOff)
 
     // Everything holding the Mac awake except us — ours is already the
     // headline, and listing it twice would read as a bug.
@@ -315,7 +320,7 @@ final class AppModel {
     case .batteryBelowFloor(let percent, let floor):
       "Battery \(percent)% is below your \(floor)% floor"
     case .onBatteryAndPluggedInRequired:
-      "Set to run only on mains power"
+      "On battery — set to hold only while plugged in"
     case .lowPowerMode:
       "Low Power Mode is on"
     case .tooHot(let state):
@@ -325,7 +330,7 @@ final class AppModel {
 
   /// One line, for the menu bar tooltip and the power assertion's own name, so
   /// `pmset -g assertions` explains itself too.
-  var statusLine: String { "\(statusHeadline) - \(statusDetail)" }
+  var statusLine: String { "\(statusHeadline) — \(statusDetail)" }
 
   var workingCount: Int {
     sessions.filter { $0.state == .working }.count
@@ -347,5 +352,12 @@ final class AppModel {
 
   func isWorking(_ integration: AgentIntegration) -> Bool {
     sessions(for: integration).contains { $0.state == .working }
+  }
+
+  /// Agents with nothing live: either idle, or never wired up. Listed under
+  /// the active sessions so the panel shows what is running first and what
+  /// exists second.
+  var quietIntegrations: [AgentIntegration] {
+    availableIntegrations.filter { sessions(for: $0).isEmpty }
   }
 }

@@ -47,7 +47,7 @@ enum Notifier {
 
     switch event {
     case .allAgentsFinished(let count):
-      content.title = "Agents finished"
+      content.title = count == 1 ? "Agent finished" : "Agents finished"
       content.body =
         count == 1
         ? "Your agent has stopped working. Your Mac can sleep normally now."
@@ -57,7 +57,7 @@ enum Notifier {
 
     case .guardrailStoppedHold(let reason):
       content.title = "Vigil stopped holding your Mac awake"
-      content.body = "\(reason) An agent is still working and may not finish."
+      content.body = "\(reason). An agent is still working and may not finish."
       // Their work is genuinely at risk; this one should cut through.
       content.interruptionLevel = .timeSensitive
       content.sound = .default

@@ -89,6 +89,7 @@ extension AgentIntegration {
     settingsPath: ".codex/hooks.json",
     scriptName: "vigil-codex-hook",
     workingEvents: ["UserPromptSubmit", "PreToolUse", "PostToolUse"],
+    // SessionStart means a session opened, not that work began.
     idleEvents: ["SessionStart", "Stop"]
   )
 

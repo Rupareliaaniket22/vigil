@@ -13,6 +13,10 @@ final class FloatingPanel: NSPanel {
   /// that `resignKey` handles without anyone asking us to close.
   var onDismiss: (() -> Void)?
 
+  /// Kept so the panel can re-anchor itself when its content resizes.
+  private weak var anchorButton: NSStatusBarButton?
+  private weak var hosting: NSView?
+
   init(contentView: some View) {
     super.init(
       contentRect: NSRect(x: 0, y: 0, width: Theme.Metrics.panelWidth, height: 200),
@@ -59,6 +63,7 @@ final class FloatingPanel: NSPanel {
     effect.layer?.cornerCurve = .continuous
     effect.layer?.masksToBounds = true
 
+    self.hosting = hosting
     effect.addSubview(hosting)
     hosting.translatesAutoresizingMaskIntoConstraints = false
     NSLayoutConstraint.activate([
@@ -74,6 +79,13 @@ final class FloatingPanel: NSPanel {
   /// Text fields inside the panel need this to accept typing.
   override var canBecomeKey: Bool { true }
 
+  /// Escape dismisses, the way a popover does. Without this the panel is a
+  /// popover-shaped thing with no keyboard way out.
+  override func cancelOperation(_: Any?) {
+    orderOut(nil)
+    onDismiss?()
+  }
+
   /// Dismiss when the user clicks elsewhere, the way a popover does.
   override func resignKey() {
     super.resignKey()
@@ -88,10 +100,9 @@ final class FloatingPanel: NSPanel {
   /// the right edge doesn't push the panel off-screen or onto another display.
   func show(relativeTo button: NSStatusBarButton) {
     guard let buttonWindow = button.window else { return }
+    anchorButton = button
 
-    contentView?.layoutSubtreeIfNeeded()
-    let size = contentView?.fittingSize ?? frame.size
-    setContentSize(NSSize(width: Theme.Metrics.panelWidth, height: size.height))
+    resizeToFit(near: buttonWindow)
 
     let inWindow = button.convert(button.bounds, to: nil)
     let onScreen = buttonWindow.convertToScreen(inWindow)
@@ -108,5 +119,35 @@ final class FloatingPanel: NSPanel {
 
     setFrameOrigin(origin)
     makeKeyAndOrderFront(nil)
+  }
+
+  /// Re-fit after the content grows or shrinks while the panel is open, and
+  /// keep it anchored under the status item.
+  func refitIfVisible() {
+    guard isVisible, let button = anchorButton, let buttonWindow = button.window else { return }
+    let previousHeight = frame.height
+    resizeToFit(near: buttonWindow)
+    guard frame.height != previousHeight else { return }
+    // Grow downwards from the same top edge rather than from the bottom.
+    setFrameOrigin(NSPoint(x: frame.origin.x, y: frame.origin.y + previousHeight - frame.height))
+  }
+
+  /// The height SwiftUI wants, resolved through the constraint system.
+  ///
+  /// Measured from the effect view, not the hosting view: the hosting view is
+  /// pinned to its superview's edges, so its own fitting size is whatever the
+  /// window already is. (`sizingOptions = .preferredContentSize` would invert
+  /// that, but fights the same constraints and yields zero.)
+  func measuredContentSize() -> NSSize {
+    contentView?.layoutSubtreeIfNeeded()
+    let height = contentView?.fittingSize.height ?? frame.height
+    return NSSize(width: Theme.Metrics.panelWidth, height: height)
+  }
+
+  private func resizeToFit(near buttonWindow: NSWindow) {
+    let fitting = measuredContentSize().height
+    // Never taller than the screen it sits on; the content scrolls the rest.
+    let ceiling = (buttonWindow.screen?.visibleFrame.height ?? 800) - 24
+    setContentSize(NSSize(width: Theme.Metrics.panelWidth, height: min(fitting, ceiling)))
   }
 }

@@ -126,10 +126,47 @@ final class EventBridge {
   func stop() {
     task?.cancel()
     task = nil
-    try? FileManager.default.removeItem(atPath: Vigil.socketPath)
+    // Only remove the socket if we were the one bound to it. Quitting a second
+    // instance must not delete the first instance's socket.
+    if case .listening(let path) = status {
+      try? FileManager.default.removeItem(atPath: path)
+    }
   }
 
-  /// Create the containing directory 0700 and clear any socket left behind by a
+  /// Whether something is already listening on this socket.
+  ///
+  /// A socket file left by a crashed run and one owned by a live instance look
+  /// identical on disk. Unlinking the live one leaves that instance running and
+  /// bound to a path nothing can reach any more — it keeps its menu bar icon and
+  /// silently never receives another event.
+  static func isSocketLive(at path: String) -> Bool {
+    let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard descriptor >= 0 else { return false }
+    defer { close(descriptor) }
+
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    let maxLength = MemoryLayout.size(ofValue: address.sun_path)
+    guard path.utf8.count < maxLength else { return false }
+
+    _ = withUnsafeMutablePointer(to: &address.sun_path) { pointer in
+      path.withCString { source in
+        strncpy(
+          UnsafeMutableRawPointer(pointer).assumingMemoryBound(to: CChar.self),
+          source, maxLength - 1)
+      }
+    }
+
+    let size = socklen_t(MemoryLayout<sockaddr_un>.size)
+    let connected = withUnsafePointer(to: &address) { pointer in
+      pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { addr in
+        connect(descriptor, addr, size)
+      }
+    }
+    return connected == 0
+  }
+
+  /// Create the containing directory 0700 and clear a socket left behind by a
   /// previous run — `bind` fails on an existing path.
   private static func prepareSocketDirectory(for path: String) throws {
     let dir = (path as NSString).deletingLastPathComponent
@@ -142,7 +179,17 @@ final class EventBridge {
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir)
 
     if FileManager.default.fileExists(atPath: path) {
+      // Only unlink it if nothing is listening. Otherwise we would deafen a
+      // running instance rather than replacing a stale file.
+      guard !isSocketLive(at: path) else { throw BridgeError.alreadyRunning }
       try FileManager.default.removeItem(atPath: path)
+    }
+  }
+
+  enum BridgeError: LocalizedError {
+    case alreadyRunning
+    var errorDescription: String? {
+      "Another copy of Vigil is already running and listening for agent events."
     }
   }
 }

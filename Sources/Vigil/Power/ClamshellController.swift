@@ -59,24 +59,36 @@ struct SudoersClamshellBackend: ClamshellBackend {
     guard isAvailable else { throw ClamshellError.notInstalled }
 
     let verb = disabled ? "on" : (requestSleep ? "sleep" : "off")
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-    process.arguments = ["-n", Self.helperPath, verb]
+    // `sudo` can take a moment, and blocking a cooperative-pool thread for it
+    // would stall unrelated async work — the socket bridge included.
+    try await withCheckedThrowingContinuation {
+      (continuation: CheckedContinuation<Void, any Error>) in
+      DispatchQueue.global(qos: .userInitiated).async {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        process.arguments = ["-n", Self.helperPath, verb]
 
-    let errPipe = Pipe()
-    process.standardError = errPipe
-    process.standardOutput = Pipe()
+        let errPipe = Pipe()
+        process.standardError = errPipe
+        process.standardOutput = Pipe()
 
-    try process.run()
-    let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
+        do {
+          try process.run()
+          let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+          process.waitUntilExit()
 
-    guard process.terminationStatus == 0 else {
-      throw ClamshellError.commandFailed(
-        status: process.terminationStatus,
-        message: String(decoding: errData, as: UTF8.self)
-          .trimmingCharacters(in: .whitespacesAndNewlines)
-      )
+          guard process.terminationStatus == 0 else {
+            throw ClamshellError.commandFailed(
+              status: process.terminationStatus,
+              message: String(decoding: errData, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+          }
+          continuation.resume()
+        } catch {
+          continuation.resume(throwing: error)
+        }
+      }
     }
   }
 }
@@ -127,6 +139,12 @@ final class ClamshellController {
   private let backends: [any ClamshellBackend]
   private(set) var isDisabled = false
 
+  /// The state we want the system to be in. Set by every evaluation; applied by
+  /// a single worker.
+  private var desired: (disabled: Bool, requestSleep: Bool)?
+  /// Nil when no work is in flight.
+  private var worker: Task<Void, Never>?
+
   init(backends: [any ClamshellBackend] = [XPCClamshellBackend(), SudoersClamshellBackend()]) {
     self.backends = backends
   }
@@ -174,7 +192,32 @@ final class ClamshellController {
 
   var isSupported: Bool { activeBackend != nil }
 
-  func setSleepDisabled(_ disabled: Bool, requestSleep: Bool = false) async {
+  /// Record what the system should be doing, and make sure exactly one worker
+  /// is driving it there.
+  ///
+  /// Calls arrive on every five-second tick *and* on every hook event, and each
+  /// one shells out to `sudo`. Spawning a task per call let two overlap: the
+  /// second evaluated `isDisabled` before the first had written it, skipped the
+  /// change as redundant, and left the flag set after a guardrail had fired —
+  /// the precise "laptop cooks in a bag" outcome the battery floor exists to
+  /// prevent. One worker, latest-wins.
+  func setSleepDisabled(_ disabled: Bool, requestSleep: Bool = false) {
+    desired = (disabled, requestSleep)
+    guard worker == nil else { return }
+    worker = Task { [weak self] in
+      await self?.drain()
+      self?.worker = nil
+    }
+  }
+
+  private func drain() async {
+    while let target = desired {
+      desired = nil
+      await apply(target.disabled, requestSleep: target.requestSleep)
+    }
+  }
+
+  private func apply(_ disabled: Bool, requestSleep: Bool) async {
     // Reconcile against the system rather than a cached belief. macOS can clear
     // this flag underneath us — a power-source change is the case other
     // implementations keep filing bugs about — and trusting our own last write
@@ -188,7 +231,9 @@ final class ClamshellController {
       isDisabled = actual
     }
 
-    guard isDisabled != disabled else { return }
+    // An immediate sleep request must still go through even when the flag is
+    // already where we want it — that is the whole point of the `sleep` verb.
+    guard isDisabled != disabled || requestSleep else { return }
     guard let backend = activeBackend else {
       Self.log.notice("no clamshell backend available; lid-close will still sleep")
       return

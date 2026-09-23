@@ -40,7 +40,7 @@ struct HookConfigurationTests {
       let state = AgentIntegration.claudeCode.state(for: event)
       #expect(
         commands(result, event: event)
-          .contains("\(script) claude-code \(event) \(state.rawValue)"))
+          .contains("'\(script)' claude-code \(event) \(state.rawValue)"))
     }
   }
 
@@ -58,7 +58,7 @@ struct HookConfigurationTests {
       into: existingSettings(), scriptPath: script, integration: .claudeCode)
     let pre = commands(result, event: "PreToolUse")
     #expect(pre.contains("\(other) PreToolUse"))
-    #expect(pre.contains { $0.hasPrefix(script) })
+    #expect(pre.contains { $0.contains(script) })
   }
 
   @Test("installing twice does not duplicate anything")
@@ -67,7 +67,7 @@ struct HookConfigurationTests {
       into: existingSettings(), scriptPath: script, integration: .claudeCode)
     let twice = HookConfiguration.install(into: once, scriptPath: script, integration: .claudeCode)
     for event in AgentIntegration.claudeCode.allEvents {
-      let ours = commands(twice, event: event).filter { $0.hasPrefix(script) }
+      let ours = commands(twice, event: event).filter { $0.contains(script) }
       #expect(ours.count == 1, "duplicated hook for \(event)")
     }
   }
@@ -80,8 +80,8 @@ struct HookConfigurationTests {
       into: installed, scriptPath: script, integration: .claudeCode)
 
     let pre = commands(moved, event: "PreToolUse")
-    #expect(pre.contains { $0.hasPrefix(script) })
-    #expect(!pre.contains { $0.hasPrefix(old) })
+    #expect(pre.contains { $0.contains(script) })
+    #expect(!pre.contains { $0.contains(old) })
   }
 
   @Test("uninstall removes ours and keeps theirs")
@@ -159,7 +159,7 @@ struct AgentIntegrationTests {
 
     for event in integration.allEvents {
       let expected =
-        "\(script) \(integration.id.rawValue) \(event) \(integration.state(for: event).rawValue)"
+        "'\(script)' \(integration.id.rawValue) \(event) \(integration.state(for: event).rawValue)"
       #expect(commands(result, event: event).contains(expected))
     }
   }
@@ -241,7 +241,7 @@ struct HookEntryFormatTests {
     let stop = commands(installed, event: "stop")
 
     #expect(stop.contains("/opt/other/their-hook.sh stop"))
-    #expect(stop.contains { $0.hasPrefix(script) })
+    #expect(stop.contains { $0.contains(script) })
 
     let removed = HookConfiguration.uninstall(from: installed, scriptPath: script)
     #expect(commands(removed, event: "stop") == ["/opt/other/their-hook.sh stop"])

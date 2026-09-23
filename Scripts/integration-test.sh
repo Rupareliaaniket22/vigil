@@ -41,10 +41,14 @@ holding() {
   # Capture first, then match. Piping into `grep -q` under `set -o pipefail`
   # reports failure on a *successful* match, because grep exits at the first
   # hit and pmset dies of SIGPIPE — so both outcomes would look like "no".
-  local assertions
+  # Match on our pid rather than the wording of the status line, which is
+  # user-facing copy and has already broken this check once.
+  local pid assertions
+  pid="$(pgrep -x "$APP_NAME" | head -1)"
+  [[ -n "$pid" ]] || { echo no; return; }
   assertions="$(pmset -g assertions 2>/dev/null)"
   case "$assertions" in
-    *'PreventUserIdleSystemSleep named: "Awake'*) echo yes ;;
+    *"pid $pid($APP_NAME)"*PreventUserIdleSystemSleep*) echo yes ;;
     *) echo no ;;
   esac
 }
@@ -56,6 +60,18 @@ cleanup() {
 trap cleanup EXIT
 
 [[ -d "$APP" ]] || { echo "error: $APP not built — run make bundle" >&2; exit 1; }
+
+# The wake-hold checks below assume Vigil is willing to hold. If a guardrail is
+# active it will correctly refuse, and every one of them would read as a
+# failure. Say so plainly rather than reporting a broken app.
+battery="$(pmset -g batt | grep -oE '[0-9]+%' | tr -d '%' | head -1)"
+on_mains="$(pmset -g batt | grep -c "AC Power")"
+if [[ "$on_mains" -eq 0 && -n "$battery" && "$battery" -lt 25 ]]; then
+  echo "skipped: battery is ${battery}% on battery power." >&2
+  echo "Vigil's floor would correctly refuse to hold, so the wake checks" >&2
+  echo "cannot distinguish a working app from a broken one. Plug in and rerun." >&2
+  exit 0
+fi
 
 echo "==> launching"
 pkill -x "$APP_NAME" 2>/dev/null

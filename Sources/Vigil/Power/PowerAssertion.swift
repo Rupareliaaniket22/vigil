@@ -1,6 +1,7 @@
 import Foundation
 import IOKit.pwr_mgt
 import OSLog
+import VigilCore
 
 /// Holds and releases the macOS power assertion that keeps the Mac awake.
 ///
@@ -67,7 +68,8 @@ struct SystemAssertion: Identifiable, Sendable, Equatable {
   let pid: Int32
   let processName: String
   let type: String
-  let reason: String
+  /// Nil when nothing worth showing survived cleaning.
+  let reason: String?
   let startedAt: Date?
   /// Nil means it never expires by itself — someone has to release it.
   let timeoutSeconds: TimeInterval?
@@ -110,18 +112,21 @@ extension PowerAssertion {
 
         // HumanReadableReason is what the OS intends people to be shown;
         // AssertName is the developer's own label. Prefer the former, but it
-        // is often SHOUTED, so only take it when it isn't.
+        // is often SHOUTED, so only take it when it isn't. Whatever survives
+        // still goes through AssertionReason, because much of what IOKit
+        // returns is XPC plumbing rather than an explanation.
         let humane = entry["HumanReadableReason"] as? String
         let name = entry["AssertName"] as? String
-        let reason =
+        let raw =
           (humane.map { $0 == $0.uppercased() ? nil : $0 } ?? nil)
-          ?? name ?? entry["Details"] as? String ?? "no reason given"
+          ?? name ?? entry["Details"] as? String ?? ""
+        let reason = AssertionReason.presentable(raw, processName: process)
 
         // A timeout of zero means "no timeout", not "expires immediately".
         let timeout = (entry["TimeoutSeconds"] as? NSNumber)?.doubleValue
         return SystemAssertion(
           id: (entry["GlobalUniqueID"] as? NSNumber).map(String.init(describing:))
-            ?? "\(pid.int32Value)-\(type)-\(reason)",
+            ?? "\(pid.int32Value)-\(type)-\(reason ?? "")",
           pid: pid.int32Value,
           processName: process,
           type: type,

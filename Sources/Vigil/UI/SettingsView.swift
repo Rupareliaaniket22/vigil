@@ -12,7 +12,7 @@ struct SettingsView: View {
         Toggle("Only keep awake on mains power", isOn: $model.settings.onlyWhenPluggedIn)
 
         HStack {
-          Text("Stop below")
+          Text("Let the Mac sleep below")
           Stepper(
             value: $model.settings.batteryFloorPercent,
             in: 0...90,
@@ -23,7 +23,7 @@ struct SettingsView: View {
           }
           .disabled(model.settings.onlyWhenPluggedIn)
         }
-        Text("Vigil releases the wake lock below this charge, whatever agents are doing.")
+        Text("Below this charge, Vigil lets your Mac sleep even while agents are working.")
           .font(Theme.Text.footnote)
           .foregroundStyle(.vigilSecondary)
 
@@ -76,7 +76,8 @@ struct SettingsView: View {
         }
 
         if model.availableIntegrations.isEmpty {
-          Text("No supported agents found on this Mac.")
+          Text("Vigil works with Claude Code, Codex, Gemini CLI and Cursor. None is installed.")
+            .fixedSize(horizontal: false, vertical: true)
             .font(Theme.Text.detail)
             .foregroundStyle(.vigilSecondary)
         }
@@ -88,8 +89,19 @@ struct SettingsView: View {
         }
       }
 
-      Section("General") {
+      Section("Startup") {
         Toggle("Open Vigil at login", isOn: $model.launchAtLogin)
+
+        if model.shortcutUnavailable {
+          Text("Another app already uses ⌥⌘L, so Vigil's shortcut is inactive.")
+            .font(Theme.Text.footnote)
+            .foregroundStyle(.vigilSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        } else {
+          Text("Press ⌥⌘L anywhere to hold your Mac awake.")
+            .font(Theme.Text.footnote)
+            .foregroundStyle(.vigilSecondary)
+        }
       }
     }
     .formStyle(.grouped)

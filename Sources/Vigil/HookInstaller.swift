@@ -82,8 +82,18 @@ struct HookInstaller {
     settings = HookConfiguration.uninstall(from: settings, scriptPath: scriptPath)
     try Self.writeSettings(settings, to: settingsPath)
 
-    try? FileManager.default.removeItem(atPath: scriptPath)
-    Self.log.info("hooks removed")
+    // One script serves every agent, so deleting it here would break the hooks
+    // of every *other* agent still installed. Remove it only once nothing
+    // points at it any more.
+    if !Self.anyIntegrationStillInstalled() {
+      try? FileManager.default.removeItem(atPath: scriptPath)
+    }
+    Self.log.info("hooks removed for \(integration.displayName, privacy: .public)")
+  }
+
+  /// Whether any agent still has our hook registered.
+  static func anyIntegrationStillInstalled() -> Bool {
+    AgentIntegration.all.contains { live(for: $0).isInstalled }
   }
 
   // MARK: - Files
@@ -123,18 +133,24 @@ struct HookInstaller {
   }
 
   private static func writeSettings(_ settings: [String: Any], to path: String) throws {
-    let url = URL(fileURLWithPath: path)
+    // Follow a symlink to its target before writing. `.atomic` renames over the
+    // path, which would replace a link into someone's dotfiles repo with a
+    // regular file and leave the real file stale.
+    let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
     try FileManager.default.createDirectory(
       at: url.deletingLastPathComponent(),
       withIntermediateDirectories: true
     )
 
-    // Keep one backup. If a merge ever goes wrong, the user has a way back
-    // that doesn't involve reconstructing their settings from memory.
-    if FileManager.default.fileExists(atPath: path) {
-      let backup = path + ".vigil-backup"
-      try? FileManager.default.removeItem(atPath: backup)
-      try? FileManager.default.copyItem(atPath: path, toPath: backup)
+    // Keep the user's *original* file, once. Overwriting the backup on every
+    // write meant that after install-then-uninstall the "backup" was our own
+    // post-install output rather than what they started with. A backup that
+    // cannot be written aborts the edit rather than proceeding unprotected.
+    let backup = url.path + ".vigil-backup"
+    if FileManager.default.fileExists(atPath: url.path),
+      !FileManager.default.fileExists(atPath: backup)
+    {
+      try FileManager.default.copyItem(atPath: url.path, toPath: backup)
     }
 
     // withoutEscapingSlashes matters: Foundation writes "\/Users\/..." by

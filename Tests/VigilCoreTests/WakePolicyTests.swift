@@ -265,3 +265,64 @@ struct GuardrailClassificationTests {
     #expect(!paused.reason.isGuardrail)
   }
 }
+
+@Suite("Asking the Mac to sleep")
+struct ImmediateSleepTests {
+
+  private func decision(_ reason: WakeReason, clamshell: Bool = false) -> WakeDecision {
+    WakeDecision(
+      holdIdleAssertion: reason.holdsWake,
+      disableClamshellSleep: clamshell,
+      reason: reason)
+  }
+
+  @Test("a guardrail with the lid shut asks for sleep")
+  func guardrailWithLidShut() {
+    #expect(
+      WakePolicy.shouldRequestImmediateSleep(
+        decision: decision(.batteryBelowFloor(percent: 10, floor: 20)),
+        conditions: PowerConditions(lidIsClosed: true)))
+  }
+
+  @Test("the same guardrail with the lid OPEN does not")
+  func guardrailWithLidOpen() {
+    // Someone is sitting in front of the machine. Sleeping it mid-keystroke
+    // reads as a crash and loses unsaved work.
+    #expect(
+      !WakePolicy.shouldRequestImmediateSleep(
+        decision: decision(.batteryBelowFloor(percent: 10, floor: 20)),
+        conditions: PowerConditions(lidIsClosed: false)))
+  }
+
+  @Test("a machine with no lid never gets asked")
+  func desktopNeverSleeps() {
+    #expect(
+      !WakePolicy.shouldRequestImmediateSleep(
+        decision: decision(.tooHot(state: .critical)),
+        conditions: PowerConditions(lidIsClosed: nil)))
+  }
+
+  @Test("work simply finishing does not ask for sleep")
+  func finishingDoesNotSleep() {
+    #expect(
+      !WakePolicy.shouldRequestImmediateSleep(
+        decision: decision(.noAgents),
+        conditions: PowerConditions(lidIsClosed: true)))
+  }
+
+  @Test("a pause does not ask for sleep")
+  func pauseDoesNotSleep() {
+    #expect(
+      !WakePolicy.shouldRequestImmediateSleep(
+        decision: decision(.paused(until: Date().addingTimeInterval(600))),
+        conditions: PowerConditions(lidIsClosed: true)))
+  }
+
+  @Test("we never ask for sleep while still holding the lid open ourselves")
+  func neverWhileClamshellActive() {
+    #expect(
+      !WakePolicy.shouldRequestImmediateSleep(
+        decision: decision(.agentsWorking(count: 1), clamshell: true),
+        conditions: PowerConditions(lidIsClosed: true)))
+  }
+}

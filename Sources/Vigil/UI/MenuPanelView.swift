@@ -5,12 +5,18 @@ import VigilCore
 ///
 /// Reads as a sequence of answers: what is happening, how much power is left,
 /// which agents are running, what else is keeping the Mac awake, and what you
-/// can do about it. Each of those is a titled section with a rule above it, so
-/// the structure carries the hierarchy and no row needs a box of its own.
+/// can do about it.
+///
+/// Groups separate on a bold header and whitespace. Rules appear only where the
+/// *kind* of content changes — before the ledger, which is about other apps,
+/// and before the footer, which is actions. A rule per section is the same
+/// visual noise as a box per section.
 struct MenuPanelView: View {
   @Bindable var model: AppModel
   var onQuit: () -> Void
   var onSettings: () -> Void
+
+  private var pad: CGFloat { Theme.Metrics.panelPadding }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -19,33 +25,36 @@ struct MenuPanelView: View {
       battery
       agents
       ledger
-      pause
       footer
     }
     .padding(.vertical, Theme.Metrics.loose)
     .frame(width: Theme.Metrics.panelWidth)
     .animation(Theme.Motion.contentChange, value: model.sessions)
+    .animation(Theme.Motion.contentChange, value: model.otherAssertions)
   }
 
   // MARK: - Header
 
   private var header: some View {
     VStack(alignment: .leading, spacing: 2) {
-      HStack {
+      HStack(alignment: .firstTextBaseline) {
         Text(model.statusHeadline)
           .font(Theme.Text.status)
-          .foregroundStyle(
-            model.decision.holdIdleAssertion ? Color.vigilAmber : .vigilPrimary
-          )
+          .foregroundStyle(model.decision.holdIdleAssertion ? Color.vigilAmber : .vigilPrimary)
           .lineLimit(1)
 
-        Spacer()
+        Spacer(minLength: Theme.Metrics.snug)
 
-        Toggle("", isOn: $model.manualOverride)
-          .toggleStyle(.switch)
-          .controlSize(.small)
-          .labelsHidden()
-          .help("Keep awake regardless of what agents are doing")
+        Toggle(isOn: $model.manualOverride) {
+          Text("Keep awake").font(Theme.Text.detail)
+        }
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+        // A manual hold cannot beat a guardrail, so offering it during one
+        // would be a switch that visibly does nothing.
+        .disabled(model.decision.reason.isGuardrail)
+        .accessibilityLabel("Keep awake")
+        .accessibilityHint("Holds your Mac awake regardless of what agents are doing")
       }
 
       Text(model.statusDetail)
@@ -54,7 +63,7 @@ struct MenuPanelView: View {
         .lineLimit(2)
         .fixedSize(horizontal: false, vertical: true)
     }
-    .padding(.horizontal, Theme.Metrics.panelPadding)
+    .padding(.horizontal, pad)
   }
 
   // MARK: - Notices
@@ -62,70 +71,80 @@ struct MenuPanelView: View {
   @ViewBuilder
   private var notices: some View {
     if let error = model.bridgeError {
-      Notice(title: "Vigil isn't receiving agent events", detail: error, isProblem: true)
+      Notice(title: "Vigil isn't receiving agent events", detail: error)
     }
     if let error = model.setupError {
-      Notice(title: "Setup didn't finish", detail: error, isProblem: true)
+      Notice(title: "Setup didn't finish", detail: error)
     }
   }
 
   // MARK: - Battery
 
   private var battery: some View {
-    PanelSection(title: "Battery") {
-      BatteryBar(
-        percent: model.power.batteryPercent,
-        floor: model.settings.batteryFloorPercent,
-        isBelowFloor: model.decision.reason.isGuardrail && !model.power.isPluggedIn
+    Group {
+      SectionHeader(
+        "Battery",
+        trailing: model.power.isPluggedIn
+          ? "\(model.power.batteryPercent)% · charging"
+          : "\(model.power.batteryPercent)% left"
       )
 
-      HStack {
-        Text(
-          model.power.isPluggedIn
-            ? "\(model.power.batteryPercent)% · charging"
-            : "\(model.power.batteryPercent)% left"
-        )
-        .font(Theme.Text.detail)
-        .foregroundStyle(.vigilSecondary)
-        .monospacedDigit()
+      VStack(alignment: .leading, spacing: 4) {
+        BatteryBar(percent: model.power.batteryPercent, floor: floorShown)
 
-        Spacer()
-
-        // Showing the threshold makes the guardrail visible rather than a
+        // Naming the threshold makes the guardrail visible rather than a
         // surprise the first time it fires.
-        Text("stops below \(model.settings.batteryFloorPercent)%")
-          .font(Theme.Text.detail)
+        Text(guardrailSummary)
+          .font(Theme.Text.footnote)
           .foregroundStyle(.vigilTertiary)
       }
+      .padding(.horizontal, pad)
+      .padding(.top, 2)
     }
+  }
+
+  /// Zero means "no floor", which a marker at the far left would misrepresent.
+  private var floorShown: Int? {
+    let floor = model.settings.batteryFloorPercent
+    return (floor > 0 && floor < 100) ? floor : nil
+  }
+
+  private var guardrailSummary: String {
+    if model.settings.onlyWhenPluggedIn { return "Stops when you unplug" }
+    guard let floor = floorShown else { return "No battery limit set" }
+    return "Stops below \(floor)%"
   }
 
   // MARK: - Agents
 
   private var agents: some View {
-    PanelSection(
-      title: "Agents", trailing: model.workingCount > 0 ? "\(model.workingCount) working" : nil
-    ) {
-      if model.availableIntegrations.isEmpty {
-        Text("No supported agents found on this Mac.")
-          .font(Theme.Text.detail)
-          .foregroundStyle(.vigilSecondary)
-      } else {
-        ForEach(model.availableIntegrations) { integration in
-          AgentRow(
+    Group {
+      SectionHeader("Agents")
+
+      VStack(alignment: .leading, spacing: 2) {
+        if model.availableIntegrations.isEmpty {
+          Text("Vigil works with Claude Code, Codex, Gemini CLI and Cursor. None is installed.")
+            .font(Theme.Text.detail)
+            .foregroundStyle(.vigilSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+
+        // Live sessions first, with the project each is working in — the thing
+        // you actually want to know is *which* run is still going.
+        ForEach(model.sessions) { session in
+          SessionRow(session: session, now: model.now)
+        }
+
+        ForEach(model.quietIntegrations) { integration in
+          QuietAgentRow(
             name: integration.displayName,
-            summary: model.summary(for: integration),
-            isWorking: model.isWorking(integration),
-            isSetUp: model.isInstalled(integration)
+            isSetUp: model.isInstalled(integration),
+            setUp: { model.installHooks(for: integration) }
           )
         }
       }
-
-      if !model.hooksInstalled {
-        Button("Set up") { model.installAllAvailableHooks() }
-          .controlSize(.small)
-          .padding(.top, Theme.Metrics.tight)
-      }
+      .padding(.horizontal, pad)
+      .padding(.top, 2)
     }
   }
 
@@ -133,12 +152,22 @@ struct MenuPanelView: View {
 
   @ViewBuilder
   private var ledger: some View {
-    if !collapsedAssertions.isEmpty {
-      PanelSection(title: "Also keeping it awake") {
-        ForEach(collapsedAssertions) { assertion in
+    if !shownAssertions.isEmpty {
+      Rule().padding(.top, Theme.Metrics.loose)
+      SectionHeader("Also keeping it awake")
+
+      VStack(alignment: .leading, spacing: 2) {
+        ForEach(shownAssertions) { assertion in
           AssertionRow(assertion: assertion, now: model.now)
         }
+        if hiddenAssertionCount > 0 {
+          Text("and \(hiddenAssertionCount) more")
+            .font(Theme.Text.footnote)
+            .foregroundStyle(.vigilTertiary)
+        }
       }
+      .padding(.horizontal, pad)
+      .padding(.top, 2)
     }
   }
 
@@ -149,91 +178,87 @@ struct MenuPanelView: View {
     return model.otherAssertions.filter { seen.insert($0.processName).inserted }
   }
 
-  // MARK: - Pause
-
-  private var pause: some View {
-    PanelSection(title: "Pause") {
-      if model.isPaused {
-        HStack {
-          Text(model.statusDetail)
-            .font(Theme.Text.detail)
-            .foregroundStyle(.vigilSecondary)
-          Spacer()
-          PillButton("Resume") { model.resume() }
-        }
-      } else {
-        HStack(spacing: Theme.Metrics.snug) {
-          Spacer()
-          PillButton("30 min") { model.pause(for: 30 * 60) }
-          PillButton("1 hour") { model.pause(for: 60 * 60) }
-        }
-      }
-    }
-  }
+  /// Capped, so a busy machine cannot grow the panel past the screen.
+  private var shownAssertions: [SystemAssertion] { Array(collapsedAssertions.prefix(4)) }
+  private var hiddenAssertionCount: Int { max(0, collapsedAssertions.count - 4) }
 
   // MARK: - Footer
 
   private var footer: some View {
     VStack(alignment: .leading, spacing: 0) {
       Rule().padding(.top, Theme.Metrics.loose)
-      MenuRow(title: "Settings…", shortcut: "⌘,", action: onSettings)
-      MenuRow(title: "Quit Vigil", shortcut: "⌘Q", action: onQuit)
+
+      if model.isPaused {
+        // Reads its own state, never the global status detail — a guardrail
+        // can be the active reason while a pause is also running.
+        MenuRow(title: "Resume — paused until \(pausedUntilText)", action: model.resume)
+      } else {
+        MenuSubmenuRow(title: "Pause") {
+          Button("30 minutes") { model.pause(for: 30 * 60) }
+          Button("1 hour") { model.pause(for: 60 * 60) }
+          Button("Until tomorrow") { model.pause(for: 12 * 60 * 60) }
+        }
+      }
+
+      MenuRow(title: "Settings…", action: onSettings)
+      MenuRow(title: "Quit Vigil", action: onQuit)
     }
+  }
+
+  private var pausedUntilText: String {
+    model.pausedUntil?.formatted(date: .omitted, time: .shortened) ?? ""
   }
 }
 
 // MARK: - Structure
 
-/// A titled group with a rule above it.
-private struct PanelSection<Content: View>: View {
+private struct SectionHeader: View {
   let title: String
   var trailing: String?
-  @ViewBuilder let content: Content
+
+  init(_ title: String, trailing: String? = nil) {
+    self.title = title
+    self.trailing = trailing
+  }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: Theme.Metrics.snug) {
-      Rule().padding(.top, Theme.Metrics.loose)
-
-      HStack {
-        Text(title)
-          .font(Theme.Text.section)
-          .foregroundStyle(.vigilPrimary)
-        Spacer()
-        if let trailing {
-          Text(trailing)
-            .font(Theme.Text.detail)
-            .foregroundStyle(.vigilSecondary)
-        }
+    HStack(alignment: .firstTextBaseline) {
+      Text(title)
+        .font(Theme.Text.section)
+        .foregroundStyle(.vigilPrimary)
+      Spacer()
+      if let trailing {
+        Text(trailing)
+          .font(Theme.Text.detail)
+          .foregroundStyle(.vigilSecondary)
+          .monospacedDigit()
       }
-
-      VStack(alignment: .leading, spacing: Theme.Metrics.tight) { content }
     }
     .padding(.horizontal, Theme.Metrics.panelPadding)
+    .padding(.top, Theme.Metrics.loose)
   }
 }
 
-/// A full-bleed hairline. Runs edge to edge so sections read as bands rather
-/// than as floating cards.
+/// A full-bleed hairline. Carries no margin of its own, so callers control
+/// spacing and one component does not produce different gaps in different
+/// parents.
 private struct Rule: View {
   var body: some View {
     Rectangle()
       .fill(Color.vigilSeparator)
       .frame(height: 1)
-      .padding(.horizontal, -Theme.Metrics.panelPadding)
-      .padding(.bottom, Theme.Metrics.snug)
   }
 }
 
 private struct Notice: View {
   let title: String
   let detail: String
-  let isProblem: Bool
 
   var body: some View {
     VStack(alignment: .leading, spacing: 2) {
       Text(title)
         .font(Theme.Text.body)
-        .foregroundStyle(isProblem ? Color.vigilAmber : .vigilPrimary)
+        .foregroundStyle(.vigilPrimary)
       Text(detail)
         .font(Theme.Text.detail)
         .foregroundStyle(.vigilSecondary)
@@ -244,37 +269,12 @@ private struct Notice: View {
   }
 }
 
-// MARK: - Controls
+// MARK: - Footer rows
 
-private struct PillButton: View {
-  let title: String
-  let action: () -> Void
-
-  init(_ title: String, action: @escaping () -> Void) {
-    self.title = title
-    self.action = action
-  }
-
-  var body: some View {
-    Button(action: action) {
-      Text(title)
-        .font(Theme.Text.detail)
-        .foregroundStyle(.vigilPrimary)
-        .padding(.horizontal, Theme.Metrics.snug + 2)
-        .padding(.vertical, 5)
-        .background(
-          RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(Color.vigilSeparator.opacity(0.6))
-        )
-    }
-    .buttonStyle(.plain)
-  }
-}
-
-/// A full-width row that highlights on hover, the way a real menu item does.
+/// A full-width row that highlights the way a real menu item does — selection
+/// background, text flipping to the selected colour.
 private struct MenuRow: View {
   let title: String
-  let shortcut: String
   let action: () -> Void
   @State private var isHovered = false
 
@@ -283,52 +283,122 @@ private struct MenuRow: View {
       HStack {
         Text(title)
           .font(Theme.Text.body)
-          .foregroundStyle(.vigilPrimary)
+          .foregroundStyle(isHovered ? Color.vigilSelectedText : .vigilPrimary)
+          .lineLimit(1)
         Spacer()
-        Text(shortcut)
-          .font(Theme.Text.detail)
-          .foregroundStyle(.vigilTertiary)
       }
       .padding(.horizontal, Theme.Metrics.panelPadding)
-      .padding(.vertical, 6)
+      .frame(height: Theme.Metrics.menuRowHeight)
       .contentShape(Rectangle())
-      .background(isHovered ? Color.vigilSeparator.opacity(0.5) : .clear)
+      .background(isHovered ? Color.vigilSelection : .clear)
     }
     .buttonStyle(.plain)
     .onHover { isHovered = $0 }
   }
 }
 
+private struct MenuSubmenuRow<Content: View>: View {
+  let title: String
+  @ViewBuilder let content: Content
+
+  var body: some View {
+    Menu(title) { content }
+      .menuStyle(.borderlessButton)
+      .font(Theme.Text.body)
+      .padding(.horizontal, Theme.Metrics.panelPadding)
+      .frame(height: Theme.Metrics.menuRowHeight)
+  }
+}
+
 // MARK: - Rows
 
-private struct AgentRow: View {
-  let name: String
-  let summary: String
-  let isWorking: Bool
-  let isSetUp: Bool
+/// One live session, named by the project it is working in.
+private struct SessionRow: View {
+  let session: AgentSession
+  let now: Date
 
   var body: some View {
     HStack(spacing: Theme.Metrics.snug) {
+      Circle()
+        .fill(session.state == .working ? Color.vigilAmber : .vigilTertiary)
+        .frame(width: 6, height: 6)
+
+      Text(session.agent.rawValue)
+        .font(Theme.Text.body)
+        .foregroundStyle(.vigilPrimary)
+        .lineLimit(1)
+        .layoutPriority(2)
+
+      if let cwd = session.cwd, !cwd.isEmpty {
+        Text(shorten(cwd))
+          .font(Theme.Text.detail)
+          .foregroundStyle(.vigilSecondary)
+          .lineLimit(1)
+          .truncationMode(.head)
+      }
+
+      Spacer(minLength: Theme.Metrics.tight)
+
+      Text(elapsed)
+        .font(Theme.Text.detail)
+        .foregroundStyle(.vigilTertiary)
+        .monospacedDigit()
+        .fixedSize()
+    }
+    .frame(height: Theme.Metrics.rowHeight)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(
+      "\(session.agent.rawValue), \(session.state.rawValue), last active \(elapsed)")
+  }
+
+  private func shorten(_ path: String) -> String {
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
+  }
+
+  private var elapsed: String {
+    let seconds = Int(now.timeIntervalSince(session.lastSeen))
+    if seconds < 60 { return "now" }
+    let minutes = seconds / 60
+    return minutes < 60 ? "\(minutes)m" : "\(minutes / 60)h"
+  }
+}
+
+/// An agent with nothing running: either idle, or not wired up yet.
+///
+/// Distinguished by colour and wording, never by opacity. Dimming a semantic
+/// colour multiplies its alpha after it resolves, which took the unconfigured
+/// row — the one you most need to act on — down to 1.4:1.
+private struct QuietAgentRow: View {
+  let name: String
+  let isSetUp: Bool
+  let setUp: () -> Void
+
+  var body: some View {
+    HStack(spacing: Theme.Metrics.snug) {
+      Circle().fill(Color.clear).frame(width: 6, height: 6)
+
       Text(name)
         .font(Theme.Text.body)
-        // Idle agents recede so a working one is the thing you see.
-        .foregroundStyle(isWorking ? Color.vigilPrimary : .vigilSecondary)
+        .foregroundStyle(.vigilSecondary)
         .lineLimit(1)
 
       Spacer(minLength: Theme.Metrics.tight)
 
-      Text(summary)
-        .font(Theme.Text.detail)
-        .foregroundStyle(isWorking ? Color.vigilSecondary : .vigilTertiary)
-
-      Circle()
-        .fill(isWorking ? Color.vigilAmber : .clear)
-        .frame(width: 6, height: 6)
+      if isSetUp {
+        Text("idle")
+          .font(Theme.Text.detail)
+          .foregroundStyle(.vigilTertiary)
+      } else {
+        Button("Set up", action: setUp)
+          .buttonStyle(.borderless)
+          .controlSize(.small)
+          .font(Theme.Text.detail)
+      }
     }
-    .frame(height: 20)
-    .opacity(isSetUp ? 1 : 0.55)
+    .frame(height: Theme.Metrics.rowHeight)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(name), \(summary)")
+    .accessibilityLabel("\(name), \(isSetUp ? "idle" : "not set up")")
   }
 }
 
@@ -343,9 +413,10 @@ private struct AssertionRow: View {
         .font(Theme.Text.detail)
         .foregroundStyle(.vigilSecondary)
         .lineLimit(1)
-        .layoutPriority(1)
+        .truncationMode(.tail)
+        .frame(maxWidth: 120, alignment: .leading)
 
-      if let reason = distinctReason {
+      if let reason = assertion.reason {
         Text(reason)
           .font(Theme.Text.detail)
           .foregroundStyle(.vigilTertiary)
@@ -355,24 +426,17 @@ private struct AssertionRow: View {
 
       Spacer(minLength: Theme.Metrics.tight)
 
-      Text(duration)
-        .font(Theme.Text.detail)
-        .foregroundStyle(.vigilTertiary)
-        .monospacedDigit()
-        .layoutPriority(1)
+      if !duration.isEmpty {
+        Text(duration)
+          .font(Theme.Text.detail)
+          .foregroundStyle(.vigilTertiary)
+          .monospacedDigit()
+          .fixedSize()
+      }
     }
     .frame(height: 18)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(accessibleDescription)
-  }
-
-  /// Drop the reason when it only restates the process name. "caffeinate,
-  /// caffeinate command-line tool" spends a row saying nothing, then truncates
-  /// the part that might have said something.
-  private var distinctReason: String? {
-    let reason = assertion.reason
-    guard !reason.localizedCaseInsensitiveContains(assertion.processName) else { return nil }
-    return reason
   }
 
   private var duration: String {
@@ -386,7 +450,8 @@ private struct AssertionRow: View {
   }
 
   private var accessibleDescription: String {
-    var parts = ["\(assertion.processName): \(assertion.reason)"]
+    var parts = [assertion.processName]
+    if let reason = assertion.reason { parts.append(reason) }
     if !duration.isEmpty { parts.append("held \(duration)") }
     parts.append(assertion.expiresOnItsOwn ? "expires on its own" : "no time limit")
     return parts.joined(separator: ", ")
@@ -395,36 +460,37 @@ private struct AssertionRow: View {
 
 // MARK: - Battery
 
-/// A level bar that stays monochrome until the charge is actually a problem.
+/// A level bar. Monochrome always.
 ///
-/// Hold My Lid paints its bar green; colour here means one thing — that
-/// something is holding the Mac awake or stopping it from being held — so the
-/// bar only takes amber when the floor has cut in.
+/// Colour in this app means one thing — that something is holding the Mac
+/// awake. A battery bar that goes amber would be a second meaning, and then
+/// neither reads at a glance. The floor is drawn as a gap punched through the
+/// fill rather than a tinted line, because a 1pt line at any tint measured
+/// below 2:1 in both appearances.
 private struct BatteryBar: View {
   let percent: Int
-  let floor: Int
-  let isBelowFloor: Bool
+  let floor: Int?
 
   var body: some View {
     GeometryReader { geometry in
+      let width = geometry.size.width
+      let filled = max(2, width * CGFloat(percent) / 100)
+
       ZStack(alignment: .leading) {
-        Capsule()
-          .fill(Color.vigilSeparator)
+        Capsule().fill(Color.vigilSeparator)
+        Capsule().fill(Color.vigilSecondary).frame(width: filled)
 
-        Capsule()
-          .fill(isBelowFloor ? Color.vigilAmber : .vigilSecondary)
-          .frame(width: max(2, geometry.size.width * CGFloat(percent) / 100))
-
-        // Where the guardrail sits, so the number below has somewhere to point.
-        if floor > 0, floor < 100 {
+        if let floor {
           Rectangle()
-            .fill(Color.vigilPrimary.opacity(0.35))
-            .frame(width: 1)
-            .offset(x: geometry.size.width * CGFloat(floor) / 100)
+            .fill(Color.vigilControlFill)
+            .blendMode(.destinationOut)
+            .frame(width: 2)
+            .offset(x: width * CGFloat(floor) / 100)
         }
       }
+      .compositingGroup()
     }
-    .frame(height: 6)
+    .frame(height: 5)
     .accessibilityHidden(true)
   }
 }

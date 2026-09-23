@@ -16,22 +16,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var settingsWindow: SettingsWindowController?
 
   func applicationDidFinishLaunching(_: Notification) {
+    // Before anything that touches shared state: the smoke test builds the
+    // panel and exits, and must not disturb a running instance's socket.
+    if ProcessInfo.processInfo.environment["VIGIL_SMOKE"] != nil {
+      runSmokeTest()
+    }
+
     NSApp.setActivationPolicy(.accessory)
+    installMainMenu()
     installStatusItem()
     model.start()
 
     // ⌥⌘L toggles the manual hold from anywhere.
-    GlobalShortcut.register { [weak self] in
+    let registered = GlobalShortcut.register { [weak self] in
       self?.model.manualOverride.toggle()
+    }
+    if !registered {
+      // Swallowing this leaves the user pressing a shortcut that silently
+      // belongs to another app.
+      model.noteShortcutUnavailable()
     }
 
     // Redraw the status item whenever the model changes, without polling.
     observeModel()
     Self.log.info("\(Vigil.displayName, privacy: .public) launched")
-
-    if ProcessInfo.processInfo.environment["VIGIL_SMOKE"] != nil {
-      runSmokeTest()
-    }
   }
 
   func applicationWillTerminate(_: Notification) {
@@ -43,10 +51,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   private func installStatusItem() {
     statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    statusItem.behavior = .removalAllowed
+    // Deliberately not .removalAllowed: this is the app's only entry point, and
+    // NSStatusItem persists visibility across launches, so a stray ⌘-drag would
+    // make Vigil permanently unreachable.
     statusItem.button?.target = self
     statusItem.button?.action = #selector(togglePanel)
     refreshStatusItem()
+  }
+
+  /// A minimal main menu.
+  ///
+  /// The Settings window switches the app to `.regular`, and a regular app with
+  /// no main menu gets a bare menu bar: ⌘W will not close its window and ⌘Q
+  /// will not quit. Building one once at launch fixes both.
+  private func installMainMenu() {
+    let main = NSMenu()
+
+    let appItem = NSMenuItem()
+    let appMenu = NSMenu()
+    appMenu.addItem(
+      withTitle: "Settings…", action: #selector(openSettingsFromMenu), keyEquivalent: ","
+    )
+    .target = self
+    appMenu.addItem(.separator())
+    appMenu.addItem(
+      withTitle: "Quit \(Vigil.displayName)", action: #selector(NSApplication.terminate(_:)),
+      keyEquivalent: "q")
+    appItem.submenu = appMenu
+    main.addItem(appItem)
+
+    let windowItem = NSMenuItem()
+    let windowMenu = NSMenu(title: "Window")
+    windowMenu.addItem(
+      withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+    windowItem.submenu = windowMenu
+    main.addItem(windowItem)
+
+    NSApp.mainMenu = main
+  }
+
+  @objc private func openSettingsFromMenu() {
+    openSettings()
   }
 
   private func refreshStatusItem() {
@@ -119,7 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func runSmokeTest() {
     let panel = makePanel()
     panel.contentView?.layoutSubtreeIfNeeded()
-    let size = panel.contentView?.fittingSize ?? .zero
+    let size = panel.measuredContentSize()
     print("smoke: panel built, fitting size \(Int(size.width))x\(Int(size.height))")
     guard size.width > 0, size.height > 0 else {
       print("smoke: FAILED - panel has zero size")
