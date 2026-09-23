@@ -1,0 +1,7 @@
+# Every change to this repository needs review from the owner.
+#
+# Paired with branch protection on `main`, which requires a pull request and an
+# approving review from a code owner. Anyone can open a pull request — that is
+# the point of the project being open — but nothing merges into `main` without
+# an approval from here.
+* @Rupareliaaniket22
