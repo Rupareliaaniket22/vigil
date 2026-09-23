@@ -112,6 +112,10 @@ every other user account on the machine.
 - **No signed release.** Build from source for now
 - **No auto-update**
 - **OpenCode** uses a JavaScript plugin rather than shell hooks
+- **Desktop apps other than Cursor.** Claude and ChatGPT desktop publish no
+  lifecycle events and hold no wake lock of their own, so Vigil cannot see
+  them working. It will not guess: an idle window and one waiting on the
+  model look the same from outside
 
 ## Building
 

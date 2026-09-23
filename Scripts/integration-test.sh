@@ -80,7 +80,14 @@ fi
 real_agents_working() {
   local log=/tmp/vigil-hook.log
   [[ -f "$log" ]] || return 1
-  # Anything reported in the last 60s that this script did not send.
+  # Nothing appended lately means nothing is reporting. The file's mtime, not
+  # the HH:MM:SS stamps inside it: those carry no date, so reading them means
+  # handling the midnight wrap to learn what one stat call already says.
+  local age
+  age=$(( $(date +%s) - $(stat -f %m "$log" 2>/dev/null || echo 0) ))
+  [[ "$age" -le 60 ]] || return 1
+  # This script posts over the socket with curl and never through a hook, so
+  # nothing in this log is our own traffic.
   local recent
   recent="$(tail -50 "$log" 2>/dev/null | grep -c ' working$' || true)"
   [[ "${recent:-0}" -gt 0 ]]
@@ -96,7 +103,12 @@ pgrep -x "$APP_NAME" >/dev/null || { echo "error: app did not start" >&2; exit 1
 
 echo "==> the loop"
 check "health endpoint" "200" "$(curl -sS --unix-socket "$SOCK" -m 3 -o /dev/null -w '%{http_code}' http://localhost/health)"
-check "idle at rest" "no" "$(holding)"
+if real_agents_working; then
+  echo "  skip  idle at rest — a real agent is reporting on this machine, so"
+  echo "        the app is correctly holding already"
+else
+  check "idle at rest" "no" "$(holding)"
+fi
 
 check "accepts a working event" "200" \
   "$(post '{"agent":"claude-code","session_id":"i1","state":"working","cwd":"/tmp/one"}')"
