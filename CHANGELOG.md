@@ -121,8 +121,11 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   matcher index 0, the record that looked like ours belonged to them. On the
   machine this was found on that meant five trust records, seven Vigil entries,
   and not one of them trusted. Vigil now computes the same identity hash Codex
-  does and reports an untrusted install as needing attention instead of as
-  working. It never writes a trust record: the gate exists so that a human read
+  does and says so in its own words: the agent reads "Not trusted", with no
+  button, and a line underneath saying to open Codex and run `/hooks`. Its own
+  state rather than a fold into "Out of date", because the two are fixed by
+  opposite actions and an "Update" button here re-installs a file that was
+  never the problem. It never writes a trust record: the gate exists so that a human read
   the command before their agent ran it, and an app granting itself that
   approval would have removed the only thing it is for.
   **If you set Codex up with an earlier build, run `/hooks` in Codex and trust

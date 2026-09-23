@@ -69,6 +69,20 @@ struct SettingsView: View {
         )
       }
 
+      // Below the rows rather than inside one: each sentence names its own
+      // host, and the thing it asks for happens in that host's window, not in
+      // this one. A row can only say that something is wrong; this says what to
+      // go and do about it.
+      ForEach(model.availableIntegrations) { integration in
+        if let notice = model.trustNotice(for: integration) {
+          Text(notice)
+            .font(Theme.Text.footnote)
+            .foregroundStyle(.vigilSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, Theme.Metrics.tight)
+        }
+      }
+
       if let error = model.setupError {
         // Not amber. Amber means one thing in this app — that something is
         // holding the Mac awake — and spending it on an error message is
@@ -335,6 +349,10 @@ private struct AgentRow: View {
         case .ready: Button("Remove", action: remove)
         case .outOfDate: Button("Update", action: setUp)
         case .notSetUp: Button("Set up", action: setUp)
+        // No button. Nothing Vigil can press fixes this — the hooks are
+        // installed and correct, and the host is the one declining to run
+        // them. The status text says where to go instead.
+        case .untrusted: EmptyView()
         }
       }
       .buttonStyle(.vigil)
@@ -351,6 +369,7 @@ private struct AgentRow: View {
     case .ready: "Reporting"
     case .outOfDate: "Out of date"
     case .notSetUp: nil
+    case .untrusted: "Not trusted"
     }
   }
 
@@ -359,6 +378,7 @@ private struct AgentRow: View {
     case .ready: "reporting"
     case .outOfDate: "set up by an older version of Vigil"
     case .notSetUp: "not set up"
+    case .untrusted: "installed, but \(integration.displayName) is not running it"
     }
   }
 }

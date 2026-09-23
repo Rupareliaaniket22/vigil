@@ -346,6 +346,8 @@ struct MenuPanelView: View {
     case .ready: .text("idle")
     case .outOfDate: .action("Update", fix)
     case .notSetUp: .action("Set up", fix)
+    // Not an action: re-running the install is exactly what does not help.
+    case .untrusted: .text("not trusted")
     }
   }
 
@@ -375,6 +377,7 @@ struct MenuPanelView: View {
     case .ready: "idle"
     case .outOfDate: "set up by an older version of Vigil"
     case .notSetUp: "not set up"
+    case .untrusted: "installed, but the host is not running it"
     }
   }
 

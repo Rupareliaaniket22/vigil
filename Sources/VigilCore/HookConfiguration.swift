@@ -229,6 +229,15 @@ public enum HookSetupState: Sendable, Equatable {
   case outOfDate
   /// Never wired up, and not reporting.
   case notSetUp
+  /// Installed correctly, and the host is refusing to run it.
+  ///
+  /// Deliberately not folded into `outOfDate`. The two look the same in the
+  /// panel — an agent needing attention — but they are fixed by opposite
+  /// actions, and offering the wrong one is worse than offering none: someone
+  /// pressing "Update" on an untrusted hook re-installs a file that was never
+  /// the problem, watches nothing change, and has no reason to suspect their
+  /// host is the thing holding it back.
+  case untrusted
 }
 
 /// Whether the host will actually run the hooks we wrote into its settings.
@@ -642,17 +651,10 @@ extension HookConfiguration {
   /// current, and completely inert — which is what Codex does to an entry it
   /// has no `trusted_hash` for, and what Vigil was reporting as `.ready`.
   ///
-  /// A host refusing to run our hooks folds into `.outOfDate` rather than
-  /// getting a case of its own, and that is a seam rather than a judgement.
-  /// `HookSetupState` wants a fourth case here — `notTrusted`, with
-  /// `HookTrustState.explanation(host:)` as its sentence — but adding one is a
-  /// source break for every exhaustive switch over it, and the two that exist
-  /// are in `Sources/Vigil/UI`, which this change does not own. `.outOfDate` is
-  /// the closest of the three that exist: it puts the agent in the "needs
-  /// attention" bucket and takes "Reporting" off the screen, which is the
-  /// actual lie. It still offers to re-run the install, and re-running the
-  /// install will not fix this — only the user trusting the hook in the host
-  /// will. That last sentence is what the fourth case is for.
+  /// That case gets its own `.untrusted`, not a fold into `.outOfDate`, because
+  /// the two are fixed by opposite actions: one by re-running Vigil's install,
+  /// the other only by the user trusting the hook inside the host. The panel
+  /// reads `HookTrustState.explanation(host:)` for the sentence naming which.
   public static func setupState(
     missingEvents: [String],
     expectedEvents: [String],
@@ -660,7 +662,10 @@ extension HookConfiguration {
     trust: HookTrustState = .notRequired
   ) -> HookSetupState {
     if missingEvents.isEmpty {
-      if !trust.isSatisfied { return .outOfDate }
+      // Checked before the retired-event test: a host that will not run our
+      // hooks at all is the more urgent of the two, and the only one the user
+      // cannot fix from inside Vigil.
+      if !trust.isSatisfied { return .untrusted }
       return retiredEvents.isEmpty ? .ready : .outOfDate
     }
     // Hooks left over from a previous version are proof this agent was set up

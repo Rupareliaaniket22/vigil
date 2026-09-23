@@ -102,10 +102,13 @@ struct CodexHookTrustGroundTruthTests {
       scriptPath: script, integration: .codex)
 
     #expect(missing.isEmpty, "every hook we want is in the file — that was never the problem")
+    // `.untrusted` rather than merely "not `.ready`": the panel offers a
+    // different action for each, and re-running the install — which is what
+    // `.outOfDate` offers — is precisely the thing that does not fix this.
     #expect(
       HookConfiguration.setupState(
         missingEvents: missing, expectedEvents: AgentIntegration.codex.allEvents, trust: trust)
-        == .outOfDate)
+        == .untrusted)
   }
 }
 

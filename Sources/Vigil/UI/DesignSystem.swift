@@ -187,7 +187,14 @@ enum Theme {
     /// it something a reviewer can check, and makes content that does not fit a
     /// failure at build time rather than a window nobody can see the bottom of.
     static let settingsWidth: CGFloat = 520
-    static let settingsHeight: CGFloat = 580
+    /// 620 rather than 580 since the agent rows grew a line that explains a
+    /// host refusing to run our hooks. One of those takes the content to 574,
+    /// which fit the old height with six points to spare — close enough that a
+    /// setup error appearing at the same time would have clipped the window on
+    /// a user's Mac, where nothing checks. Only Codex gates hooks today, so one
+    /// notice is the realistic worst case; a second host adopting a trust
+    /// mechanism is the point to revisit this rather than let it creep.
+    static let settingsHeight: CGFloat = 620
     static let settingsInset: CGFloat = 24
     /// Taller than a panel row: this one holds controls, not text.
     static let settingsRowHeight: CGFloat = 28
