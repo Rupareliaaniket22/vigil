@@ -42,6 +42,14 @@ final class EventBridge {
   private let onEvent: @MainActor (AgentEvent) -> Void
   private let onStatusChange: @MainActor (Status) -> Void
 
+  /// Which `start()` the running server task belongs to.
+  ///
+  /// `stop()` can ask a task to stop but cannot wait for it, so a superseded
+  /// task finishes unwinding while its replacement is already listening. Its
+  /// parting status would land on top of the new one's — the panel would show
+  /// a dead bridge's error beside a bridge that is working perfectly.
+  private var generation = 0
+
   init(
     onEvent: @escaping @MainActor (AgentEvent) -> Void,
     onStatusChange: @escaping @MainActor (Status) -> Void = { _ in }
@@ -50,27 +58,35 @@ final class EventBridge {
     self.onStatusChange = onStatusChange
   }
 
-  private func report(_ status: Status) {
+  private func report(_ status: Status, from generation: Int) {
+    guard generation == self.generation else { return }
     self.status = status
     onStatusChange(status)
   }
 
   func start() {
+    generation += 1
+    let generation = self.generation
     let path = Vigil.socketPath
     do {
       try Self.prepareSocketDirectory(for: path)
     } catch {
       log.error(
         "could not prepare socket directory: \(error.localizedDescription, privacy: .public)")
-      report(.failed(reason: error.localizedDescription))
+      report(.failed(reason: error.localizedDescription), from: generation)
       return
     }
 
     let server = HTTPServer(address: sockaddr_un.unix(path: path))
     let handle = onEvent
-    let statusChanged = onStatusChange
 
-    Task {
+    // Weakly, so the task stored in `task` does not retain the bridge that
+    // holds it. Status now goes through `report`, not straight to the
+    // callback: `status` was only ever assigned by the two paths that fail
+    // before the server starts, so it sat on `.starting` for the entire life
+    // of a working bridge — and `stop()` reads it to decide whether the socket
+    // is ours to delete, so the socket file was never cleaned up on quit.
+    Task { [weak self] in
       await server.appendRoute("POST /event") { (request: HTTPRequest) in
         // Check the declared length before reading anything, so an oversized
         // body is refused rather than buffered.
@@ -111,13 +127,21 @@ final class EventBridge {
 
       do {
         log.info("bridge listening at \(path, privacy: .public)")
-        await MainActor.run { statusChanged(.listening(path: path)) }
+        await MainActor.run { self?.report(.listening(path: path), from: generation) }
         try await server.run()
-        // A clean return means we were cancelled on quit, not that we failed.
       } catch {
+        // Cancellation is `stop()` doing its job, not a fault. Tearing the
+        // listening socket out from under a kqueue poll throws — the error
+        // reads "kqueue kevent(9): Bad file descriptor" — so the old code put
+        // an errno in the panel every time the bridge was stopped, including
+        // on the restart the panel's own retry button performs.
+        guard !Task.isCancelled else {
+          log.debug("bridge stopped on request")
+          return
+        }
         log.error("bridge stopped: \(error.localizedDescription, privacy: .public)")
         let reason = error.localizedDescription
-        await MainActor.run { statusChanged(.failed(reason: reason)) }
+        await MainActor.run { self?.report(.failed(reason: reason), from: generation) }
       }
     }
     .store(in: &task)
@@ -126,10 +150,13 @@ final class EventBridge {
   func stop() {
     task?.cancel()
     task = nil
+    // Bumped so nothing the cancelled task says on its way out is reported.
+    generation += 1
     // Only remove the socket if we were the one bound to it. Quitting a second
     // instance must not delete the first instance's socket.
     if case .listening(let path) = status {
       try? FileManager.default.removeItem(atPath: path)
+      status = .starting
     }
   }
 

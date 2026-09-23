@@ -31,6 +31,7 @@ struct HookInstaller {
     case settingsUnreadable(String)
     case settingsHasComments(String)
     case settingsNotWritable(String)
+    case settingsShapeUnknown(String, [String])
 
     var errorDescription: String? {
       switch self {
@@ -38,6 +39,15 @@ struct HookInstaller {
         "Vigil's hook script is missing from the app bundle. Reinstall Vigil."
       case .settingsUnreadable(let path):
         "Couldn't read \(path). Vigil left it untouched — check it is valid JSON."
+      case .settingsShapeUnknown(let path, let keys):
+        // The alternative was to overwrite whatever is there, which is how a
+        // hook belonging to another tool would disappear without anyone being
+        // told. Name the entries so the user can go and look at them.
+        "\(path) holds \(keys.count == 1 ? "a hook entry" : "hook entries") Vigil "
+          + "doesn't recognise (\(keys.joined(separator: ", "))). Vigil left "
+          + "\(keys.count == 1 ? "it" : "them") alone rather than replace "
+          + "\(keys.count == 1 ? "it" : "them") — add Vigil's hook by hand, or move "
+          + "that entry out of the way and try again."
       case .settingsHasComments(let path):
         // Naming the real reason matters: the host accepts comments, so the
         // user's editor shows nothing wrong and "invalid JSON" reads as a lie.
@@ -73,12 +83,36 @@ struct HookInstaller {
       in: settings, scriptPath: scriptPath, integration: integration)
   }
 
+  /// Hooks of ours still registered for events Vigil has stopped listening for.
+  ///
+  /// Non-empty means an install written by an older version. Re-running the
+  /// install sweeps them; until then they keep firing, which for the Cursor
+  /// permission hooks that were retired means they keep blocking the agent.
+  /// A missing script counts as none, because nothing is firing either way.
+  var retiredEvents: [String] {
+    guard FileManager.default.isExecutableFile(atPath: scriptPath),
+      let settings = try? Self.readSettings(at: settingsPath)
+    else { return [] }
+    return HookConfiguration.retiredEvents(
+      in: settings, scriptPath: scriptPath, integration: integration)
+  }
+
   // MARK: - Install
 
   func install() throws {
     try copyScript()
 
     var settings = try Self.readSettings(at: settingsPath)
+
+    // Checked before writing anything: `HookConfiguration.install` skips what
+    // it cannot merge into rather than overwriting it, which is the safe half
+    // of the answer. This is the other half — a half-wired agent that nobody
+    // was told about is how "my hooks stopped firing" starts.
+    let blocked = HookConfiguration.unmergeableKeys(in: settings, integration: integration)
+    guard blocked.isEmpty else {
+      throw InstallError.settingsShapeUnknown(settingsPath, blocked)
+    }
+
     settings = HookConfiguration.install(
       into: settings, scriptPath: scriptPath, integration: integration)
     try Self.writeSettings(settings, to: settingsPath)
@@ -144,14 +178,17 @@ struct HookInstaller {
     guard FileManager.default.fileExists(atPath: path) else { return [:] }
 
     let data = try Data(contentsOf: URL(fileURLWithPath: path))
-    guard !data.isEmpty else { return [:] }
+    // A file holding nothing but a newline is an empty one, not a broken one.
+    // Refusing it sent the user looking for a syntax error in a blank file.
+    let text = String(decoding: data, as: UTF8.self)
+    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [:] }
 
     guard let object = try? JSONSerialization.jsonObject(with: data),
       let settings = object as? [String: Any]
     else {
       // Refuse rather than overwrite something we can't understand — but say
       // which kind of "can't understand" it is.
-      if SettingsFile.containsComments(String(decoding: data, as: UTF8.self)) {
+      if SettingsFile.containsComments(text) {
         throw InstallError.settingsHasComments(path)
       }
       throw InstallError.settingsUnreadable(path)

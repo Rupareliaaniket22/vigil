@@ -23,8 +23,18 @@ final class PowerAssertion {
   func hold(reason: String) {
     guard !isHeld else {
       // Cheapest way to refresh the human-readable reason shown in `pmset -g assertions`.
-      IOPMAssertionSetProperty(
+      //
+      // Checked rather than fired and forgotten: this is the only thing keeping
+      // `pmset` honest about why we are holding, and a silent failure here
+      // leaves it repeating "1 agent working" at someone whose three agents
+      // finished an hour ago. The same wording the panel shows, disagreeing
+      // with the panel, in the one place a sceptic goes to check us.
+      let result = IOPMAssertionSetProperty(
         assertionID, kIOPMAssertionNameKey as CFString, reason as CFString)
+      if result != kIOReturnSuccess {
+        Self.log.error(
+          "could not update the assertion's reason: \(result, privacy: .public)")
+      }
       return
     }
 

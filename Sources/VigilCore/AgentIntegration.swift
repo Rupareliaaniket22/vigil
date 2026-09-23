@@ -97,7 +97,18 @@ extension AgentIntegration {
     // `Stop` ends a turn; `SessionEnd` only fires when the whole session goes
     // away. Without `Stop`, every finished turn held the Mac awake until the
     // session went stale.
-    idleEvents: ["Stop", "SessionEnd"]
+    //
+    // `StopFailure` is the same event for a turn that ended badly — an API
+    // error, a context overflow, a tool call that could not be parsed. Claude
+    // Code dispatches it from its own code path (`executeStopFailureHooks`),
+    // on the early returns out of the query loop, so a turn that fails is a
+    // turn `Stop` never hears about. That is the missing-`Stop` bug wearing a
+    // different name, and it was live: of 76 turns in one afternoon's hook
+    // trace, 33 ended with no idle event at all, each holding the Mac awake
+    // for the full staleness window afterwards. Listed even though `Stop` may
+    // also fire on some of those paths — both mean idle, so an overlap costs
+    // one redundant event and the gap costs five minutes.
+    idleEvents: ["Stop", "StopFailure", "SessionEnd"]
   )
 
   public static let codex = AgentIntegration(
@@ -107,7 +118,13 @@ extension AgentIntegration {
     scriptName: "vigil-codex-hook",
     workingEvents: ["UserPromptSubmit", "PreToolUse", "PostToolUse"],
     // SessionStart means a session opened, not that work began.
-    idleEvents: ["SessionStart", "Stop"]
+    //
+    // `Interrupt` and `SessionEnd` are the two ways a Codex turn ends without
+    // `Stop`: the user presses escape, or the terminal goes away mid-tool. Both
+    // left the session reading `working` until it went stale — the same shape
+    // as Claude Code's missing `Stop`, and the same five minutes of holding the
+    // Mac awake for work that finished.
+    idleEvents: ["SessionStart", "Stop", "Interrupt", "SessionEnd"]
   )
 
   public static let gemini = AgentIntegration(
@@ -129,13 +146,27 @@ extension AgentIntegration {
     displayName: "Cursor",
     settingsPath: ".cursor/hooks.json",
     scriptName: "vigil-hook",
+    // Every one of these is an *observing* hook. Cursor divides its events in
+    // two, and the division is the whole reason this list looks the way it
+    // does: `beforeShellExecution`, `beforeReadFile`, `beforeMCPExecution` and
+    // `beforeSubmitPrompt` are permission hooks — Cursor reads their stdout for
+    // a verdict, and documents that "invalid JSON or a response that doesn't
+    // match the hook's schema blocks the action", empty output included. Vigil
+    // writes nothing to stdout, so registering on those four meant every shell
+    // command, file read, MCP call and prompt in Cursor was blocked by a menu
+    // bar app's wake-lock hook.
+    //
+    // The fix is not to start answering. A wake-lock utility has no business
+    // voting on whether an agent may run a command, and answering would make
+    // Cursor's agent depend on this script being present, fast and correct.
+    // Nothing is lost by standing aside: every `before*` is followed by the
+    // `after*` twin that is already listed here.
     workingEvents: [
-      "beforeSubmitPrompt", "beforeShellExecution", "afterShellExecution",
-      "beforeReadFile", "afterFileEdit", "beforeMCPExecution", "afterMCPExecution",
-      "afterAgentThought",
+      "afterShellExecution", "afterFileEdit", "afterMCPExecution", "afterAgentThought",
     ],
     // afterAgentResponse closes a turn, so it means the agent has stopped.
-    idleEvents: ["afterAgentResponse", "stop"],
+    // sessionEnd is the teardown guard — the same one Gemini CLI needed.
+    idleEvents: ["afterAgentResponse", "stop", "sessionEnd"],
     entryFormat: .flat
   )
 

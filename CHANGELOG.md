@@ -40,6 +40,25 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Help text that only restated the control above it is gone
 
 ### Fixed
+- Vigil no longer puts a Mac to sleep that it was never keeping awake. With the
+  lid shut — a laptop on a stand driving an external display, all day — any
+  guardrail that merely *applied*, with no agent running and nothing
+  overridden, asked for an immediate sleep, every five seconds. It now asks
+  only where a guardrail has taken away a lid-closed hold Vigil would otherwise
+  have had
+- Pausing no longer sends the alert meant for a guardrail. Pausing with an agent
+  running dropped the hold, which read as a safety cutoff: Vigil interrupted
+  with a sound to say a run "may not finish" because of something the user had
+  just chosen from its own menu
+- A Mac mini with a UPS attached is no longer read as a laptop. The first power
+  source IOKit lists is not necessarily the Mac's own battery, so the panel
+  showed the UPS's charge as a battery meter and the floor stood ready to stop
+  a run over it
+- Low Power Mode is reported on a Mac with no battery, which Apple silicon
+  desktops can be in too
+- A battery the SMC has not answered for yet reads as full rather than as flat,
+  so a machine still waking up does not refuse to hold a run for a battery that
+  is charged
 - The panel opens with nothing focused, like a menu. It used to open with a
   focus ring around the first footer row every time, and reopen with whichever
   row was last focused still lit; Tab or an arrow key now brings focus in
@@ -60,6 +79,52 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Vigil restarted
 - Claude Code's `Stop` event is listened for again, so a finished turn releases
   the hold immediately instead of waiting out the staleness window
+- Cursor's agent is no longer blocked by Vigil's own hook. Four of the events
+  Vigil registered for — `beforeShellExecution`, `beforeReadFile`,
+  `beforeMCPExecution` and `beforeSubmitPrompt` — are hooks Cursor waits on for
+  a verdict, and it treats output it cannot parse, empty output included, as a
+  refusal. Vigil's hook prints nothing, so setting Cursor up meant every shell
+  command, file read, MCP call and prompt in Cursor was denied by a wake-lock
+  script. Vigil now registers only on events Cursor merely observes, and
+  reinstalling sweeps the old entries out. **Anyone who set Cursor up with an
+  earlier build should re-run Cursor's setup.**
+- A Claude Code turn that ends badly releases the hold. `StopFailure` — the
+  event for a turn cut short by an API error, a context overflow or an
+  unparseable tool call — is dispatched instead of `Stop`, so those turns ended
+  in silence and held the Mac awake for the full staleness window. In one
+  afternoon's trace that was 33 turns out of 76
+- Codex sessions that are interrupted or whose terminal closes release the hold,
+  via `Interrupt` and `SessionEnd`
+- Cursor sessions are identified by conversation. Cursor sends
+  `conversation_id` and nothing called a session, so every Cursor event fell
+  back to the hook's parent pid and a window's whole history collapsed into one
+  row
+- The hook no longer spends 22 seconds inside the agent on a large
+  pretty-printed payload. Reading it a line at a time built the string and
+  re-measured it quadratically; the same input now takes about 0.2 seconds
+- The hook is silent on stderr when a host hands it a closed stdin, instead of
+  printing "read error: 0: Bad file descriptor" inside the agent
+- A hook payload with an enormous `session_id` or `cwd` is trimmed rather than
+  building a body the bridge refuses, which lost the event outright
+- Vigil no longer overwrites a hook entry it doesn't recognise. A `hooks` value
+  shaped differently from what its host documents read as an empty slot and was
+  replaced, so installing Vigil could silently delete another tool's hook. It
+  now says which entry it left alone and why
+- A settings file containing only whitespace is treated as empty instead of
+  being refused as invalid JSON
+- Stopping the bridge no longer reports a failure. Quitting or retrying tore
+  the listening socket out from under its own poll, and the resulting
+  "kqueue kevent(9): Bad file descriptor" was reported as a fault — landing,
+  on a retry, on top of the healthy bridge that had just replaced it
+- Vigil removes its socket file when it stops. The status it checked before
+  deleting was only ever written by the two paths that fail before the server
+  starts, so a working bridge's status stayed on "starting" and the file was
+  always left behind
+- An agent still carrying hooks for events Vigil has stopped listening for
+  reads as out of date, rather than as perfectly set up while the retired hooks
+  go on firing
+- The hook's debug log refuses to follow a symlink. `/tmp` is world-writable,
+  so another account on the Mac could point that name at a file of yours
 - Gemini CLI reports `SessionEnd`, so a session torn down without a closing
   `AfterAgent` no longer holds the Mac awake until it expires
 - An agent set up by an older version of Vigil is now visible as out of date

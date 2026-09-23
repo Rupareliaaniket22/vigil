@@ -87,6 +87,59 @@ struct HookSetupStateTests {
       HookConfiguration.missingEvents(
         in: settings, scriptPath: script, integration: integration
       ).isEmpty)
+    #expect(
+      HookConfiguration.retiredEvents(
+        in: settings, scriptPath: script, integration: integration
+      ).isEmpty)
+    #expect(
+      HookConfiguration.setupState(
+        missingEvents: [], expectedEvents: integration.allEvents, retiredEvents: []) == .ready)
+  }
+
+  /// The upgrade the other direction, and the one `missingEvents` cannot see.
+  /// An older Vigil registered events this one has retired; every event we
+  /// still want is present, so the install looks perfect — and the retired
+  /// hooks go on firing. For Cursor that meant a hook that blocks the agent
+  /// staying armed with nothing ever prompting the user to re-run setup.
+  @Test("an install carrying hooks we have since retired is out of date")
+  func retiredHooksReadAsOutOfDate() {
+    let current = AgentIntegration.cursor
+    let older = AgentIntegration(
+      id: .cursor,
+      displayName: "Cursor",
+      settingsPath: ".cursor/hooks.json",
+      scriptName: "vigil-hook",
+      workingEvents: current.workingEvents + ["beforeShellExecution"],
+      idleEvents: current.idleEvents,
+      entryFormat: .flat
+    )
+    let settings = HookConfiguration.install(into: [:], scriptPath: script, integration: older)
+
+    let missing = HookConfiguration.missingEvents(
+      in: settings, scriptPath: script, integration: current)
+    let retired = HookConfiguration.retiredEvents(
+      in: settings, scriptPath: script, integration: current)
+
+    #expect(missing.isEmpty, "the older install did register everything we still want")
+    #expect(retired == ["beforeShellExecution"])
+    #expect(
+      HookConfiguration.setupState(
+        missingEvents: missing, expectedEvents: current.allEvents, retiredEvents: retired
+      ) == .outOfDate,
+      "an install with a retired hook still in it must not read as ready")
+  }
+
+  /// And the flip side: a genuinely untouched file must not be dragged into
+  /// `outOfDate` by this, because nothing of ours is in it to be stale.
+  @Test("retired events are only ever our own hooks", arguments: AgentIntegration.all)
+  func retiredIgnoresOtherToolsHooks(integration: AgentIntegration) {
+    let theirs: [String: Any] = [
+      "hooks": ["SomeEventWeNeverWanted": [["command": "/opt/theirs/hook.sh"]]]
+    ]
+    #expect(
+      HookConfiguration.retiredEvents(
+        in: theirs, scriptPath: script, integration: integration
+      ).isEmpty)
   }
 
   @Test("an untouched settings file is missing every event", arguments: AgentIntegration.all)

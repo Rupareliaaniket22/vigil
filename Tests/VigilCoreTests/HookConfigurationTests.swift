@@ -121,6 +121,100 @@ struct HookConfigurationTests {
     #expect(commands(after, event: "PreToolUse") == ["\(other) PreToolUse"])
   }
 
+  /// Vigil's event set shrinks as well as grows, and the add loop only ever
+  /// visits events we still want — so an entry for a retired event was never
+  /// touched again. For Cursor's permission hooks that meant an install from an
+  /// older version went on blocking every shell command forever, which is
+  /// precisely the thing retiring them was meant to stop.
+  @Test("reinstalling sweeps out hooks for events we no longer register")
+  func retiredEventsAreSwept() {
+    let retired = AgentIntegration(
+      id: .cursor,
+      displayName: "Cursor",
+      settingsPath: ".cursor/hooks.json",
+      scriptName: "vigil-hook",
+      workingEvents: ["beforeShellExecution", "afterFileEdit"],
+      idleEvents: ["stop"],
+      entryFormat: .flat
+    )
+    let old = HookConfiguration.install(
+      into: ["hooks": ["beforeShellExecution": [["command": "\(other) beforeShellExecution"]]]],
+      scriptPath: script, integration: retired)
+    #expect(commands(old, event: "beforeShellExecution").contains { $0.contains(script) })
+
+    let current = HookConfiguration.install(
+      into: old, scriptPath: script, integration: .cursor)
+
+    #expect(
+      !commands(current, event: "beforeShellExecution").contains { $0.contains(script) },
+      "a retired hook was left armed in the user's settings")
+    #expect(
+      commands(current, event: "beforeShellExecution") == ["\(other) beforeShellExecution"],
+      "the sweep took another tool's hook with it")
+    for event in AgentIntegration.cursor.allEvents {
+      #expect(
+        commands(current, event: event).filter { $0.contains(script) }.count == 1,
+        "\(event) should have exactly one of ours after the sweep")
+    }
+  }
+
+  /// "Never drop a setting we don't understand" applied only to keys outside
+  /// `hooks`. Inside it, a value that was not the shape we expected read as an
+  /// empty slot and got written over — so installing Vigil silently deleted
+  /// another tool's hook.
+  @Test("a hook entry in a shape we don't recognise is left alone, not replaced")
+  func doesNotOverwriteShapesItCannotRead() {
+    let theirs: [String: Any] = [
+      "version": 1,
+      "hooks": ["Stop": ["command": "\(other) Stop"]],
+    ]
+    let result = HookConfiguration.install(
+      into: theirs, scriptPath: script, integration: .claudeCode)
+    let stop = (result["hooks"] as? [String: Any])?["Stop"] as? [String: Any]
+    #expect(stop?["command"] as? String == "\(other) Stop", "their hook was overwritten")
+    #expect(
+      HookConfiguration.unmergeableKeys(in: theirs, integration: .claudeCode) == ["Stop"],
+      "the installer has to be able to name what it refused")
+    // Everything else still installs, so the refusal is about one entry rather
+    // than the whole file.
+    #expect(commands(result, event: "PreToolUse").contains { $0.contains(script) })
+  }
+
+  @Test("a hooks container in a shape we don't recognise leaves the file untouched")
+  func doesNotOverwriteAnAlienHooksKey() {
+    let theirs: [String: Any] = ["theme": "dark", "hooks": "run-all-my-hooks.sh"]
+    let result = HookConfiguration.install(
+      into: theirs, scriptPath: script, integration: .gemini)
+    #expect(result["hooks"] as? String == "run-all-my-hooks.sh", "their hooks key was replaced")
+    #expect(HookConfiguration.unmergeableKeys(in: theirs, integration: .gemini) == ["hooks"])
+  }
+
+  /// `"hooks": null` is a file with nothing in it to protect, but `NSNull` is
+  /// not nil, so the guard above would have refused to install into it.
+  @Test("a null hooks key is an absent one")
+  func nullHooksIsNotAnObstacle() {
+    let settings: [String: Any] = ["hooks": NSNull()]
+    #expect(HookConfiguration.unmergeableKeys(in: settings, integration: .codex).isEmpty)
+    let result = HookConfiguration.install(
+      into: settings, scriptPath: script, integration: .codex)
+    #expect(commands(result, event: "Stop").contains { $0.contains(script) })
+  }
+
+  @Test("a file shaped the way its host documents has nothing unmergeable")
+  func ordinarySettingsAreMergeable() {
+    for integration in AgentIntegration.all {
+      #expect(HookConfiguration.unmergeableKeys(in: [:], integration: integration).isEmpty)
+      #expect(
+        HookConfiguration.unmergeableKeys(in: existingSettings(), integration: integration)
+          .isEmpty)
+      let installed = HookConfiguration.install(
+        into: existingSettings(), scriptPath: script, integration: integration)
+      #expect(
+        HookConfiguration.unmergeableKeys(in: installed, integration: integration).isEmpty,
+        "\(integration.displayName) cannot re-merge into what it just wrote")
+    }
+  }
+
   @Test("detects whether we are installed")
   func detectsInstallation() {
     #expect(!HookConfiguration.isInstalled(in: [:], scriptPath: script, integration: .claudeCode))
@@ -189,20 +283,85 @@ struct AgentIntegrationTests {
     let expected: [AgentKind: Set<String>] = [
       .claudeCode: [
         "UserPromptSubmit", "PreToolUse", "PostToolUse", "SubagentStart", "SubagentStop",
-        "Notification", "Stop", "SessionEnd",
+        "Notification", "Stop", "StopFailure", "SessionEnd",
       ],
-      .codex: ["UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionStart", "Stop"],
+      .codex: [
+        "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionStart", "Stop", "Interrupt",
+        "SessionEnd",
+      ],
       .gemini: ["BeforeAgent", "BeforeTool", "AfterTool", "AfterAgent", "SessionEnd"],
       .cursor: [
-        "beforeSubmitPrompt", "beforeShellExecution", "afterShellExecution", "beforeReadFile",
-        "afterFileEdit", "beforeMCPExecution", "afterMCPExecution", "afterAgentThought",
-        "afterAgentResponse", "stop",
+        "afterShellExecution", "afterFileEdit", "afterMCPExecution", "afterAgentThought",
+        "afterAgentResponse", "stop", "sessionEnd",
       ],
     ]
     for integration in AgentIntegration.all {
       #expect(
         Set(integration.allEvents) == expected[integration.id],
         "\(integration.displayName)'s event set changed")
+    }
+  }
+
+  /// The bug that keeps coming back has one shape: a turn ends by a route
+  /// Vigil is not listening on, so nothing says idle and the hold runs out the
+  /// staleness window instead — five minutes of holding the Mac awake for work
+  /// that finished. `Stop` was the first. These are the others, one host at a
+  /// time: the error exit, the interrupt, the terminal closing.
+  ///
+  /// Not a restatement of the golden master above. That one notices any change;
+  /// this one says which changes are the dangerous ones and why, so removing
+  /// `StopFailure` fails with a sentence about failed turns rather than a set
+  /// mismatch.
+  @Test("every way a turn can end is listened for")
+  func everyTurnEndingIsCovered() {
+    let endings: [AgentKind: Set<String>] = [
+      // Stop ends a good turn, StopFailure a turn that errored, SessionEnd the
+      // whole session.
+      .claudeCode: ["Stop", "StopFailure", "SessionEnd"],
+      // Interrupt is the user pressing escape.
+      .codex: ["Stop", "Interrupt", "SessionEnd"],
+      // Gemini's AfterAgent fires whenever the agent loop ends, however it ended.
+      .gemini: ["AfterAgent", "SessionEnd"],
+      .cursor: ["afterAgentResponse", "stop", "sessionEnd"],
+    ]
+    for integration in AgentIntegration.all {
+      let missing = (endings[integration.id] ?? []).subtracting(integration.idleEvents)
+      let dropped = missing.sorted().joined(separator: ", ")
+      #expect(
+        missing.isEmpty,
+        """
+        \(integration.displayName) stopped listening for \(dropped) — a turn that \
+        ends that way holds the Mac awake until the session goes stale
+        """)
+    }
+  }
+
+  /// Cursor blocks the action when a permission hook returns anything it can't
+  /// parse, and empty output is one of those things. Vigil's hook writes
+  /// nothing, so being registered on one of these meant every shell command,
+  /// file read, MCP call and prompt in Cursor was blocked by a wake-lock hook.
+  ///
+  /// The list is spelled out rather than derived, because the way this comes
+  /// back is somebody adding `beforeSubmitPrompt` for the prompt text it
+  /// carries — which is a real thing to want, and still not worth putting
+  /// Vigil in the way of the user's own prompt.
+  @Test("Vigil registers on no hook its host waits on for a verdict")
+  func staysOutOfThePermissionPath() {
+    let verdictHooks: [AgentKind: Set<String>] = [
+      .cursor: [
+        "beforeShellExecution", "beforeReadFile", "beforeMCPExecution", "beforeSubmitPrompt",
+        "beforeTabFileRead", "preToolUse", "subagentStart",
+      ]
+    ]
+    for integration in AgentIntegration.all {
+      let offending = (verdictHooks[integration.id] ?? []).intersection(integration.allEvents)
+      let names = offending.sorted().joined(separator: ", ")
+      #expect(
+        offending.isEmpty,
+        """
+        \(integration.displayName) registers on \(names), which the host waits on for a \
+        verdict. Vigil's hook prints nothing, and nothing is a block
+        """)
     }
   }
 
@@ -261,6 +420,9 @@ struct AgentIntegrationTests {
     let hooks = result["hooks"] as? [String: Any] ?? [:]
     let matchers = hooks["PreToolUse"] as? [[String: Any]] ?? []
     let entries = matchers.flatMap { $0["hooks"] as? [[String: Any]] ?? [] }
+    // `allSatisfy` on an empty collection is true, so without this the whole
+    // test passed just as happily if PreToolUse stopped being installed at all.
+    #expect(!entries.isEmpty, "nothing was installed, so the assertion below proves nothing")
     #expect(entries.allSatisfy { $0["timeout"] == nil })
   }
 

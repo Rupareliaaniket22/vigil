@@ -51,6 +51,78 @@ public struct PowerConditions: Sendable, Equatable {
   }
 }
 
+extension PowerConditions {
+
+  /// What the Mac's own battery reports, in the units IOKit reports it in.
+  ///
+  /// Kept as the raw pair rather than a percentage so the arithmetic — and
+  /// every way it can go wrong — lands here, where it can be tested, instead of
+  /// in the IOKit call that cannot be.
+  public struct BatteryReading: Sendable, Equatable {
+    public var currentCapacity: Int
+    public var maxCapacity: Int
+    public var isOnACPower: Bool
+
+    public init(currentCapacity: Int, maxCapacity: Int, isOnACPower: Bool) {
+      self.currentCapacity = currentCapacity
+      self.maxCapacity = maxCapacity
+      self.isOnACPower = isOnACPower
+    }
+
+    /// Charge as a percentage, 0–100.
+    ///
+    /// An unreadable battery reads as full, deliberately. A maximum capacity of
+    /// zero is the SMC not having answered yet, not a flat battery, and taking
+    /// it at face value would fire the floor guardrail and stop every run on a
+    /// machine that is very likely fully charged. The opposite mistake costs
+    /// one evaluation: five seconds later the reading is real and the guardrail
+    /// fires on a number worth believing.
+    public var percent: Int {
+      guard maxCapacity > 0, currentCapacity >= 0 else { return 100 }
+      let raw = (Double(currentCapacity) / Double(maxCapacity) * 100).rounded()
+      // Clamped before converting, not after: hardware has reported a capacity
+      // above its own maximum, and `Int(_:)` on a large enough Double traps.
+      return Int(min(100, max(0, raw)))
+    }
+  }
+
+  /// Assemble the conditions the policy reads from what the machine reports.
+  ///
+  /// Separate from the IOKit call that feeds it because the interesting cases
+  /// are the ones a laptop cannot be put into: a desktop with no battery at
+  /// all, a battery that is absent or unreadable, a capacity the SMC has not
+  /// filled in yet.
+  public static func reading(
+    battery: BatteryReading?,
+    isLowPowerMode: Bool = false,
+    thermalState: ThermalState = .nominal,
+    lidIsClosed: Bool? = nil
+  ) -> PowerConditions {
+    guard let battery else {
+      // No battery: a desktop. It is on mains by definition — the wall socket
+      // is the only thing keeping it running — so every power guardrail is a
+      // no-op for it. Heat is not: a Mac mini under a desk can still cook, and
+      // Low Power Mode is a setting desktops have too.
+      return PowerConditions(
+        batteryPercent: 100,
+        isPluggedIn: true,
+        isLowPowerMode: isLowPowerMode,
+        thermalState: thermalState,
+        lidIsClosed: lidIsClosed,
+        hasBattery: false
+      )
+    }
+    return PowerConditions(
+      batteryPercent: battery.percent,
+      isPluggedIn: battery.isOnACPower,
+      isLowPowerMode: isLowPowerMode,
+      thermalState: thermalState,
+      lidIsClosed: lidIsClosed,
+      hasBattery: true
+    )
+  }
+}
+
 /// User-configurable rules.
 public struct WakeSettings: Sendable, Equatable {
   /// Stop holding the Mac awake below this charge. The single most important
@@ -121,10 +193,26 @@ public struct WakeDecision: Sendable, Equatable {
   public let disableClamshellSleep: Bool
   public let reason: WakeReason
 
-  public init(holdIdleAssertion: Bool, disableClamshellSleep: Bool, reason: WakeReason) {
+  /// Whether a guardrail is the only thing standing between this and a
+  /// lid-closed hold — that is, whether we *would* be keeping this Mac awake
+  /// with the lid shut had the rule not fired.
+  ///
+  /// The difference between a guardrail applying and a guardrail stopping
+  /// something. A battery below its floor with no agents running and nothing
+  /// overridden is a rule that has nothing to undo: whatever is keeping that
+  /// Mac awake with its lid shut, it is not us.
+  public let clamshellHoldStoppedByGuardrail: Bool
+
+  public init(
+    holdIdleAssertion: Bool,
+    disableClamshellSleep: Bool,
+    reason: WakeReason,
+    clamshellHoldStoppedByGuardrail: Bool = false
+  ) {
     self.holdIdleAssertion = holdIdleAssertion
     self.disableClamshellSleep = disableClamshellSleep
     self.reason = reason
+    self.clamshellHoldStoppedByGuardrail = clamshellHoldStoppedByGuardrail
   }
 }
 
@@ -138,13 +226,22 @@ public enum WakePolicy {
   ///
   /// Gated on the lid actually being closed. With it open the user is sitting in
   /// front of the machine, and sleeping it mid-keystroke reads as a crash.
+  ///
+  /// And gated on our having been the reason it was awake. `pmset sleepnow`
+  /// sleeps a Mac whatever it is doing, and a closed lid does not mean nobody
+  /// is at it: a laptop on a stand driving an external display has its lid shut
+  /// all day. Asking on `reason.isGuardrail` alone meant that someone working
+  /// that way, below their battery floor or on a hot afternoon, had their Mac
+  /// put to sleep every five seconds by an app that was holding nothing and had
+  /// no hold to undo. The rule is not "a guardrail applies" — it is "a guardrail
+  /// took away the lid-closed hold we would otherwise have on this machine".
   public static func shouldRequestImmediateSleep(
     decision: WakeDecision,
     conditions: PowerConditions
   ) -> Bool {
     guard conditions.lidIsClosed == true else { return false }
     guard !decision.disableClamshellSleep else { return false }
-    return decision.reason.isGuardrail
+    return decision.clamshellHoldStoppedByGuardrail
   }
   /// Decide whether to hold the Mac awake.
   ///
@@ -158,13 +255,23 @@ public enum WakePolicy {
     pausedUntil: Date? = nil,
     now: Date = Date()
   ) -> WakeDecision {
+    // What is being asked for, worked out before any safety rule gets a say.
+    // Guardrails still win — they are applied first, below — but a guardrail
+    // that overrides nothing is not the same event as one that cuts a running
+    // hold off, and only this tells them apart.
+    let working = sessions.filter { $0.state == .working }.count
+    let isPaused = pausedUntil.map { $0 > now } ?? false
+    let wouldHold = !isPaused && (manualOverride || working > 0)
+
     func decision(_ reason: WakeReason) -> WakeDecision {
       let hold = reason.holdsWake
       return WakeDecision(
         holdIdleAssertion: hold,
         // Clamshell is strictly an escalation of an idle hold, never independent.
         disableClamshellSleep: hold && settings.allowClamshell,
-        reason: reason
+        reason: reason,
+        clamshellHoldStoppedByGuardrail: reason.isGuardrail && wouldHold
+          && settings.allowClamshell
       )
     }
 
@@ -191,17 +298,16 @@ public enum WakePolicy {
       }
     }
 
-    if let until = pausedUntil, until > now {
+    if isPaused, let until = pausedUntil {
       return decision(.paused(until: until))
     }
 
     // --- Intent. ---
     if manualOverride { return decision(.manualOverride) }
 
-    let working = sessions.filter { $0.state == .working }
     // `.waiting` deliberately does not hold the Mac awake: an agent blocked on a
     // permission prompt may sit there for hours, and the user is away.
-    if !working.isEmpty { return decision(.agentsWorking(count: working.count)) }
+    if working > 0 { return decision(.agentsWorking(count: working)) }
 
     return decision(.noAgents)
   }

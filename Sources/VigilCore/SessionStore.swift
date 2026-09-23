@@ -118,5 +118,10 @@ public struct SessionStore: Sendable {
     all(now: now).filter { $0.state == .working }
   }
 
+  /// Whether anything at all is tracked, stale rows included.
+  ///
+  /// Not "is anything live" — that question needs a clock, and every other
+  /// reader here takes one. This is what `prune` leaves behind, and the only
+  /// honest way to ask it without a `now` to measure against.
   public var isEmpty: Bool { sessions.isEmpty }
 }

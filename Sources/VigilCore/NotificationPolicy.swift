@@ -32,7 +32,17 @@ public enum NotificationPolicy {
   public static func event(from previous: State, to current: State) -> Event? {
     // A guardrail cutting in while work continues outranks everything: the
     // user's run is at risk and only we can tell them.
-    if previous.isHolding, !current.isHolding, current.workingCount > 0 {
+    //
+    // `isGuardrail` is half the test, not a restatement of the other half. A
+    // pause drops the hold with agents still working too, and without this the
+    // one alert the app sends at time-sensitive priority, with a sound, fired
+    // to report something the user had chosen from this app's own menu a
+    // second earlier — and told them their run "may not finish" as if it had
+    // happened to them. That is the notification that gets an app muted, and
+    // the guardrail warning is then lost along with it.
+    if previous.isHolding, !current.isHolding, current.workingCount > 0,
+      current.reason.isGuardrail
+    {
       return .guardrailStoppedHold(reason: current.reason)
     }
 
@@ -43,5 +53,22 @@ public enum NotificationPolicy {
     }
 
     return nil
+  }
+
+  /// The "why" half of a status line, for copy that has already said the "what".
+  ///
+  /// The guardrail alert is handed a whole status line — "Your Mac can sleep —
+  /// Battery 18%, below the 20% you set" — and its title has already said that
+  /// the hold stopped. Pasting the line in whole spends the first half of the
+  /// one sentence anyone reads on a lock screen restating the title, and does
+  /// it in words that read as a contradiction of it.
+  ///
+  /// Splits on the first separator only: one reason — "On battery — you chose
+  /// mains power only" — contains a second, and it is the half worth keeping.
+  /// Anything with no separator at all is already a detail, and comes back
+  /// untouched.
+  public static func detail(inStatusLine line: String) -> String {
+    guard let separator = line.range(of: " \u{2014} ") else { return line }
+    return String(line[separator.upperBound...])
   }
 }

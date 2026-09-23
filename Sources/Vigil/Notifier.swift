@@ -62,7 +62,14 @@ enum Notifier {
 
     case .guardrailStoppedHold(let reason):
       content.title = "Vigil stopped holding your Mac awake"
-      content.body = "\(reason). An agent is still working and may not finish."
+      // The title is the "what", so the body carries only the "why" — whatever
+      // the caller handed us. A whole status line arrives here today, and
+      // "Your Mac can sleep — Battery 18%, below the 20% you set. An agent is
+      // still working and may not finish." spends its opening clause arguing
+      // with its own title.
+      content.body =
+        "\(NotificationPolicy.detail(inStatusLine: reason)). "
+        + "An agent is still working and may not finish."
       // Their work is genuinely at risk; this one should cut through.
       content.interruptionLevel = .timeSensitive
       content.sound = .default

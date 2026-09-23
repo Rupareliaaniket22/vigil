@@ -215,3 +215,190 @@ struct SessionIdentityTests {
     #expect(store.all(now: now).map(\.sessionID) == ["a", "b", "c"])
   }
 }
+
+@Suite("A session's whole life")
+struct SessionLifecycleTests {
+
+  /// The ordinary arc, start to finish, with nothing else happening.
+  @Test("starts, works, goes idle, is never heard from again")
+  func theWholeArc() {
+    var store = SessionStore(staleAfter: 300)
+    let t0 = Timestamp.now
+
+    store.apply(
+      AgentEvent(
+        agent: .claudeCode, sessionID: "s", state: .working, event: "UserPromptSubmit",
+        cwd: "/tmp/p", title: "fix the parser"),
+      now: t0)
+    func holds(at t: Timestamp) -> Bool {
+      WakePolicy.decide(
+        sessions: store.all(now: t), conditions: PowerConditions(), settings: WakeSettings(),
+        now: t.wall
+      ).holdIdleAssertion
+    }
+
+    #expect(holds(at: t0))
+
+    // Working, and reporting every tool call.
+    var t = t0
+    for _ in 0..<10 {
+      t = t.advanced(by: 20)
+      store.apply(
+        AgentEvent(agent: .claudeCode, sessionID: "s", state: .working, event: "PostToolUse"),
+        now: t)
+      #expect(holds(at: t), "a session that keeps reporting keeps the hold")
+    }
+
+    // Done. The hold goes immediately — not when the row does.
+    t = t.advanced(by: 1)
+    store.apply(
+      AgentEvent(agent: .claudeCode, sessionID: "s", state: .idle, event: "Stop"), now: t)
+    #expect(!holds(at: t), "idle releases the hold at once")
+    #expect(store.all(now: t).count == 1, "but the row stays, so the panel can still show it")
+
+    // And then silence. The row outlives the work by the staleness window, and
+    // no longer.
+    #expect(store.all(now: t.advanced(by: 299)).count == 1)
+    #expect(store.all(now: t.advanced(by: 301)).isEmpty)
+    #expect(store.prune(now: t.advanced(by: 301)).count == 1)
+  }
+
+  /// The failure mode that decides the staleness window: a host that dies
+  /// mid-task never sends the event that would have released the hold.
+  ///
+  /// The window is the whole cost of that — the Mac stays awake for it, and no
+  /// longer. Written down here because it is a number with a real price on both
+  /// sides: shorter drops live runs whose agent is simply busy, longer leaves a
+  /// dead one holding.
+  @Test("a session that reports working and then dies holds for the window, and no longer")
+  func workingThenTheProcessDies() {
+    var store = SessionStore(staleAfter: 300)
+    let t0 = Timestamp.now
+    store.apply(
+      AgentEvent(agent: .claudeCode, sessionID: "ghost", state: .working, pid: 4242), now: t0)
+
+    func holds(at t: Timestamp) -> Bool {
+      WakePolicy.decide(
+        sessions: store.all(now: t), conditions: PowerConditions(), settings: WakeSettings(),
+        now: t.wall
+      ).holdIdleAssertion
+    }
+
+    #expect(holds(at: t0.advanced(by: 299)), "still within the window")
+    #expect(!holds(at: t0.advanced(by: 301)), "past it, the hold goes on its own")
+    #expect(store.prune(now: t0.advanced(by: 301)).count == 1)
+    #expect(store.isEmpty)
+  }
+
+  /// The same window, seen from the other side: a live agent whose tool call
+  /// outlasts it is dropped exactly like a dead one, because the two look
+  /// identical from here. Nothing in the loop distinguishes them.
+  @Test("a live agent silent for longer than the window is dropped too")
+  func aQuietButLiveAgentIsDropped() {
+    var store = SessionStore(staleAfter: 300)
+    let t0 = Timestamp.now
+    store.apply(AgentEvent(agent: .claudeCode, sessionID: "busy", state: .working), now: t0)
+
+    // A single long tool call: PreToolUse at t0, PostToolUse six minutes later.
+    let quiet = t0.advanced(by: 360)
+    #expect(store.all(now: quiet).isEmpty, "the hold is already gone when the tool returns")
+
+    // And the returning event resurrects it, rather than being ignored.
+    store.apply(
+      AgentEvent(agent: .claudeCode, sessionID: "busy", state: .working, event: "PostToolUse"),
+      now: quiet)
+    #expect(store.active(now: quiet).count == 1)
+  }
+
+  @Test("an event for a session we pruned starts a new one rather than being lost")
+  func resurrectionAfterPruning() {
+    var store = SessionStore(staleAfter: 60)
+    let t0 = Timestamp.now
+    store.apply(AgentEvent(agent: .codex, sessionID: "x", state: .working), now: t0)
+    let later = t0.advanced(by: 61)
+    store.prune(now: later)
+    #expect(store.isEmpty)
+
+    store.apply(AgentEvent(agent: .codex, sessionID: "x", state: .working), now: later)
+    #expect(store.active(now: later).count == 1)
+  }
+
+  /// `isEmpty` answers about everything tracked, stale rows included, which is
+  /// what `prune` needs of it. It is not the question the panel asks.
+  @Test("isEmpty is about what is tracked, not about what is live")
+  func isEmptyIsAboutStorage() {
+    var store = SessionStore(staleAfter: 60)
+    let t0 = Timestamp.now
+    store.apply(AgentEvent(agent: .codex, sessionID: "x", state: .working), now: t0)
+    let later = t0.advanced(by: 61)
+    #expect(store.all(now: later).isEmpty, "nothing live")
+    #expect(!store.isEmpty, "but still held, until something prunes it")
+  }
+
+  /// Hooks fire on every tool call, from every session, of every agent. The
+  /// numbers here are absurd on purpose: whatever goes wrong at this size is
+  /// not going to be noticed at three.
+  @Test("thousands of sessions stay correct")
+  func thousandsOfSessions() {
+    var store = SessionStore(staleAfter: 300)
+    let t0 = Timestamp.now
+    let agents: [AgentKind] = [.claudeCode, .codex, .cursor, .gemini, .opencode]
+
+    for i in 0..<10_000 {
+      store.apply(
+        AgentEvent(
+          agent: agents[i % agents.count],
+          sessionID: "s\(i)",
+          // A third working, a third waiting, a third idle.
+          state: [.working, .waiting, .idle][i % 3]
+        ),
+        // Spread across the window, so half of them are stale later on.
+        now: t0.advanced(by: Double(i % 600))
+      )
+    }
+
+    let now = t0.advanced(by: 600)
+    let live = store.all(now: now)
+    // 10,000 sessions across 600 one-second slots; the 300 most recent slots
+    // are still inside the window.
+    #expect(live.count == 4900, "everything quiet for 300s or less")
+    #expect(live.map(\.lastSeen.uptime) == live.map(\.lastSeen.uptime).sorted(by: >))
+    #expect(Set(live.map(\.id)).count == live.count, "no two rows share an id")
+
+    let d = WakePolicy.decide(
+      sessions: live, conditions: PowerConditions(), settings: WakeSettings(), now: now.wall)
+    #expect(d.reason == .agentsWorking(count: live.filter { $0.state == .working }.count))
+    #expect(d.holdIdleAssertion)
+
+    #expect(store.prune(now: now).count == 5100)
+    #expect(store.all(now: now).count == 4900, "pruning drops the dead and only the dead")
+
+    // And once every one of them goes quiet, nothing is left holding anything.
+    let muchLater = now.advanced(by: 301)
+    #expect(store.all(now: muchLater).isEmpty)
+    #expect(
+      !WakePolicy.decide(
+        sessions: store.all(now: muchLater), conditions: PowerConditions(),
+        settings: WakeSettings(), now: muchLater.wall
+      ).holdIdleAssertion)
+  }
+
+  /// Two hosts, one session id, one of them crashing. The other must not be
+  /// pruned with it — this is the collision case, with time added.
+  @Test("colliding session ids expire independently")
+  func collidingIdsAgeSeparately() {
+    var store = SessionStore(staleAfter: 300)
+    let t0 = Timestamp.now
+    store.apply(AgentEvent(agent: .claudeCode, sessionID: "shared", state: .working), now: t0)
+    store.apply(AgentEvent(agent: .codex, sessionID: "shared", state: .working), now: t0)
+
+    // Codex keeps reporting; Claude Code stops.
+    let later = t0.advanced(by: 301)
+    store.apply(AgentEvent(agent: .codex, sessionID: "shared", state: .working), now: later)
+
+    let live = store.all(now: later)
+    #expect(live.count == 1)
+    #expect(live.first?.agent == .codex)
+    #expect(store.prune(now: later).map(\.agent) == [.claudeCode])
+  }
+}
