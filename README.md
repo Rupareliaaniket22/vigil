@@ -1,39 +1,71 @@
+<div align="center">
+
+<img src="Resources/mark.png" width="120" alt="Vigil">
+
 # Vigil
 
-<img src="Resources/icon-source.png" width="128" alt="">
+**Your Mac stays awake while your agents work. Not a minute longer.**
 
-Keeps your Mac awake while AI coding agents are working — and lets it sleep the moment they stop.
+[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-1C1C1E?style=flat-square)](https://www.apple.com/macos/)
+[![Swift 6](https://img.shields.io/badge/Swift-6-FFB340?style=flat-square)](https://swift.org)
+[![Apache 2.0](https://img.shields.io/badge/licence-Apache--2.0-1C1C1E?style=flat-square)](LICENSE)
+[![113 tests](https://img.shields.io/badge/tests-113-FFB340?style=flat-square)](Tests)
 
-Agents like Claude Code and Codex run for minutes at a stretch with no keyboard
-input. macOS sees an idle machine and sleeps it, killing the run. Blanket
-keep-awake tools fix that by never letting your Mac sleep at all. Vigil holds a
-wake lock only while an agent is actually mid-task, and releases it as soon as
-the work finishes.
+</div>
 
-> **Status: early but usable.** The menu bar app runs, detects Claude Code
-> sessions, and holds and releases the wake lock correctly. Lid-closed support,
-> notifications and signed releases are not done yet — see
-> [Not done yet](#not-done-yet).
+---
 
-## Why not just use `caffeinate`?
+You start Claude Code on something long and walk away. It runs for eleven
+minutes without touching the keyboard, macOS decides you've gone, and the
+machine sleeps. The run dies somewhere in the middle.
 
-`caffeinate` and its GUI wrappers keep the Mac awake for a fixed duration or
-until you turn them off. Both fail the same way: you forget, and your laptop
-runs hot in a bag all night. Vigil ties the wake lock to observed agent activity
-and enforces guardrails you actually want:
+The usual fix is a keep-awake app you switch on and forget to switch off. Then
+your laptop spends the night at full tilt in a bag.
 
-- Releases the hold when your Mac runs hot, on mains power too
-- Stops at a battery floor (default 20%)
-- Optional mains-power-only mode
-- Respects macOS Low Power Mode
-- Expires sessions that stop reporting, so a crashed agent can't pin your Mac awake
+**Vigil holds the wake lock only while an agent is actually mid-task**, and lets
+go the moment it stops.
 
-It also shows you **every** reason your Mac is awake — including assertions held
-by other apps, not just its own.
+```
+  Keeping your Mac awake                      ▁▃▅ 67%
+  2 agents working
+
+  Agents
+  ●  Claude Code    ~/code/vigil                    4m
+  ●  Codex          ~/code/api                      1m
+  ○  Gemini CLI                                   idle
+
+  Also holding your Mac awake
+     Your display is on     powerd              1h 38m
+```
+
+## The part nothing else does
+
+That last section is a **live readout of every process holding your Mac awake** —
+not just Vigil's. When something else is the reason, it says so.
+
+It was checked against roughly twenty competing tools, reading the source of the
+two closest. None of them ship it. The nearest equivalent is a support page
+teaching you to run `pmset -g assertions` in Terminal.
+
+It found a stray twelve-hour `caffeinate` on the author's machine within a minute
+of being built.
+
+## Guardrails
+
+A keep-awake tool that never lets go is a fire hazard. Every one of these
+outranks the agents, and the first outranks everything:
+
+| | |
+| --- | --- |
+| **Heat** | Releases when the Mac runs hot, on mains power too. Beats a manual hold — a Mac held awake in a closed bag has nowhere to put it |
+| **Battery floor** | Stops below a charge you set, and actually asks the Mac to sleep rather than merely permitting it |
+| **Mains only** | Optional: never hold on battery |
+| **Low Power Mode** | Respected |
+| **Dead agents** | A session that stops reporting expires, so a crashed agent can't pin your Mac awake |
 
 ## Install
 
-Requires macOS 14 or later. There is no signed release yet, so build it:
+Requires macOS 14 or later. No Xcode needed — Command Line Tools is enough.
 
 ```sh
 git clone https://github.com/Rupareliaaniket22/vigil
@@ -41,65 +73,71 @@ cd vigil
 make run
 ```
 
-Press **⌥⌘L** anywhere to toggle the manual hold.
+Click the icon in your menu bar, then **Set up**. Vigil finds the agents you have
+installed, adds a hook to each one's settings, and keeps a backup of every file
+it touches. Other tools' hooks are left alone.
 
-Then open the menu bar icon and click **Set up**. Vigil finds the agents you
-have installed — Claude Code, Codex, Gemini CLI and Cursor — adds a hook to
-each one's settings, keeps a backup of every file it touches, and leaves any
-other hooks you have in place.
+Press **⌥⌘L** anywhere to hold your Mac awake regardless.
 
-## Build from source
+## Supported agents
 
-You need **only the Command Line Tools** — full Xcode is not required:
+**Claude Code** · **Codex** · **Gemini CLI** · **Cursor**
 
-```sh
-xcode-select --install
+Each reports through its own lifecycle hooks, so Vigil knows the difference
+between an agent working and a terminal sitting open. Adding another is a
+constant in `AgentIntegration.swift` — one script serves them all.
 
-make build     # debug build
-make test      # run the suite
-make bundle    # universal, signed .app in dist/
-make run       # build and launch
-```
+## Working with the lid closed
+
+Off by default. Turning it on asks for your password once, because keeping a Mac
+awake with the lid shut means changing a system setting that needs root.
+
+Vigil installs a small root-owned helper that can change **that one setting and
+nothing else** — no wildcards, no shell, three fixed arguments. The installer
+refuses outright unless every directory on the path to it is root-owned.
+
+[SECURITY.md](SECURITY.md) has the threat model. Read it before you turn this on.
 
 ## How it works
 
-Agent hooks post lifecycle events to a Unix socket in your home directory. A
-pure state machine turns those into a wake decision; the app holds or releases a
-standard `IOPMAssertion`.
-
 ```
-hooks  ──▶  bridge (unix socket)  ──▶  SessionStore  ──▶  WakePolicy
-                                                             │
-                                          ┌──────────────────┴─────────┐
-                                          ▼                            ▼
-                                   IOPMAssertion              ClamshellBackend
-                                  (no privileges)              (needs root)
+  agent hooks ──▶ unix socket ──▶ SessionStore ──▶ WakePolicy
+                                                       │
+                                  ┌────────────────────┴───────┐
+                                  ▼                            ▼
+                           IOPMAssertion              root helper
+                          (no privileges)            (opt-in only)
 ```
 
-The wake hold needs no admin rights and no entitlements — it is the same
-mechanism `caffeinate` uses. Only lid-closed operation requires elevation, and
-that is opt-in and isolated behind a single protocol.
+The wake lock itself needs no privileges — the same mechanism `caffeinate` uses.
+Only lid-closed operation touches root, and it's isolated behind one protocol.
 
-A Unix socket is used rather than a localhost TCP port because loopback ports
-are reachable by every other user account on the machine.
+A Unix socket rather than a localhost port, because `127.0.0.1` is reachable by
+every other user account on the machine.
+
+The decision is a pure function of sessions, power state and settings. Everything
+testable lives in `VigilCore` with an injected clock.
 
 ## Not done yet
 
-- **Lid-closed operation — asks for your password once.** Turn on "Keep working
-  with the lid closed" in Settings and Vigil installs a small root-owned helper
-  that can change that one setting and nothing else. Read
-  [SECURITY.md](SECURITY.md) for exactly what it grants. If you would rather do
-  it yourself, `sudo ./Scripts/install-clamshell.sh` does the same thing, and
-  `--uninstall` removes it.
-- **Notifications** when a run finishes or the battery floor is hit.
-- **A signed, notarized release.** Until then it is build-from-source only.
-- **OpenCode.** It uses a JavaScript plugin rather than shell hooks, which is a
-  different mechanism from the four supported agents.
+- **No signed release.** Build from source for now; a Developer ID is £99/year and this is a side project
+- **No auto-update**
+- **OpenCode** uses a JavaScript plugin rather than shell hooks — a different mechanism
 
-## Contributing
+## Build
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security policy: [SECURITY.md](SECURITY.md).
+```sh
+make build            # debug
+make test             # 113 tests
+make lint             # swift-format, strict
+make smoke            # builds the real panel headlessly
+make integration      # drives a live app and checks macOS's power state follows
+make bundle           # universal, signed .app
+```
 
-## License
+See [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md) for conventions,
+and [DESIGN.md](DESIGN.md) for the visual contract.
 
-[Apache License 2.0](LICENSE).
+## Licence
+
+[Apache 2.0](LICENSE).
