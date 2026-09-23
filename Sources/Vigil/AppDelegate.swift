@@ -124,6 +124,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       _ = model.otherAssertions
       _ = model.installedAgents
       _ = model.availableIntegrations
+      // A host ageing out of `HostProbe`'s cache adds or removes a note under
+      // the agent rows without touching anything else in this list.
+      _ = model.hostSupports
       _ = model.setupError
       _ = model.bridgeError
     } onChange: {
@@ -285,6 +288,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
   }
 
+  /// The hosts Vigil records a version floor for.
+  ///
+  /// Derived for exactly the reason `gatingHosts` is, and the lesson is the
+  /// same one twice: a guard that names today's only case cannot fire on the
+  /// build that adds a second. One host has a floor today; the build that gives
+  /// a second one a floor is the build that adds a second notice, and this
+  /// measures it without anybody remembering to come back here.
+  private static let flooredHosts = AgentIntegration.all.filter { $0.hookFloor != nil }
+
+  /// Every host with a floor found only in copies below it, all at once.
+  ///
+  /// Two copies rather than one, because `explanation(host:)` has a longer
+  /// plural branch that lists every version it found and the window has to
+  /// carry the longer. The numbers are eight characters each — wider than any
+  /// release either host has actually published — so a real machine's sentence
+  /// can only ever measure less than the one checked here.
+  private static var worstCaseHosts: [AgentKind: HostHookSupport] {
+    flooredHosts.reduce(into: [:]) { hosts, integration in
+      guard let floor = integration.hookFloor else { return }
+      hosts[integration.id] = .tooOld(
+        copies: [
+          HostCopy(path: "/usr/local/bin/\(floor.executable)", version: HostVersion(0, 10, 220)),
+          HostCopy(path: "/opt/homebrew/bin/\(floor.executable)", version: HostVersion(0, 12, 340)),
+        ],
+        needs: floor.since
+      )
+    }
+  }
+
   /// An installer failure long enough to reach the line cap both the settings
   /// window and the panel hold it to, which is the number being measured: a
   /// real error — including `ClamshellInstaller.failed`, which hands an
@@ -367,6 +399,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
           // host a gate measures two notices without anybody remembering to
           // come back here, and says so in points if they do not fit.
           trust: Self.worstCaseTrust,
+          // And every host Vigil records a floor for found only in copies below
+          // it. A second kind of notice under the rows, on a different host
+          // from the trust one, so the window is measured with both on screen
+          // — which no single Mac will ever be, and which is the whole point of
+          // building the shape rather than reading one.
+          host: Self.worstCaseHosts,
           error: Self.worstCaseSetupError,
           helperNotice: HelperIntegrity.State.outOfDate.notice ?? "",
           clamshellSupported: supported
@@ -374,9 +412,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return measuredSettingsContent()
       }.max() ?? 0
 
+    // Checked rather than assumed, the same as the panel's worst case below.
+    // Both notices are drawn from model state, and a fixture that stopped
+    // producing one would go on measuring a window with less in it and printing
+    // a number that looked fine.
+    let trustNotices = model.availableIntegrations.filter {
+      model.trustNotice(for: $0) != nil
+    }.count
+    let hostNotices = model.availableIntegrations.filter { model.hostNotice(for: $0) != nil }.count
+    guard trustNotices == Self.gatingHosts.count, hostNotices == Self.flooredHosts.count else {
+      print(
+        "smoke: FAILED - settings worst case built \(trustNotices) trust and \(hostNotices) "
+          + "host notices, not \(Self.gatingHosts.count) and \(Self.flooredHosts.count)")
+      exit(1)
+    }
+
     print(
       "smoke: settings worst case (content \(Int(worst)), "
-        + "\(Self.gatingHosts.count) trust \(Self.gatingHosts.count == 1 ? "notice" : "notices"))")
+        + "\(trustNotices) trust \(trustNotices == 1 ? "notice" : "notices"), "
+        + "\(hostNotices) host \(hostNotices == 1 ? "notice" : "notices"))")
     guard worst <= Theme.Metrics.settingsHeight else {
       print(
         "smoke: FAILED - settings content wants \(Int(worst))pt at its worst, "
@@ -414,6 +468,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func smokePanelWorstCase(tallerThan populated: CGFloat) {
     model.loadWorstCaseSetup(
       trust: Self.worstCaseTrust,
+      host: Self.worstCaseHosts,
       error: Self.worstCaseSetupError,
       // Not the panel's business — it is the settings window that carries the
       // helper notice, and the lid section with it.
@@ -425,13 +480,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // model state, and a fixture that stopped producing it would go on
     // measuring a panel with nothing wrong with it and reporting a number that
     // looked fine.
-    let notes = model.untrustedIntegrations.count + (model.setupError == nil ? 0 : 1)
-    guard model.untrustedIntegrations.count == Self.gatingHosts.count, model.setupError != nil
+    let notes =
+      model.untrustedIntegrations.count + model.hostsTooOld.count
+      + (model.setupError == nil ? 0 : 1)
+    guard model.untrustedIntegrations.count == Self.gatingHosts.count,
+      model.hostsTooOld.count == Self.flooredHosts.count, model.setupError != nil
     else {
       print(
         "smoke: FAILED - panel worst case built \(model.untrustedIntegrations.count) trust "
-          + "notices and \(model.setupError == nil ? "no" : "an") error note, not "
-          + "\(Self.gatingHosts.count) and one")
+          + "notices, \(model.hostsTooOld.count) host notices and "
+          + "\(model.setupError == nil ? "no" : "an") error note, not "
+          + "\(Self.gatingHosts.count), \(Self.flooredHosts.count) and one")
       exit(1)
     }
 

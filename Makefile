@@ -9,7 +9,7 @@ IDENTITY          ?= -
 
 export APP_NAME BUNDLE_ID MARKETING_VERSION IDENTITY
 
-.PHONY: help build test lint format bundle run smoke integration icon clean dmg release
+.PHONY: help build test hooktest lint format bundle run smoke integration icon clean dmg release
 
 help: ## Show this help
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -19,6 +19,9 @@ build: ## Debug build
 
 test: ## Run the test suite
 	swift test
+
+hooktest: ## Hook script stays bounded
+	@Tests/HookScript/run.sh
 
 lint: ## Check formatting (fails on drift)
 	swift format lint --recursive --strict Sources Tests

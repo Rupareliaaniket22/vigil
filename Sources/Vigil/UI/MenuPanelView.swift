@@ -181,6 +181,26 @@ struct MenuPanelView: View {
             )
           }
 
+          // A host that could not run our hooks if it wanted to. The row above
+          // says "too old"; this says what Vigil actually established, which is
+          // narrower and worth the extra line: not that the host is missing or
+          // broken, but that every copy of it Vigil is able to look at predates
+          // the release that could run a hook. The hedge is the claim — Vigil
+          // searches a written-down list of install locations and cannot see a
+          // `PATH`, an alias or an `npx` — so the panel keeps it rather than
+          // rounding it up to something shorter and wrong.
+          ForEach(model.hostsTooOld) { integration in
+            if let note = model.hostPanelNote(for: integration) {
+              RowNote(
+                note,
+                // The versions and the release they arrived in. DESIGN.md keeps
+                // another program's release history off the panel, so it goes
+                // where the trust sentence's `/hooks` goes: one hover away.
+                detail: model.hostNotice(for: integration)
+              )
+            }
+          }
+
           // A host that has stopped saying its work is over. Nothing else in
           // the interface would: the row looks healthy, the elapsed time is
           // sensible, and every finished turn quietly holds the Mac awake for
@@ -398,6 +418,13 @@ struct MenuPanelView: View {
     // The ellipsis is the same promise the Settings button makes: it opens
     // what would be approved to be read, and writes nothing.
     case .untrusted: .action("Trust…", trust)
+    // Text, not an action, and it is the one state in this list where that is
+    // the honest answer rather than a gap. `untrusted` became a button because
+    // Vigil could open what would be approved; here there is nothing for a
+    // button in this panel to do — the remedy is an update to another program
+    // — and a row offering a press that cannot help is worse than a row that
+    // says what is wrong and points at the note underneath.
+    case .hostTooOld: .text("too old")
     }
   }
 
@@ -422,6 +449,7 @@ struct MenuPanelView: View {
     case .outOfDate: "set up by an older version of Vigil"
     case .notSetUp: "not set up"
     case .untrusted: "installed, but the host is not running it"
+    case .hostTooOld: "installed, but every copy of the host Vigil can find is too old to run it"
     }
   }
 

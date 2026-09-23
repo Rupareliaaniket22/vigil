@@ -130,6 +130,22 @@ struct HookInstaller {
       in: settings, scriptPath: scriptPath, integration: integration)
   }
 
+  /// Hooks of ours whose command is not the one Vigil writes today.
+  ///
+  /// Non-empty means an install written by an older version, the same as
+  /// `retiredEvents` — but found by reading the entry rather than by noticing
+  /// which event it sits under, which is the only way to see a hook that is
+  /// registered for exactly the right events and says the wrong thing. A
+  /// missing script counts as none, on the same reasoning: nothing is firing
+  /// either way.
+  var outdatedEvents: [String] {
+    guard FileManager.default.isExecutableFile(atPath: scriptPath),
+      let settings = try? Self.readSettings(at: settingsPath)
+    else { return [] }
+    return HookConfiguration.outdatedEvents(
+      in: settings, scriptPath: scriptPath, integration: integration)
+  }
+
   /// Whether the host will run the hooks we installed.
   ///
   /// `.notRequired` for three of the four. For Codex it reads

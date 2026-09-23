@@ -122,6 +122,44 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
   /// this file is one field.
   public let requiresHookTrust: Bool
 
+  /// The release at which this host became able to run a hook at all, and the
+  /// command to look for to find out which release is installed.
+  ///
+  /// The third way a perfectly installed hook can be inert, after a missing
+  /// event and a missing trust record, and the one with no trace in any
+  /// settings file at all: a host that predates its own hook subsystem reads
+  /// the `hooks` key, ignores it, and says nothing. Vigil wrote the entries,
+  /// the file is immaculate, and not a line of it will ever run.
+  ///
+  /// Nil for three of the four, and nil means *not established* rather than
+  /// *no floor* — the same distinction `interruptEvent` draws. Only Gemini CLI
+  /// has been read for one:
+  ///
+  /// - **Gemini CLI** gained a hook subsystem that fires in `v0.19.0`. The
+  ///   names arrived earlier and the machinery did not: `HookEventName` has
+  ///   carried `BeforeAgent` and `AfterAgent` since `v0.17.0`, but at `v0.18.4`
+  ///   the only references to either outside the hooks package are in
+  ///   `hookAggregator.ts` and `hookRunner.ts` — nothing fires them. `v0.19.0`
+  ///   is the first release where `core/client.ts` calls `fireBeforeAgentHook`
+  ///   and `fireAfterAgentHook`, and the first that ships `hookSystem.ts` and
+  ///   `hookEventHandler.ts` at all. Below it there is no setting, no flag and
+  ///   no file that makes Vigil's hooks run.
+  /// - **Claude Code, Codex and Cursor** have not been read for one. Guessing a
+  ///   number here would produce exactly the confident wrong answer this field
+  ///   exists to remove, and `HostHookSupport.verdict` returns `.notChecked`
+  ///   for a nil floor, so nothing is claimed about them.
+  ///
+  /// One caveat that is not visible from the number, recorded because it is the
+  /// reason this is a floor rather than an answer. Gemini CLI kept its hook
+  /// system behind `experimental.enableHooks`, defaulting to **false**, from
+  /// `v0.19.0` through `v0.23.0`; it defaults to true from `v0.24.0`, and later
+  /// releases moved the switch to `hooksConfig.enabled`. So a copy at or above
+  /// this floor may still be configured not to run hooks. That is a setting in
+  /// the user's own file rather than a fact about the build, Vigil does not own
+  /// it, and reading it would be a second claim on weaker evidence — so the
+  /// floor answers only what it can: below it, nothing can help.
+  public let hookFloor: HookFloor?
+
   public var allEvents: [String] { workingEvents + waitingEvents + idleEvents }
 
   /// What this host's event name means, in Vigil's terms.
@@ -168,7 +206,8 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
     interruptEvent: String? = nil,
     timeoutMilliseconds: Int? = nil,
     entryFormat: HookEntryFormat = .nested,
-    requiresHookTrust: Bool = false
+    requiresHookTrust: Bool = false,
+    hookFloor: HookFloor? = nil
   ) {
     self.id = id
     self.displayName = displayName
@@ -180,6 +219,7 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
     self.timeoutMilliseconds = timeoutMilliseconds
     self.entryFormat = entryFormat
     self.requiresHookTrust = requiresHookTrust
+    self.hookFloor = hookFloor
   }
 }
 
@@ -400,7 +440,11 @@ extension AgentIntegration {
     // stale.
     idleEvents: ["AfterAgent", "SessionEnd"],
     // Gemini's own config carries a per-hook timeout; match its convention.
-    timeoutMilliseconds: 10_000
+    timeoutMilliseconds: 10_000,
+    // The one host read for a version floor, and the reason the field exists.
+    // See `hookFloor` for how 0.19.0 was established and for the
+    // `enableHooks` caveat that sits above it.
+    hookFloor: HookFloor(executable: "gemini", since: HostVersion(0, 19, 0))
   )
 
   public static let cursor = AgentIntegration(
@@ -409,19 +453,60 @@ extension AgentIntegration {
     settingsPath: ".cursor/hooks.json",
     // Every one of these is an *observing* hook. Cursor divides its events in
     // two, and the division is the whole reason this list looks the way it
-    // does: `beforeShellExecution`, `beforeReadFile`, `beforeMCPExecution` and
-    // `beforeSubmitPrompt` are permission hooks — Cursor reads their stdout for
-    // a verdict, and documents that "invalid JSON or a response that doesn't
-    // match the hook's schema blocks the action", empty output included. Vigil
-    // writes nothing to stdout, so registering on those four meant every shell
-    // command, file read, MCP call and prompt in Cursor was blocked by a menu
-    // bar app's wake-lock hook.
+    // does. The permission side is **six** events as of Cursor 3.21.18, not
+    // the four this comment used to name: `beforeShellExecution`,
+    // `beforeMCPExecution`, `beforeReadFile`, `beforeTabFileRead`,
+    // `subagentStart` and `preToolUse`. The last three are new, and all six
+    // take the same `permission: allow | deny | ask` in their reply — so the
+    // set Vigil must stand clear of grew without anything here noticing.
     //
-    // The fix is not to start answering. A wake-lock utility has no business
-    // voting on whether an agent may run a command, and answering would make
-    // Cursor's agent depend on this script being present, fast and correct.
-    // Nothing is lost by standing aside: every `before*` is followed by the
-    // `after*` twin that is already listed here.
+    // `beforeSubmitPrompt` is *not* in that array, and it would be a mistake
+    // to read that as "it cannot block". It blocks by a different shape, and
+    // Cursor's own refusal builder is explicit about the split:
+    //
+    //     if (tqs(e))                      return { permission: "deny", … }
+    //     if (e === Vu.beforeSubmitPrompt) return { continue: false,   … }
+    //     if (e === Vu.sessionStart)       return { continue: false,   … }
+    //
+    // Three kinds of veto, not one. `hooks/vigil-hook.sh` already answers each
+    // in its own currency — `{"permission":"allow"}` for the permission three
+    // it once registered on, `{"continue":true}` for `beforeSubmitPrompt` —
+    // which is why that script's `case` must be read as the historical set
+    // Vigil wrote, not as a copy of Cursor's current permission array. It must
+    // never grow to `beforeTabFileRead`, `subagentStart` or `preToolUse`: no
+    // version of Vigil ever wrote those, so nothing can be left behind on
+    // them, and answering would be voting on a hook we never registered.
+    //
+    // `sessionStart` vetoes the same way. Vigil registers on `sessionEnd` and
+    // never on `sessionStart`, and this is the reason to keep it that way.
+    //
+    // What has *changed* is the cost of getting it wrong, and the old reading
+    // is now too pessimistic in one specific way. It said Cursor treats
+    // unparseable output, "including empty", as a block. That is no longer
+    // true: `parseHookStdout` returns `{kind: "empty"}` as a distinct result,
+    // and the consumer logs it and **fails open** unless the hook declared
+    // `failClosed === true`. A hook that writes nothing therefore does not
+    // block anything. The hazards that remain are non-empty malformed stdout
+    // and an exit code of 2, neither of which Vigil's script produces — it
+    // writes nothing to stdout and exits 0 on every path.
+    //
+    // The decision stands anyway, and the reason it stands is not the blocking
+    // behaviour. A wake-lock utility has no business voting on whether an
+    // agent may run a command. Registering on a permission hook makes Cursor's
+    // agent depend on this script being present, fast and correct on the path
+    // where a user is waiting, and it puts Vigil one Cursor release away from
+    // being a gate again — the fail-open default is a default, and
+    // `failClosed` is one key in a file. Standing aside costs nothing: every
+    // `before*` is followed by the `after*` twin already listed here.
+    //
+    // Read out of `Cursor.app` on this machine, at
+    // `Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js` —
+    // all seven names are in that bundle, including the three-way refusal
+    // builder quoted above. What is taken on trust rather than read is
+    // `parseHookStdout`
+    // behaviour above are taken on report rather than read. Treat them as the
+    // best available reading and not as something checked the way Codex's
+    // `HookEventName` was.
     workingEvents: [
       "afterShellExecution", "afterFileEdit", "afterMCPExecution", "afterAgentThought",
     ],

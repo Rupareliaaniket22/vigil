@@ -18,6 +18,7 @@ not an oversight.
 | ------------------- | -------------- |
 | Debug build         | `make build`   |
 | Run tests           | `make test`    |
+| Hook script bounded | `make hooktest` |
 | Check formatting    | `make lint`    |
 | Auto-fix formatting | `make format`  |
 | Universal signed app| `make bundle`  |
@@ -27,7 +28,17 @@ not an oversight.
 
 `make test && make lint` must both pass before any commit. `make integration`
 launches a real app and checks the power assertion actually follows hook events
-— run it when you touch the bridge, the model or the policy. Run `make format`
+— run it when you touch the bridge, the model or the policy.
+
+`make hooktest` drives `hooks/vigil-hook.sh` against a fake home and a stand-in
+socket — run it when you touch the hook script. It sits outside `make test`
+because its timing case has to watch a producer that keeps producing, and that
+costs seconds by construction; `make test` is a sub-second loop people run
+constantly and should stay one. It is not `make integration` either: that needs
+a real signed app and real power assertions and cannot run while an instance is
+up, and this needs neither.
+
+Run `make format`
 rather than hand-fixing style; `.swift-format` is the only source of truth for
 formatting and its rules are deliberately not restated here.
 

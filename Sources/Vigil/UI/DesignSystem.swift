@@ -238,11 +238,25 @@ enum Theme {
     /// written down. It was written down — as Codex, and as the number one —
     /// and that is exactly the build this guard could not fire on, because the
     /// build that gives a second host a trust gate is the build that adds a
-    /// second notice. Each notice measures 32 points, so the margin above is
-    /// exactly one more of them: two gating hosts come to 680 of 680, and
-    /// three fail the build by 32 on the day they arrive rather than on
-    /// somebody's Mac afterwards.
-    static let settingsHeight: CGFloat = 680
+    /// second notice.
+    ///
+    /// 680 became 712 when a second kind of notice arrived under the same rows.
+    /// A host can now also be wired up perfectly to a copy of itself that
+    /// predates hooks entirely — `HookSetupState.hostTooOld` — and that says so
+    /// in a paragraph of its own, on a different host from the trust one,
+    /// because the two are fixed by two different acts. The worst case builds
+    /// both at once and came to exactly 680 of 680: a passing build with no
+    /// margin at all, on a measurement taken from one Mac's text metrics.
+    ///
+    /// Each notice measures 32 points, and that is what the margin is for. It
+    /// is one more notice, deliberately: the build that gives a second host a
+    /// trust gate, or a second host a version floor, measures it here and fits,
+    /// and the one after that fails by 32 on the day it arrives rather than on
+    /// somebody's Mac afterwards. It is margin for the next case and for a
+    /// machine whose metrics differ, not room to grow into — content is what
+    /// shrinks, and `make smoke` fails the build rather than let a row go off
+    /// the bottom of a window with no scroll view.
+    static let settingsHeight: CGFloat = 712
     static let settingsInset: CGFloat = 24
     /// Taller than a panel row: this one holds controls, not text.
     static let settingsRowHeight: CGFloat = 28

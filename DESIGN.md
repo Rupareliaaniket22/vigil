@@ -108,7 +108,7 @@ Apple publishes no popover width, no corner radius, and no point grid.
 | Panel padding | 16pt across, 5pt top and bottom | *(chosen)* |
 | Row height | 24pt | *(chosen)* |
 | Value rail | 56pt, trailing | *(chosen)* |
-| Settings window | 520 × 680pt | *(chosen)* |
+| Settings window | 520 × 712pt | *(chosen)* |
 | Menu bar height | 24pt | Apple |
 | Status item icon | 16×16pt in a 22pt slot | Apple |
 | Minimum hit target | 44×44pt | Apple |
@@ -148,8 +148,10 @@ layout check stopped measuring only the machine it ran on, where nothing is
 ever wrong, and started building the worst shape the window can honestly be in:
 every agent offered, every host that gates hooks refusing at once, an installer
 error long enough to reach its line cap, and each of the two things the lid
-section can say. That measures 648, and 680 carries it with two wrapped footnote
-lines to spare.
+section can say. 680 became 712 when a second kind of notice arrived — a host
+too old for the hooks Vigil installed — and took that worst case to exactly 680
+of 680. A build that passes with nothing to spare passes on one Mac's text
+metrics and no others.
 
 Which is the other half of the rule. **Every block of text in that window that
 Vigil did not write is capped**, with the whole of it on `.help()` — an
@@ -163,9 +165,10 @@ hosts refuse in that shape is read off the integrations rather than written
 down. It was written down — Codex, the only one that gates hooks today — and a
 guard that names the only case that exists cannot fire on the case it guards
 against, because the build that gives a second host a trust gate is the build
-that adds a second notice. Each notice costs 32pt, so the margin above 648 is
-exactly one more of them: two gating hosts measure 680 of 680, and three fail
-the build.
+that adds a second notice. The same now holds for the hosts carrying a version
+floor. Each notice costs 32pt, and the margin is kept at one spare notice: the
+worst case measures 680, and 712 is that plus the next one, so the build that
+adds a third notice is the build that has to think about this paragraph again.
 
 ---
 

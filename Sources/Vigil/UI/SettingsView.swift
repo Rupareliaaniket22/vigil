@@ -104,18 +104,20 @@ struct SettingsView: View {
       // go and do about it.
       ForEach(model.availableIntegrations) { integration in
         if let notice = model.trustNotice(for: integration) {
-          Text(notice)
-            .font(Theme.Text.footnote)
-            .foregroundStyle(.vigilSecondary)
-            // Two, which is what it wraps to. Codex is the only host that
-            // gates hooks, so this is one of two fixed sentences with one
-            // fixed name in it and the cap is never reached — which is the
-            // point: the number the layout check measures is the number this
-            // can cost, rather than a cap with unmeasured room above it.
-            .lineLimit(2)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.top, Theme.Metrics.tight)
-            .help(notice)
+          HostNotice(notice)
+        }
+      }
+
+      // The same shape, one refusal further out. A trust notice asks the user
+      // to approve a command inside the host; this one asks them to go and
+      // update the host itself, because no copy of it Vigil can see could run
+      // the command at all. Both belong here rather than in a row for the same
+      // reason, and they are two notices rather than one because they are two
+      // different acts — and because a host can only ever be in one of them, so
+      // a combined sentence would have to hedge about which.
+      ForEach(model.availableIntegrations) { integration in
+        if let notice = model.hostNotice(for: integration) {
+          HostNotice(notice)
         }
       }
 
@@ -418,6 +420,37 @@ private struct Note: View {
   }
 }
 
+/// A sentence about a host that is not going to run Vigil's hooks, and about
+/// the thing to go and do in that host to change it.
+///
+/// One view for both of them — the trust gate and the version floor — because
+/// they are the same shape: Vigil's own file is correct, the remedy is outside
+/// this window, and what is left to do here is say so in one capped paragraph
+/// with the whole of it on the hover. They were two copies of this block, and
+/// the second one drifted the moment it was written.
+///
+/// Two lines, which is what both wrap to at this width. The cap is not spare
+/// room: each of these sentences is fixed text with one host name in it, so the
+/// number `make smoke` measures is the number this can cost, rather than a cap
+/// with unmeasured space above it.
+private struct HostNotice: View {
+  let text: String
+
+  init(_ text: String) {
+    self.text = text
+  }
+
+  var body: some View {
+    Text(text)
+      .font(Theme.Text.footnote)
+      .foregroundStyle(.vigilSecondary)
+      .lineLimit(2)
+      .fixedSize(horizontal: false, vertical: true)
+      .padding(.top, Theme.Metrics.tight)
+      .help(text)
+  }
+}
+
 /// The privileged helper, when it is not the one this build ships.
 ///
 /// A row rather than a paragraph, and for the same reason the trust notices in
@@ -460,12 +493,14 @@ private struct HelperRow: View {
 
 /// One agent, and the one thing to do about it.
 ///
-/// Four states, not two. An agent can be reporting through hooks from an older
+/// Five states, not two. An agent can be reporting through hooks from an older
 /// version of Vigil, which reads as working while quietly sending less than we
-/// now listen for; and it can be wired up perfectly while the host refuses to
-/// run any of it. "Set up" would be wrong for the first and "Reporting" a lie,
-/// and the second is fixed by the opposite action to either — so each gets its
-/// own wording and its own button.
+/// now listen for; it can be wired up perfectly while the host refuses to run
+/// any of it; and it can be wired up perfectly to a copy of a host that
+/// predates hooks entirely, where there is nothing to refuse because there is
+/// nothing listening. "Set up" would be wrong for the first and "Installed" a
+/// lie, and the last two are fixed by two different acts, neither of them the
+/// first — so each gets its own wording and its own button.
 private struct AgentRow: View {
   let integration: AgentIntegration
   let state: HookSetupState
@@ -492,6 +527,14 @@ private struct AgentRow: View {
         // nobody else's — so the button opens it to be read, and the press
         // that writes it is the one in the dialog.
         case .untrusted: Button("Trust…", action: trust)
+        // The same button `ready` gets, because this is `ready` with one more
+        // thing true about it: the install is complete and correct and should
+        // stay, so that the day the user updates the host it simply starts
+        // working. Vigil has nothing else it can offer — the remedy is an
+        // update to another program — and inventing a button for it would be
+        // an action that could not act. The notice under the rows is where the
+        // exit is named, the same as for a host that will not trust us.
+        case .hostTooOld: Button("Remove", action: remove)
         }
       }
       .buttonStyle(.vigil)
@@ -509,21 +552,34 @@ private struct AgentRow: View {
 
   /// Nothing beside the "Set up" button: the button already says the state, and
   /// "Not set up · Set up" is the same words twice.
+  ///
+  /// `ready` reads "Installed" and not "Reporting", and the change is the
+  /// smallest true thing in this file. Every one of these words is read off a
+  /// settings file, so "Installed" is exactly the claim the evidence supports;
+  /// "Reporting" is a claim about behaviour, in the present tense, about a
+  /// program Vigil has not heard a word from and may never hear one from. It
+  /// was the sentence on screen beside a host that was not on the machine at
+  /// all — and the two states below it exist because that was not a one-off.
   private var status: String? {
     switch state {
-    case .ready: "Reporting"
+    case .ready: "Installed"
     case .outOfDate: "Out of date"
     case .notSetUp: nil
     case .untrusted: "Not trusted"
+    // Said of the host rather than of the install, which is what the row's own
+    // subject makes it read as: "Gemini CLI — Too old". The install is fine.
+    case .hostTooOld: "Too old"
     }
   }
 
   private var spoken: String {
     switch state {
-    case .ready: "reporting"
+    case .ready: "hooks installed"
     case .outOfDate: "set up by an older version of Vigil"
     case .notSetUp: "not set up"
     case .untrusted: "installed, but \(integration.displayName) is not running it"
+    case .hostTooOld:
+      "installed, but every copy of \(integration.displayName) Vigil can find is too old to run it"
     }
   }
 }

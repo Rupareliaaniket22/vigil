@@ -23,13 +23,53 @@ public enum HookConfiguration {
 
   /// Whether a hook entry is one of ours, in either shape a host might use.
   static func isOurs(_ matcher: [String: Any], scriptPath: String) -> Bool {
+    !vigilCommands(in: matcher, scriptPath: scriptPath).isEmpty
+  }
+
+  /// Our commands inside one matcher, in either shape a host might use.
+  ///
+  /// The commands rather than a yes or no, because two questions are asked of
+  /// the same entry and only one of them is answered by its presence. "Is this
+  /// ours" decides what `install` sweeps and what `uninstall` removes, and has
+  /// to stay loose or a hook written by a build with a different script path is
+  /// left behind to fire forever. "Is this what we would write today" decides
+  /// what the user is told, and has to be exact.
+  static func vigilCommands(in matcher: [String: Any], scriptPath: String) -> [String] {
     if let command = matcher["command"] as? String {
-      return isVigilHook(command, scriptPath: scriptPath)
+      return isVigilHook(command, scriptPath: scriptPath) ? [command] : []
     }
-    guard let inner = matcher["hooks"] as? [[String: Any]] else { return false }
-    return inner.contains { entry in
-      (entry["command"] as? String).map { isVigilHook($0, scriptPath: scriptPath) } ?? false
+    guard let inner = matcher["hooks"] as? [[String: Any]] else { return [] }
+    return inner.compactMap { entry in
+      guard let command = entry["command"] as? String,
+        isVigilHook(command, scriptPath: scriptPath)
+      else { return nil }
+      return command
     }
+  }
+
+  /// The command Vigil writes for one event, and the only place it is spelled.
+  ///
+  /// Extracted from `install` so that "what we wrote" and "what we would write"
+  /// cannot disagree. They did, and silently: `isVigilHook` matches the
+  /// script's *filename*, so any entry naming `vigil-hook.sh` counted as
+  /// installed however the rest of the command read. An entry in the old
+  /// pre-quoting form — an unquoted path, and `working` baked into every idle
+  /// event — produced no missing events and no retired events and read as
+  /// `ready`. The panel said "Reporting", no "Update" was ever offered, and
+  /// every failure the quoting fix addressed stayed live for everyone who had
+  /// installed before it, because `outOfDate` was reachable only through a
+  /// missing or retired *event* and never through a wrong *command*.
+  ///
+  /// The event-to-state mapping is baked in here rather than branched on inside
+  /// the shell script, which is what keeps one script for every agent and keeps
+  /// the mapping in Swift where it is typed and tested. The quoting is
+  /// load-bearing too: an unquoted path containing a space made the shell try
+  /// to run its first word, so every hook failed silently.
+  public static func command(
+    scriptPath: String, integration: AgentIntegration, event: String
+  ) -> String {
+    let state = integration.state(for: event)
+    return "'\(scriptPath)' \(integration.id.rawValue) \(event) \(state.rawValue)"
   }
 
   /// Whether a value is really absent.
@@ -104,7 +144,6 @@ public enum HookConfiguration {
       // over it, so installing Vigil silently deleted their hook.
       if !isAbsent(hooks[event]), hooks[event] as? [[String: Any]] == nil { continue }
 
-      let state = integration.state(for: event)
       // The sweep above has already taken our old entries out of this event,
       // so a changed script path replaces the previous one rather than
       // accumulating beside it. The check that finds them is shape-aware; the
@@ -112,9 +151,8 @@ public enum HookConfiguration {
       // which is how Cursor came to duplicate its hooks on every install.
       var matchers = hooks[event] as? [[String: Any]] ?? []
 
-      // Quoted: an unquoted path containing a space made the shell try to run
-      // its first word, so every hook failed silently.
-      let command = "'\(scriptPath)' \(integration.id.rawValue) \(event) \(state.rawValue)"
+      let command = Self.command(
+        scriptPath: scriptPath, integration: integration, event: event)
 
       switch integration.entryFormat {
       case .nested:
@@ -215,6 +253,51 @@ public enum HookConfiguration {
       return matchers.contains { isOurs($0, scriptPath: scriptPath) }
     }
   }
+
+  /// Events holding a hook of ours that is not the one Vigil writes today.
+  ///
+  /// The third way an install can be out of date, and the one nothing could
+  /// see. `missingEvents` asks whether an entry of ours exists for an event and
+  /// `retiredEvents` asks whether one exists for an event we have stopped
+  /// listening for — both questions about *which events*, neither about what
+  /// the entry actually says. Since `isVigilHook` matches only the script's
+  /// filename, an entry could name `vigil-hook.sh` and be wrong in every other
+  /// respect and still satisfy both.
+  ///
+  /// It was not hypothetical. Hooks written before the quoting fix carry an
+  /// unquoted path, so a home directory with a space in it made the shell run
+  /// its first word and every event fail silently; and those same entries bake
+  /// `working` into events Vigil now maps to `idle`, so a finished turn
+  /// reported as work in progress and held the Mac awake for the whole
+  /// staleness window. Both are exactly what re-running the install fixes —
+  /// `install` sweeps our entries out of every event before rewriting them —
+  /// and neither could reach `outOfDate`, so the user was never offered the
+  /// button that fixes it.
+  ///
+  /// Compares against `command(scriptPath:integration:event:)`, which is the
+  /// same call `install` makes, so the two cannot drift apart. An event with
+  /// several of our entries counts as current if any one of them is the current
+  /// command: the sweep will take the rest out on the next install, and the
+  /// hook is firing correctly in the meantime.
+  ///
+  /// Deliberately not a check on the whole entry. A host's own additions — a
+  /// `timeout` Vigil did not write, a key a newer version of the host added —
+  /// are not evidence of an old install, and refusing them would turn every
+  /// hand-tuned settings file into a permanent "Update" badge.
+  public static func outdatedEvents(
+    in settings: [String: Any],
+    scriptPath: String,
+    integration: AgentIntegration
+  ) -> [String] {
+    let hooks = settings["hooks"] as? [String: Any] ?? [:]
+    return integration.allEvents.filter { event in
+      guard let matchers = hooks[event] as? [[String: Any]] else { return false }
+      let ours = matchers.flatMap { vigilCommands(in: $0, scriptPath: scriptPath) }
+      guard !ours.isEmpty else { return false }
+      let current = command(scriptPath: scriptPath, integration: integration, event: event)
+      return !ours.contains(current)
+    }
+  }
 }
 
 /// What an agent's hook setup looks like from the user's side.
@@ -238,6 +321,26 @@ public enum HookSetupState: Sendable, Equatable {
   /// the problem, watches nothing change, and has no reason to suspect their
   /// host is the thing holding it back.
   case untrusted
+  /// Installed correctly, and every copy of the host Vigil can find predates
+  /// the release that could run it.
+  ///
+  /// The third way a perfect settings file can be inert, and the quietest:
+  /// `untrusted` at least leaves a record in the host's own config saying so,
+  /// while a host that predates its hook subsystem reads the `hooks` key,
+  /// ignores it, and writes nothing anywhere. Nothing in any file on the
+  /// machine distinguishes it from a working install.
+  ///
+  /// Its own case rather than a fold into `untrusted`, on the same argument
+  /// that separated `untrusted` from `outOfDate`: the three are fixed by three
+  /// different acts, and only one of them is Vigil's. Re-running the install
+  /// cannot help, and neither can trusting anything — the fix is to update the
+  /// host, which happens outside Vigil entirely.
+  ///
+  /// `HostHookSupport` decides when this is reachable, and is built to reach it
+  /// rarely: a single copy at or above the floor anywhere Vigil can see buys
+  /// the whole Mac silence, because Vigil cannot tell which copy the user's
+  /// shell resolves and will not guess.
+  case hostTooOld
 }
 
 /// Whether the host will actually run the hooks we wrote into its settings.
@@ -1098,22 +1201,42 @@ extension HookConfiguration {
   /// the two are fixed by opposite actions: one by re-running Vigil's install,
   /// the other only by the user trusting the hook inside the host. The panel
   /// reads `HookTrustState.explanation(host:)` for the sentence naming which.
+  /// `host` is the third question, and the one with no evidence in any file.
+  /// `trust` reads whether the host *will* honour what we wrote; this reads
+  /// whether the host is even capable of it. A copy that predates its own hook
+  /// subsystem parses the settings file, ignores the `hooks` key and says
+  /// nothing — so an install can be complete, current, trusted, and read by a
+  /// program that has never heard of hooks.
+  ///
+  /// `outdatedEvents` is the fourth, and it closes the hole that let a wrong
+  /// *command* read as `ready`. See `outdatedEvents(in:scriptPath:integration:)`.
   public static func setupState(
     missingEvents: [String],
     expectedEvents: [String],
     retiredEvents: [String] = [],
-    trust: HookTrustState = .notRequired
+    outdatedEvents: [String] = [],
+    trust: HookTrustState = .notRequired,
+    host: HostHookSupport = .notChecked
   ) -> HookSetupState {
     if missingEvents.isEmpty {
-      // Checked before the retired-event test: a host that will not run our
-      // hooks at all is the more urgent of the two, and the only one the user
-      // cannot fix from inside Vigil.
+      // The two host-side refusals come before the ones about our own file, and
+      // in this order, because each is more fundamental than the next: a host
+      // too old to have a hook subsystem cannot be made to run one by trusting
+      // it, and a host that will not run our hooks at all is not helped by
+      // being told our event list has drifted. Both are also the cases the user
+      // cannot fix from inside Vigil, which is the thing worth saying first.
+      //
+      // They cannot both be true today — only Codex gates and only Gemini CLI
+      // has a floor — so the order is a statement of precedence for whichever
+      // host first has both, not a live branch.
+      if !host.isUsable { return .hostTooOld }
       if !trust.isSatisfied { return .untrusted }
-      return retiredEvents.isEmpty ? .ready : .outOfDate
+      return retiredEvents.isEmpty && outdatedEvents.isEmpty ? .ready : .outOfDate
     }
-    // Hooks left over from a previous version are proof this agent was set up
-    // once, whatever else is missing now.
-    if !retiredEvents.isEmpty { return .outOfDate }
+    // Hooks left over from a previous version — registered for an event we have
+    // retired, or written in a command we no longer write — are proof this
+    // agent was set up once, whatever else is missing now.
+    if !retiredEvents.isEmpty || !outdatedEvents.isEmpty { return .outOfDate }
     if missingEvents.count < expectedEvents.count { return .outOfDate }
     return .notSetUp
   }

@@ -133,6 +133,16 @@ final class AppModel {
   /// them. Codex is the only one that gates, and it fails closed and silently.
   private(set) var trustStates: [AgentKind: HookTrustState] = [:]
 
+  /// Whether the host on this Mac is even capable of running the hooks.
+  ///
+  /// The third question, after "are our hooks in the file" and "will the host
+  /// honour them", and the one with no evidence in any file: a host that
+  /// predates its own hook subsystem reads the settings Vigil wrote, ignores
+  /// them, and leaves no trace of having done so. Measured by `HostProbe`,
+  /// which caches, and judged by `HostHookSupport`, which is built to stay
+  /// quiet unless the claim cannot be wrong.
+  private(set) var hostSupports: [AgentKind: HostHookSupport] = [:]
+
   /// A sentence for when a host is holding our hooks at arm's length.
   ///
   /// Settings prints it under the rows. The panel puts it on the hover behind
@@ -140,6 +150,27 @@ final class AppModel {
   /// another program and DESIGN.md keeps that vocabulary off the panel.
   func trustNotice(for integration: AgentIntegration) -> String? {
     (trustStates[integration.id] ?? .notRequired).explanation(host: integration.displayName)
+  }
+
+  /// A sentence for when no copy of a host Vigil can find could run our hooks.
+  ///
+  /// Printed and hovered in exactly the same two places as `trustNotice`, and
+  /// for the same reason: what it asks for happens outside Vigil — in this case
+  /// outside the Mac's own settings entirely, in whatever the user updates
+  /// their agent with — so a row can say that something is wrong but only a
+  /// sentence can say what to do about it.
+  func hostNotice(for integration: AgentIntegration) -> String? {
+    hostSupport(for: integration).explanation(host: integration.displayName)
+  }
+
+  /// The panel's shorter half of the same sentence. Version numbers and another
+  /// program's release history stay on the hover.
+  func hostPanelNote(for integration: AgentIntegration) -> String? {
+    hostSupport(for: integration).panelNote(host: integration.displayName)
+  }
+
+  func hostSupport(for integration: AgentIntegration) -> HostHookSupport {
+    hostSupports[integration.id] ?? .notChecked
   }
 
   /// Exactly what one press of "Trust" would record, held while it is read.
@@ -373,6 +404,7 @@ final class AppModel {
   /// window's half of it.
   func loadWorstCaseSetup(
     trust: [AgentKind: HookTrustState],
+    host: [AgentKind: HostHookSupport],
     error: String,
     helperNotice: String,
     clamshellSupported: Bool
@@ -381,9 +413,17 @@ final class AppModel {
     // sentence that stands in for them when none is installed.
     availableIntegrations = AgentIntegration.all
     trustStates = trust
+    hostSupports = host
+    // Both host-side refusals at once, on the hosts that can have them, in the
+    // precedence `HookConfiguration.setupState` uses. They fall on different
+    // integrations today, so the window is measured with a trust notice and a
+    // host notice on screen together — which is the shape the height has to
+    // carry and the shape no single machine will ever be in.
     setupStates = AgentIntegration.all.reduce(into: [:]) { states, integration in
-      let state = trust[integration.id] ?? .notRequired
-      states[integration.id] = state.isSatisfied ? .ready : .untrusted
+      let support = host[integration.id] ?? .notChecked
+      let trusted = trust[integration.id] ?? .notRequired
+      states[integration.id] =
+        !support.isUsable ? .hostTooOld : (trusted.isSatisfied ? .ready : .untrusted)
     }
     installedAgents = Set(setupStates.filter { $0.value == .ready }.map(\.key))
     setupError = error
@@ -492,21 +532,30 @@ final class AppModel {
   func refreshInstalledAgents() {
     var states: [AgentKind: HookSetupState] = [:]
     var trusts: [AgentKind: HookTrustState] = [:]
+    var hosts: [AgentKind: HostHookSupport] = [:]
     for integration in AgentIntegration.all {
       // One installer per integration: each accessor below re-reads the file,
-      // and there are three of them now.
+      // and there are four of them now.
       let installer = HookInstaller.live(for: integration)
       let trust = installer.trustState
       trusts[integration.id] = trust
+      // Cached inside `HostProbe`, which is what makes this affordable on a
+      // path that runs at launch and on every panel open. It reads the
+      // filesystem and never starts a process.
+      let host = HostProbe.support(for: integration)
+      hosts[integration.id] = host
       states[integration.id] = HookConfiguration.setupState(
         missingEvents: installer.missingEvents,
         expectedEvents: integration.allEvents,
         retiredEvents: installer.retiredEvents,
-        trust: trust
+        outdatedEvents: installer.outdatedEvents,
+        trust: trust,
+        host: host
       )
     }
     if states != setupStates { setupStates = states }
     if trusts != trustStates { trustStates = trusts }
+    if hosts != hostSupports { hostSupports = hosts }
 
     let installed = Set(states.filter { $0.value == .ready }.map(\.key))
     if installed != installedAgents { installedAgents = installed }
@@ -530,6 +579,11 @@ final class AppModel {
     } catch {
       setupError = error.localizedDescription
     }
+    // The moment the user is looking, and the cheapest one to take a fresh
+    // reading at. `HostProbe` otherwise holds its answer for ten minutes, which
+    // is the right cadence for a panel opening and the wrong one for somebody
+    // who has just gone and updated a host because Vigil told them to.
+    HostProbe.invalidate()
     // Re-read rather than assume. An install that threw part-way, or one whose
     // script did not end up executable, must not leave the panel claiming the
     // agent is reporting when it is not.
@@ -543,6 +597,7 @@ final class AppModel {
     } catch {
       setupError = error.localizedDescription
     }
+    HostProbe.invalidate()
     refreshInstalledAgents()
   }
 
@@ -785,12 +840,30 @@ final class AppModel {
   /// header a button reading "Codex needs setting up" that was false, did
   /// nothing, and went on saying the same thing after every press.
   /// `untrustedIntegrations` carries that case instead.
+  /// `.hostTooOld` is excluded on the same argument as `.untrusted`, one step
+  /// further out: re-running the install cannot change a state that exists
+  /// precisely because the install is complete, and here not even the user can
+  /// fix it from inside Vigil — the remedy is to update a program Vigil does
+  /// not own. A header button reading "Gemini CLI needs setting up" would be
+  /// false, would do nothing, and would go on saying it after every press.
+  /// `hostsTooOld` carries that case instead.
   var integrationsNeedingAttention: [AgentIntegration] {
     availableIntegrations.filter {
       !sessions(for: $0).isEmpty
         && setupState(for: $0) != .ready
         && setupState(for: $0) != .untrusted
+        && setupState(for: $0) != .hostTooOld
     }
+  }
+
+  /// Hosts wired up perfectly to a copy of themselves that cannot run it.
+  ///
+  /// Not filtered by whether anything is running, for the same reason
+  /// `untrustedIntegrations` is not: a host that cannot fire a hook has no
+  /// sessions by definition, so filtering on sessions would hide exactly the
+  /// case this exists to show.
+  var hostsTooOld: [AgentIntegration] {
+    availableIntegrations.filter { setupState(for: $0) == .hostTooOld }
   }
 
   /// Hosts that have our hooks and will not run them.

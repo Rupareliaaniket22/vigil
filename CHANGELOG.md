@@ -7,6 +7,21 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Vigil notices when a host is too old to run the hooks it installed. The row
+  reads "Too old" and a note names the release the hooks arrived in, with the
+  versions Vigil found. Gemini CLI grew them in 0.19.0; older copies read the
+  settings Vigil wrote, ignore them, and say nothing. Vigil never concludes
+  anything from absence — a host it cannot find is silent, because it cannot
+  see `npx`, `mise`, an alias or a wrapper script, and calling a tool somebody
+  uses daily "not installed" is worse than saying nothing at all
+- Both of the blocking defects fixed above have permanent regression tests. The
+  shared-hook-script delete rule runs in `make test` against a redirected home,
+  so an uninstall can be driven through every way a sibling's settings file can
+  fail to read without going near the developer's own `~/.claude`; the hook
+  script's stdin bounds and its session-id recovery run in a new `make
+  hooktest`, against a stand-in socket and a producer that never stops. Pointed
+  at the code as it was, the first goes red on four of seven cases and the
+  second on seven of thirteen
 - Vigil knows when Codex and Gemini CLI are waiting on you. Both publish a
   permission event Vigil was not listening for — Codex's `PermissionRequest` and
   Gemini CLI's `Notification` — so a session parked on an approval prompt held
@@ -108,6 +123,20 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Help text that only restated the control above it is gone
 
 ### Fixed
+- A hook installed by a version of Vigil older than the quoting fix reads as out
+  of date and offers "Update". Vigil recognised its own hooks by the script's
+  filename alone, so an entry with an unquoted path — which fails silently on a
+  home directory containing a space — and the wrong state baked into every
+  event counted as a healthy install
+- A settings row for an agent whose hooks are installed reads "Installed"
+  rather than "Reporting". That word is read off a settings file and says
+  nothing about whether the agent has ever run
+- Corrected Vigil's record of how Cursor can refuse. There are three shapes, not
+  one: six permission hooks answer `permission: deny`, while `beforeSubmitPrompt`
+  and `sessionStart` refuse with `continue: false`. Reading "not a permission
+  hook" as "cannot block" would have dropped `beforeSubmitPrompt` from the
+  script's disarm list, which is why the comment now names all three. Cursor
+  also no longer blocks when a hook writes nothing
 - Uninstalling one agent no longer deletes the hook script every other agent is
   using. One script serves all four, so it is removed only once nothing points
   at it — but the check read a settings file it could not open as "this agent
