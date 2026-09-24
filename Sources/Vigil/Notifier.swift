@@ -43,14 +43,76 @@ enum Notifier {
     case guardrailPreventedHold(reason: String)
   }
 
-  /// Ask the first time we actually have something to say, rather than at
-  /// launch — a permission prompt before the app has demonstrated any value is
-  /// the fastest route to being denied.
-  private static var hasRequestedAuthorization = false
-  /// Nil until asked. False means the user said no, and kept saying no every
-  /// time we posted anyway — so we stop posting rather than logging a failure
-  /// on every guardrail for the rest of the session.
-  private static var isAuthorized: Bool?
+  /// Whether macOS will let us speak, asked fresh every time we have something
+  /// to say.
+  ///
+  /// Deliberately not cached, and the cache is what this replaces. The old
+  /// version asked once, stored the answer, and treated a *thrown* request as
+  /// a no for the rest of the process. `requestAuthorization` throws
+  /// `UNErrorDomain` 1 — "Notifications are not allowed for this application" —
+  /// on the very first ask on a machine where the user has not answered the
+  /// system's prompt yet, which is every machine on its first run. The prompt
+  /// is still on screen at that moment; pressing Allow changed nothing,
+  /// because the answer had already been written down as no and nothing ever
+  /// read it again. A menu bar app that is never quit therefore went the whole
+  /// of its life silent: no completion chime, no run-ended alert, no guardrail
+  /// warning, and one line in the unified log to say so.
+  ///
+  /// So: read the system's own record on every send, and ask only while it
+  /// says the question is still open. That makes a grant take effect on the
+  /// next notification rather than on the next launch, and a refusal cost one
+  /// cheap read rather than a prompt. `.notDetermined` is the only state that
+  /// asks, so a user who said no is not asked again — macOS remembers that for
+  /// us, which is the whole reason it is the one keeping the record.
+  ///
+  /// Still asked no earlier than the first thing worth saying: a permission
+  /// prompt before the app has demonstrated any value is the fastest route to
+  /// being denied.
+  private static func isAllowedToSpeak() async -> Bool {
+    var status = await authorizationStatus()
+    if status == .notDetermined {
+      do {
+        _ = try await UNUserNotificationCenter.current()
+          .requestAuthorization(options: [.alert, .sound])
+      } catch {
+        // Not a refusal, and not a reason to stop. The settings read below is
+        // what decides — the user may be looking at the prompt this very
+        // request put on their screen.
+        log.notice(
+          "notification authorization request failed: \(error.localizedDescription, privacy: .public)"
+        )
+      }
+      status = await authorizationStatus()
+    }
+    switch status {
+    case .authorized, .provisional, .ephemeral: return true
+    case .denied, .notDetermined: return false
+    @unknown default: return false
+    }
+  }
+
+  /// The one field of `UNNotificationSettings` this file needs, fetched without
+  /// the object it came on.
+  ///
+  /// `UNNotificationSettings` is a class and is not `Sendable`, so the `async`
+  /// spelling of this cannot hand one back across an isolation boundary under
+  /// Swift 6. The callback form can: the settings object stays inside the
+  /// closure and only the status — an enum, and a value — comes out.
+  ///
+  /// `nonisolated`, and that is not a tidiness note. This type is
+  /// `@MainActor`, so without it the completion handler inherits main-actor
+  /// isolation — and `getNotificationSettings` calls back on a dispatch queue
+  /// of its own choosing. Swift checks that at runtime rather than trusting
+  /// it, so the app took a `dispatch_assert_queue` trap and died inside the
+  /// first notification it ever tried to send. Nothing here touches
+  /// main-actor state; the `await` at the call site hops back.
+  private nonisolated static func authorizationStatus() async -> UNAuthorizationStatus {
+    await withCheckedContinuation { continuation in
+      UNUserNotificationCenter.current().getNotificationSettings { settings in
+        continuation.resume(returning: settings.authorizationStatus)
+      }
+    }
+  }
 
   /// The completion chime, by file name.
   ///
@@ -87,17 +149,7 @@ enum Notifier {
   private static func send(_ event: Event, sound: NotificationPolicy.Sound?) async {
     let center = UNUserNotificationCenter.current()
 
-    if !hasRequestedAuthorization {
-      hasRequestedAuthorization = true
-      do {
-        isAuthorized = try await center.requestAuthorization(options: [.alert, .sound])
-      } catch {
-        isAuthorized = false
-        log.notice(
-          "notification authorization failed: \(error.localizedDescription, privacy: .public)")
-      }
-    }
-    guard isAuthorized == true else { return }
+    guard await isAllowedToSpeak() else { return }
 
     let content = UNMutableNotificationContent()
 

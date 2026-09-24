@@ -96,7 +96,7 @@ pmset -g assertions | grep -i vigil        # expect nothing
 ```
 
 Then run the real agent once and confirm the events arrive:
-`log stream --predicate 'subsystem == "dev.vigil.app"' --level debug`.
+`log stream --predicate 'subsystem == "io.github.rupareliaaniket22.vigil"' --level debug`.
 
 ## Before you're done
 

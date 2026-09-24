@@ -41,6 +41,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Redraw the status item whenever the model changes, without polling.
     observeModel()
     Self.log.info("\(Vigil.displayName, privacy: .public) launched")
+
+    // The one launch on which Vigil opens its own panel, because it is the one
+    // launch on which it wired up agents that were not wired up before. See
+    // `AppModel.shouldAnnounceFirstSetup` for why that is worth a panel and
+    // not worth a dialog.
+    if model.takeFirstSetupAnnouncement() {
+      // Logged because it is the app opening a window nobody asked it to, and
+      // anything that does that should be findable afterwards by somebody
+      // asking why.
+      Self.log.info("first run: opening the panel to say which agents were set up")
+      announceFirstSetup()
+    }
+  }
+
+  /// Open the panel for the first-run notice, once there is somewhere to open
+  /// it from.
+  ///
+  /// `installStatusItem` creates the status item's window; the *system* places
+  /// it, a moment later and asynchronously. Asked before that, it answers
+  /// (0, 0), and `FloatingPanel.show(relativeTo:)` lays the panel out against
+  /// the bottom-left corner of the screen and clamps it there. That is not a
+  /// worry, it is measured: written as "next turn of the run loop", this put
+  /// the first-run panel at x=8, y=52 on a 1728×1084 display — the opposite
+  /// corner from the menu bar icon it is supposed to be hanging from.
+  ///
+  /// So wait for the button to be somewhere, and give up waiting. Two seconds
+  /// at 50ms, and then show it regardless: a notice in the wrong corner still
+  /// says what Vigil did, and a Mac where the status item never gets placed
+  /// has a larger problem than this notice.
+  private func announceFirstSetup() {
+    Task { @MainActor [weak self] in
+      var placed = false
+      for _ in 0..<40 {
+        guard let delegate = self else { return }
+        if delegate.statusItemHasBeenPlaced {
+          placed = true
+          break
+        }
+        try? await Task.sleep(for: .milliseconds(50))
+      }
+      // Said out loud, because the panel then comes up in the bottom-left
+      // corner of the screen and looks like a layout bug rather than a menu
+      // bar that had no room in it. A binary run outside an app bundle is the
+      // one way to reach this on purpose: LaunchServices is what gets a status
+      // item onto the menu bar, and `Contents/MacOS/Vigil` does not go
+      // through it.
+      if !placed {
+        Self.log.notice("status item never took a place on the menu bar; showing the panel anyway")
+      }
+      self?.presentPanel()
+    }
+  }
+
+  /// Whether the system has given the status item a place on the menu bar.
+  ///
+  /// A window with no screen and an origin of exactly (0, 0) is one macOS has
+  /// created and not yet positioned. No status item ever legitimately sits at
+  /// the bottom-left corner of the display, so there is no false negative to
+  /// trade against here.
+  private var statusItemHasBeenPlaced: Bool {
+    guard let window = statusItem.button?.window, window.screen != nil else { return false }
+    return window.frame.origin != .zero
   }
 
   func applicationWillTerminate(_: Notification) {
@@ -75,6 +137,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     )
     .target = self
     appMenu.addItem(.separator())
+    // Here rather than in the settings window, and that is a measurement
+    // rather than a preference: the window's height is fixed and checked by
+    // `make smoke`, its worst case already comes within 32pt of the frame, and
+    // a row is 28. It is also where a Mac user looks for this. No key
+    // equivalent — nothing destructive in this app should be one slip of the
+    // hand away.
+    appMenu.addItem(
+      withTitle: "Remove \(Vigil.displayName) from This Mac…",
+      action: #selector(removeFromThisMac), keyEquivalent: ""
+    )
+    .target = self
+    appMenu.addItem(.separator())
     appMenu.addItem(
       withTitle: "Quit \(Vigil.displayName)", action: #selector(NSApplication.terminate(_:)),
       keyEquivalent: "q")
@@ -93,6 +167,124 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   @objc private func openSettingsFromMenu() {
     openSettings()
+  }
+
+  // MARK: - Removing Vigil
+
+  /// Take Vigil out of the agents it set up, and say what is left.
+  ///
+  /// The app's half of an uninstall, and the half nothing else can do:
+  /// `Scripts/uninstall.sh` refuses to edit the four agents' config files on
+  /// purpose, because taking one hook entry out of somebody's JSON or TOML
+  /// without disturbing the rest of it is what `HookConfiguration` does with
+  /// tests behind it and what `sed` does not. Until this existed, the script's
+  /// answer was "go into Settings and press Remove on each agent" — up to four
+  /// presses, in a window somebody who has decided to delete this program has
+  /// no reason to open.
+  ///
+  /// It asks first, and that is not the kind of prompt this app avoids. The
+  /// ones it avoids stand between the user and something they asked for; this
+  /// one is a destructive act with no undo, invoked deliberately.
+  @objc private func removeFromThisMac() {
+    // A menu item on an accessory app can be chosen while some other app is
+    // in front, and a modal sheet behind that app is a beachball with no
+    // explanation. The settings window is not necessarily open either, so
+    // this is an app-modal alert and the app has to be frontmost for it.
+    NSApp.activate(ignoringOtherApps: true)
+
+    let confirm = NSAlert()
+    confirm.alertStyle = .warning
+    confirm.messageText = "Remove \(Vigil.displayName) from this Mac?"
+    confirm.informativeText =
+      "Vigil will take its hook entries out of every agent it set up, withdraw the "
+      + "approvals it recorded for them, and turn off Open at Login. Your agents stop "
+      + "telling Vigil when they are working, so it stops keeping your Mac awake for "
+      + "them.\n\n"
+      + "The copies Vigil made of your config files before its first edit are kept — "
+      + "each sits beside the original, named <file>.vigil-backup.\n\n"
+      + removalRemainderSentence
+    let remove = confirm.addButton(withTitle: "Remove")
+    remove.hasDestructiveAction = true
+    let cancel = confirm.addButton(withTitle: "Cancel")
+    // Return is Cancel, not Remove. The first button added is otherwise the
+    // default, and the default on a destructive alert should not be the
+    // destruction.
+    remove.keyEquivalent = ""
+    cancel.keyEquivalent = "\r"
+    guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+    report(model.removeFromEverything())
+  }
+
+  /// What this app cannot remove, and what removes it.
+  ///
+  /// Said before and after, because the two readings are different questions:
+  /// beforehand it is "is this the whole of it?", and afterwards it is "what
+  /// do I do now?". One string, so the two answers cannot drift apart.
+  ///
+  /// The path is read off the bundle rather than written out. An app run
+  /// outside a bundle has no uninstaller to name, and naming one that is not
+  /// there is worse than saying nothing.
+  private var removalRemainderSentence: String {
+    let rest =
+      "Vigil's own files, its preferences, and — if you ever turned on working with the "
+      + "lid closed — the root-owned helper and its sudoers rule are removed by Vigil's "
+      + "uninstaller"
+    guard let path = AppModel.uninstallerPath else {
+      return rest + ", which ships inside the app bundle as Contents/Resources/uninstall.sh."
+    }
+    return rest + ". Run it in Terminal:\n\n\(path)"
+  }
+
+  /// Say what happened, in the same breath as what is left to do.
+  private func report(_ removal: AppModel.Removal) {
+    let done = NSAlert()
+    done.alertStyle = .informational
+
+    var lines: [String] = []
+    if !removal.agents.isEmpty {
+      lines.append("Vigil's hooks are out of \(AppModel.list(removal.agents)).")
+    }
+    if removal.loginItem {
+      lines.append("Open at Login is off.")
+    }
+    if let summary = removal.summary {
+      lines.append(summary)
+    }
+    if removal.helperRemains {
+      lines.append(
+        "The lid-closed helper is still installed. It is owned by root, so only the "
+          + "uninstaller can take it out — and it has to happen before the app goes in "
+          + "the Trash, because the uninstaller is inside the app.")
+    }
+
+    if removal.agents.isEmpty && !removal.loginItem && removal.failures.isEmpty {
+      done.messageText = "There was nothing to remove."
+      lines = ["None of your agents had Vigil's hooks in them, and Open at Login was off."]
+    } else if removal.failures.isEmpty {
+      done.messageText = "\(Vigil.displayName) is out of your agents."
+    } else {
+      done.alertStyle = .warning
+      done.messageText = "\(Vigil.displayName) could not remove everything."
+    }
+
+    lines.append(removalRemainderSentence)
+    done.informativeText = lines.joined(separator: "\n\n")
+
+    if let path = AppModel.uninstallerPath {
+      done.addButton(withTitle: "Copy Command")
+      done.addButton(withTitle: "Done")
+      guard done.runModal() == .alertFirstButtonReturn else { return }
+      // Quoted, because the path runs through the app bundle and an
+      // application folder is allowed a space in its name.
+      let command = "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+      NSPasteboard.general.clearContents()
+      NSPasteboard.general.setString(command, forType: .string)
+      return
+    }
+
+    done.addButton(withTitle: "Done")
+    done.runModal()
   }
 
   private func refreshStatusItem() {
@@ -159,6 +351,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // before this action ran. Reopening here would make the status item unable
     // to close the panel at all.
     if let panel, panel.wasJustDismissed { return }
+    presentPanel()
+  }
+
+  /// Put the panel on screen.
+  ///
+  /// `togglePanel` is the status item's half of this. The other caller is the
+  /// first-run notice, which has no click behind it and so none of the
+  /// just-dismissed bookkeeping above to do.
+  private func presentPanel() {
     guard let button = statusItem.button else { return }
 
     let panel = panel ?? makePanel()

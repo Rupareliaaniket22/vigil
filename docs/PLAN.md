@@ -31,6 +31,9 @@ finish and verify in one sitting, and leaves the tree green.
 | 18 | Bridge failure surfaced in the UI | recovery verified; error path not |
 | 19 | Codex hook trust, recorded without asking | unit tests pin the byte-for-byte bound |
 | 20 | Automatic setup at launch, and a real undo | unit tests; removal round-tripped through `tomllib` |
+| 21 | Uninstall — `Scripts/uninstall.sh`, shipped in the bundle | run against a fake home; `--dry-run` against this one |
+| 22 | Release paperwork: bundle id, copyright, third-party notices | read back out of the built `.app` |
+| 23 | CI on pull requests | written; unverified until a PR runs it |
 
 Step 15 was, for several commits, a gate nobody could safely run: launching the
 app installed hooks into the machine running it. It now launches the binary
@@ -41,7 +44,7 @@ row above, and it is the reason the number beside it can be trusted again.
 
 ## Next
 
-### 21. Verify the things only a human can verify
+### 24. Verify the things only a human can verify
 
 Nothing here is code. It is the gap between "builds" and "works".
 
@@ -51,7 +54,12 @@ Nothing here is code. It is the gap between "builds" and "works".
   all three things it wrote are gone: the hook entries, the shared script, and
   the `[hooks.state]` record in `~/.codex/config.toml`.
 - Run an agent and watch sessions appear.
-- Confirm a notification actually arrives when a run finishes.
+- Confirm a notification actually arrives when a run finishes. **This is the
+  one to do first.** Vigil's notification code was latching a first-run
+  refusal and going silent for the life of the process; that is fixed, but
+  nobody has yet seen a banner. It needs a human to answer the system prompt.
+  Note that a source build is ad-hoc signed, so macOS treats every rebuild as
+  a different app and the grant does not carry across one.
 - `sudo ./Scripts/install-clamshell.sh`, enable lid-closed, shut the lid with
   an agent running, and confirm it keeps going — then confirm it stops when the
   battery floor is reached.
@@ -59,31 +67,41 @@ Nothing here is code. It is the gap between "builds" and "works".
 **Do this before building anything else.** Every step below assumes the core
 loop is sound, and that is currently an assumption.
 
-### 22. OpenCode
+### 25. OpenCode
 
 The one remaining named agent, and the awkward one: OpenCode uses a JavaScript
 plugin rather than shell hooks, so it needs a different delivery mechanism from
 the other four. Its event stream is `session.status`, `message.part.updated`
 and `session.deleted` rather than named lifecycle hooks.
 
-### 23. An AC-to-battery test with the lid shut
+### 26. An AC-to-battery test with the lid shut
 
 Two more mature implementations have open bugs here, so it is a known-hard
 case. Vigil reconciles against `IOPMrootDomain` rather than a cached belief,
 which should handle it, but that is reasoning, not evidence. Needs someone to
 unplug a laptop with the lid closed and an agent running.
 
-### 24. Display-off control
+### 27. Display-off control
 
 Let the screen sleep while the system stays up. This is the overnight case:
 people want the agent to keep working and the room to be dark. Currently the
 assertion already permits display sleep, so this is about making it explicit
 and configurable rather than incidental.
 
-### 25. Auto-update
+### 28. Auto-update
 
 Sparkle 2.10, EdDSA appcast on GitHub Pages. Only worth doing once there is a
 signed release to update *to* — until then it has nothing to install.
+
+Two things to settle before writing any of it. First, nothing in the tree uses
+Sparkle today, so `grep -r sparkle` finds only comments in `Scripts/bundle.sh`
+— they now say so explicitly, and should keep saying so until this is real.
+Second, and more important: **an update mechanism is worth much less while the
+installed hook script cannot be updated.** `HookInstaller.copyScript()` is
+called only from `install()`, and nothing compares the installed
+`~/.vigil/hooks/vigil-hook.sh` against the copy in the bundle, so a user who
+updates Vigil keeps running the hook script they first installed. Fix that
+drift check first; ship the update check second.
 
 ## Blocked
 

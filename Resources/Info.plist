@@ -5,7 +5,7 @@
   <key>CFBundleName</key>                  <string>Vigil</string>
   <key>CFBundleDisplayName</key>           <string>Vigil</string>
   <key>CFBundleExecutable</key>            <string>Vigil</string>
-  <key>CFBundleIdentifier</key>            <string>dev.vigil.app</string>
+  <key>CFBundleIdentifier</key>            <string>__BUNDLE_ID__</string>
   <key>CFBundlePackageType</key>           <string>APPL</string>
   <key>CFBundleShortVersionString</key>    <string>__MARKETING_VERSION__</string>
   <key>CFBundleVersion</key>               <string>__BUILD_VERSION__</string>
@@ -13,7 +13,10 @@
   <key>LSMinimumSystemVersion</key>        <string>14.0</string>
   <!-- Menu bar agent: no Dock icon, no app switcher entry. -->
   <key>LSUIElement</key>                   <true/>
-  <key>NSHumanReadableCopyright</key>      <string>Licensed under the Apache License 2.0</string>
+  <!-- Asserted, not implied. "Licensed under Apache 2.0" names a licence but
+       no licensor, so nothing in the shipped app said who the copyright
+       belongs to. Get Info in Finder shows this string. -->
+  <key>NSHumanReadableCopyright</key>      <string>Copyright 2026 Aniket Ruparelia. Licensed under the Apache License, Version 2.0.</string>
   <key>NSSupportsAutomaticTermination</key><false/>
   <key>NSSupportsSuddenTermination</key>   <false/>
 </dict>

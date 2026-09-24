@@ -53,8 +53,20 @@ enum ClamshellInstaller {
 
     let source = "do shell script \(appleScriptQuoted(command)) with administrator privileges"
 
+    // Built before it is run, rather than `NSAppleScript(source:)?.execute…`.
+    // On a nil initialiser that spelling short-circuits: nothing runs,
+    // `errorInfo` is left nil, and the very next line reads a nil `errorInfo`
+    // as success — so a script that was never compiled would be logged and
+    // reported as a completed install, with no helper, no sudoers rule, and
+    // the lid-closed switch left on. Hard to reach and worth two lines: the
+    // failure it produces is a privileged install that did not happen and
+    // said it did.
+    guard let script = NSAppleScript(source: source) else {
+      throw InstallError.failed("Vigil could not build its installer script.")
+    }
+
     var errorInfo: NSDictionary?
-    NSAppleScript(source: source)?.executeAndReturnError(&errorInfo)
+    script.executeAndReturnError(&errorInfo)
 
     guard let errorInfo else {
       log.info("clamshell helper installed")

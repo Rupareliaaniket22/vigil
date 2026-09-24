@@ -736,6 +736,124 @@ final class AppModel {
     refreshInstalledAgents()
   }
 
+  // MARK: - Removing Vigil
+
+  /// What a full removal took out, and what it could not.
+  ///
+  /// Facts rather than a paragraph, because two callers want different
+  /// lengths of the same story and neither of them should be re-deriving it.
+  struct Removal: Equatable {
+    /// Hosts Vigil's hooks actually came out of.
+    var agents: [String] = []
+    /// Whether a login-item registration was there and has been withdrawn.
+    var loginItem = false
+    /// Whatever refused, in the words the user would see anywhere else.
+    var failures: [SetupFailure] = []
+    /// Whether the root-owned half of lid-closed support is still installed.
+    /// Nothing in this app may remove it — that needs root, and the only
+    /// thing that has it is the uninstaller script.
+    var helperRemains = false
+
+    var summary: String? { SetupFailure.summary(of: failures) }
+  }
+
+  /// Take Vigil back out of every agent it set up, and out of the login item.
+  ///
+  /// The half of an uninstall that only this app can do. `Scripts/uninstall.sh`
+  /// deliberately will not edit the four agents' config files — removing one
+  /// hook entry means rewriting somebody's JSON or TOML around it without
+  /// disturbing anything else in it, which is what `HookConfiguration` does,
+  /// in Swift, with tests, and what a shell script cannot do safely. So the
+  /// script detects those entries and stops; this is what it is stopping for.
+  ///
+  /// The order matters in one place and it is the same order `uninstallHooks`
+  /// keeps for one agent: entries out first, then the host's record of having
+  /// approved them. Reversed, a user whose `config.toml` could be written but
+  /// whose `hooks.json` could not would be left with hooks their host had
+  /// quietly stopped running — worse than the state they were in, and harder
+  /// to see.
+  ///
+  /// Every agent, not only the ones on this Mac today. `availableIntegrations`
+  /// hides a host whose directory is gone, and a host whose directory is gone
+  /// can still have a `~/.claude/settings.json` full of Vigil's entries from
+  /// before it was uninstalled. A removal that skipped it would leave exactly
+  /// the residue this exists to collect.
+  ///
+  /// It does not delete `~/.vigil`, the preferences, or the socket directory,
+  /// and that is not an oversight. `uninstallHooks` leaves the shared script
+  /// alone while any agent still names it, which this loop may not have
+  /// finished being true of; and the preferences hold `agentsVigilHasSetUp`,
+  /// which is the record that makes this removal *stick*. Deleting it here
+  /// would mean the next launch of a Vigil the user had not got round to
+  /// trashing put every hook straight back. The uninstaller removes those,
+  /// after the app is gone, which is the only order in which it is safe.
+  @discardableResult
+  func removeFromEverything() -> Removal {
+    var result = Removal()
+
+    for integration in AgentIntegration.all {
+      // Nothing of ours in this file: there is nothing to take out, and
+      // reporting it as removed would be a sentence about work that did not
+      // happen. `uninstall()` would also rewrite it — Vigil reformats what it
+      // writes — so an unconditional pass would reformat and back up four
+      // config files it had never touched.
+      guard HookInstaller.live(for: integration).hasSomethingToRemove else { continue }
+
+      uninstallHooks(for: integration)
+      // `setupError` is where `uninstallHooks` puts a failure, because
+      // ordinarily there is a press behind it and somebody reading that slot.
+      // Here there are four calls and one slot, so each is collected as it
+      // happens — the same argument `performInstall` makes — and the slot is
+      // cleared at the end.
+      if let error = setupError {
+        result.failures.append(SetupFailure(host: integration.displayName, reason: error))
+      } else {
+        result.agents.append(integration.displayName)
+      }
+      setupError = nil
+    }
+
+    // Through the property, not through `LoginItem.set(false)` directly. The
+    // property's `didSet` is what actually unregisters, so calling the service
+    // here would unregister twice — and the second call throws `jobNotFound`,
+    // which `didSet` handles by putting `launchAtLogin` back to `true`. The
+    // switch in Settings would then read "on" for a login item that had just
+    // been removed, which is the one state it must never be in.
+    if LoginItem.isEnabled {
+      launchAtLogin = false
+      // Asked of the system rather than of our own flag: `didSet` reverts on
+      // failure, and the reason it reverted is in `setupError`.
+      if LoginItem.isEnabled {
+        result.failures.append(
+          SetupFailure(
+            host: "Open at login",
+            reason: setupError ?? "macOS would not remove the login item."))
+      } else {
+        result.loginItem = true
+      }
+      setupError = nil
+    }
+
+    result.helperRemains =
+      clamshell.isSupported
+      || FileManager.default.fileExists(atPath: SudoersClamshellBackend.helperPath)
+
+    setupError = result.summary
+    refreshInstalledAgents()
+    return result
+  }
+
+  /// Where the uninstaller lives inside this bundle.
+  ///
+  /// Named from the app rather than written into the interface as a literal:
+  /// the interface has to tell the user a path they can paste, and a path
+  /// typed out in a string is one that stops being true the day the bundle's
+  /// layout changes, in the one sentence somebody reads when they are already
+  /// trying to get rid of this program.
+  static var uninstallerPath: String? {
+    Bundle.main.url(forResource: "uninstall", withExtension: "sh")?.path
+  }
+
   /// Write approvals into the host's own file, and remember having done it.
   /// Nil means it worked.
   ///
@@ -770,6 +888,38 @@ final class AppModel {
   /// what this runs off.
   private var isMaintaining = false
 
+  /// Replace `~/.vigil/hooks/vigil-hook.sh` when it is not the one this build
+  /// would install.
+  ///
+  /// The reasoning for doing it at all, and for doing only this, is in
+  /// `HookInstaller.refreshSharedScript`. What belongs here is where the
+  /// outcome goes: nowhere the user can see it.
+  ///
+  /// `.refreshed` is not news. The entries in their agents' files are
+  /// unchanged, the path is unchanged, and what happened is that a file Vigil
+  /// owns caught up with the app that owns it — which is what an update is. A
+  /// notice for it would be Vigil reporting its own maintenance.
+  ///
+  /// `.failed` does not reach `setupError` either, and that is the less
+  /// obvious half. Nobody pressed anything, and the slot it would land in is
+  /// the one the panel uses for the last thing the user *did*. It is also not
+  /// a failure the user can act on in the moment: the hooks they have go on
+  /// working, at the previous version, which is exactly where they already
+  /// were. The log is the right place, and `/usr/bin/log` is how to read it.
+  private func refreshSharedHookScript() {
+    let path = HookInstaller.defaultScriptPath(
+      home: FileManager.default.homeDirectoryForCurrentUser)
+    switch HookInstaller.refreshSharedScript(at: path, from: HookInstaller.bundledScriptURL) {
+    case .notInstalled, .upToDate:
+      break
+    case .refreshed:
+      Self.log.info("brought the shared hook script up to date")
+    case .failed(let reason):
+      Self.log.notice(
+        "could not bring the shared hook script up to date: \(reason, privacy: .public)")
+    }
+  }
+
   /// Do whatever can be done without asking, then say what was done.
   ///
   /// Runs at launch and on every panel open, which is the same cadence
@@ -791,7 +941,21 @@ final class AppModel {
     isMaintaining = true
     defer { isMaintaining = false }
 
+    // Before the read, not after: the read asks whether the script at the
+    // shared path is executable, and this is what puts an executable bit back
+    // on a copy that has lost one. Before the `manages` guard, too — see
+    // `HookInstaller.refreshSharedScript` for why the switch that governs
+    // writing into other programs' files does not govern a file of Vigil's own.
+    refreshSharedHookScript()
     refreshInstalledAgents()
+
+    // Read before anything is installed, and the whole of what makes the
+    // first-run notice a first-run notice. Once `performInstall` runs, every
+    // agent it touched answers `hasBeenSetUp` — so asked afterwards, this
+    // question can no longer tell a Mac Vigil has just arrived on from one it
+    // has been running on for a month.
+    let isFirstEverSetup = !AgentIntegration.all.contains { HookManagement.hasBeenSetUp($0.id) }
+
     guard HookManagement.manages else { return }
 
     var acted = false
@@ -889,6 +1053,13 @@ final class AppModel {
         announced.contains { $0.id == host.id }
       }
     autoSetup = AutoSetup(integrations: all, approved: approved)
+
+    // The notice exists; this is what makes somebody see it. Set only on the
+    // pass that was the first Vigil has ever made on this Mac, which is the
+    // launch where four other programs' config files were edited by an app the
+    // user had run once — and where, until now, the only account of it was a
+    // note in a panel nobody had opened yet, cleared the moment they closed it.
+    if isFirstEverSetup { shouldAnnounceFirstSetup = true }
   }
 
   /// Put back what the last automatic setup did, and make sure it stays put.
@@ -913,6 +1084,35 @@ final class AppModel {
   /// read is a nag.
   func dismissAutoSetup() {
     autoSetup = nil
+  }
+
+  /// Whether this launch should open the panel by itself, once.
+  ///
+  /// The last piece of "acting without asking is fine, acting invisibly is
+  /// not". `autoSetup` already carries the sentence and the Undo; what it did
+  /// not have was a reader. A menu bar app is one nobody opens — that is the
+  /// point of it — so on the one launch where Vigil arrives on a Mac and
+  /// writes a hook into four other programs' config files, the notice sat in a
+  /// closed panel and was cleared by `panelBecameHidden` the first time the
+  /// user opened and closed it for some unrelated reason. They could have
+  /// gone the whole life of the app without ever being told.
+  ///
+  /// So the panel opens itself, that once. It costs no click — it is
+  /// dismissed by the next one anywhere, like any menu — and it is not a
+  /// prompt: everything in it has already happened, and the Undo beside it is
+  /// the answer for somebody who disagrees. A confirmation dialog before the
+  /// fact would be the friction this app deliberately does not have; a README
+  /// the user never opened is not disclosure.
+  ///
+  /// Once on this Mac, and only where something was actually written. The
+  /// launches after it say nothing, because nothing new happened on them.
+  private(set) var shouldAnnounceFirstSetup = false
+
+  /// Read and cleared together, so the panel cannot open itself twice for the
+  /// same piece of news.
+  func takeFirstSetupAnnouncement() -> Bool {
+    defer { shouldAnnounceFirstSetup = false }
+    return shouldAnnounceFirstSetup
   }
 
   // MARK: - The loop

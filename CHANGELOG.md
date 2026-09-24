@@ -6,7 +6,62 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+Vigil's first release. A menu bar app that holds your Mac awake while an AI
+coding agent is actually working, and lets it sleep again the moment that stops
+— so an overnight run does not die when the Mac does.
+
+- Reads the lifecycle hooks **Claude Code**, **Codex**, **Gemini CLI** and
+  **Cursor** already publish, so it can tell a run in progress from a terminal
+  left open
+- Sets those agents up on first launch, without asking, and then says so: the
+  panel opens itself once, names the agents, and offers an Undo. Every file it
+  edits is copied to `<file>.vigil-backup` before its first edit, nothing else
+  in that file is changed, one Vigil cannot parse is left alone, and one switch
+  in Settings turns the whole behaviour off
+- Guardrails come first. It lets go when your Mac runs hot, below a battery
+  floor you choose, on battery if you ask it to, and in Low Power Mode — and a
+  session that stops reporting expires, so a crashed agent cannot pin your Mac
+  awake
+- Shows everything keeping your Mac awake, not only its own hold
+- Tells you when a run finishes, and warns you when a guardrail cuts one short
+- Works with the lid closed if you turn it on, behind a root-owned helper that
+  changes that one setting and nothing else
+- ⌥⌘L to hold your Mac awake from anywhere
+- Removes itself: **Remove Vigil from This Mac…** in the Vigil menu takes its
+  hooks back out of every agent, and `uninstall.sh` inside the app bundle
+  removes everything else, including the root-owned half
+
+Known limits: there is no auto-update; OpenCode uses a JavaScript plugin rather
+than shell hooks; and desktop apps other than Cursor publish no lifecycle events
+and hold no wake lock of their own, so Vigil cannot see them working and will
+not guess.
+
+## Pre-release development
+
+Everything below this heading happened before the first release, so none of it
+ever shipped to anyone. It is kept because the reasoning is worth having, and it
+is under a heading of its own so that `Scripts/changelog-section.sh` — which
+stops at the next `## ` — leaves it out of the release notes rather than handing
+`gh release create` six hundred lines of diary.
+
 ### Added
+- Vigil shows you what it did, on the one launch it does it. The panel already
+  said which agents were set up and offered an Undo, and nobody ever saw it: a
+  menu bar app is one you do not open, so on the launch where Vigil arrives and
+  writes a hook into four other programs' config files, that notice sat behind a
+  closed panel and was cleared the first time it was opened and shut for some
+  unrelated reason. The panel now opens itself, once, on the first run that
+  actually installed something. It costs no click — the next click anywhere
+  dismisses it, like any menu — and it is not a question: everything in it has
+  happened, and the Undo is beside it
+- **Remove Vigil from This Mac…**, in the Vigil menu. Takes Vigil's hooks out
+  of every agent it set up, withdraws the approvals it recorded for them and
+  turns off Open at Login, in one press rather than four — then says what is
+  left and where the uninstaller is. It is the half of an uninstall only the app
+  can do: `Scripts/uninstall.sh` will not edit the four agents' config files on
+  purpose, because removing one entry from somebody's JSON or TOML without
+  disturbing the rest of it is what `HookConfiguration` does with tests behind
+  it and what a shell script cannot do safely
 - Vigil sets itself up. On first run it installs its hooks into every agent it
   finds — and, where a host will not run a hook until its own config records an
   approval, writes that record too — then says so in the panel: which agents,
@@ -183,6 +238,126 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Help text that only restated the control above it is gone
 
 ### Fixed
+- Updating Vigil updates the hook script. `~/.vigil/hooks/vigil-hook.sh` is
+  copied out of the app bundle by the install, and nothing ever compared the
+  installed copy against the bundled one again: every health check reads the
+  hook *entries* in an agent's settings file, and none of them reads the
+  script's bytes. So replacing Vigil.app with a newer version whose entries
+  happened to be identical left the old script in place, still executable, still
+  named by all four agents — and every fix to it after the version you installed
+  reached nobody who had already installed. Vigil now replaces that file when it
+  is not the one this build ships, at launch and when the panel opens, and
+  restores its executable bit if it has lost one. Only that file: the entries
+  already point at it, so nothing in anybody else's config is rewritten
+- Installing or updating the hook script can no longer be caught half-done. It
+  was removed and then copied, so an agent that fired a hook in between found no
+  file at a path its settings said was there. The new copy is staged beside the
+  old one and renamed over it, which is a single step
+- A failed lid-closed install can no longer report success. If the installer
+  script could not be compiled at all, nothing ran, no error was set, and the
+  next line read that absence as a completed install — leaving no helper, no
+  sudoers rule, and the switch on
+- `swift run` logs under the same subsystem the app does. The fallback in
+  `Vigil.swift` still said `dev.vigil.app`, so a `log show --predicate` that
+  worked against the bundled app quietly returned nothing for a binary run
+  outside one
+- Notifications work on the second try, and on every try after it. Vigil asked
+  macOS for permission once, kept the answer, and counted a *thrown* request as
+  a refusal — but `requestAuthorization` throws "Notifications are not allowed
+  for this application" on the first ask on a machine where nobody has answered
+  the system prompt yet, which is every machine on its first run. The prompt was
+  still on screen at that moment, and pressing Allow changed nothing: the answer
+  had already been written down as no and was never read again. A menu bar app
+  nobody quits therefore ran silent for its whole life — no completion chime, no
+  run-ended alert, no guardrail warning — with one line in the unified log to say
+  so. Vigil now reads the system's own record each time it has something to say
+  and asks only while that record says the question is still open, so a grant
+  takes effect on the next notification instead of the next launch
+- `MARKETING_VERSION` could still be overridden past the `VERSION` file, and
+  `Scripts/release.sh` printed that override in its own usage example. It
+  produces a release that disagrees with itself in the one way nothing
+  downstream can catch: the binary, the disk image's name, the changelog
+  section looked up and the tag suggested at the end all follow the override,
+  while the commit the tag points at — which the script has just checked is
+  clean, so it is the commit anyone auditing the release will read — still says
+  the old number. The override is now accepted only when it agrees with the
+  file, and the usage example says to edit `VERSION`
+- `Scripts/changelog-section.sh` wrote to `/tmp/vigil-notes.$$`: a guessable
+  name in a directory every account on the Mac can write to, and `>` follows a
+  symlink, so another local user could have pointed it at a file of this user's
+  and had the script truncate it. It holds the section in a variable now —
+  nothing about reading one heading out of a file needs to touch the disk.
+  `release.sh`'s closing instructions wrote `/tmp/notes.md` for the same
+  reason and now write into `dist/`, beside the image they describe
+- `make dmg` and `Scripts/release.sh` were both writing
+  `dist/Vigil-<version>.dmg`, so the ad-hoc image built to check the layout was
+  indistinguishable by name from the notarized one, in the same directory,
+  ready to be attached to a GitHub release. The throwaway one is now
+  `-unsigned.dmg`
+- The README's escape hatch was unreachable in time. "Turn off **Set up and
+  update agent hooks automatically** in Settings" is the answer to "what if I
+  don't want this", and the only way to reach that switch is to launch Vigil,
+  which is the moment the writing happens — so the paragraph offering a choice
+  was describing one nobody could make. It now says so, and gives the launch
+  that really does hold everything back:
+  `dist/Vigil.app/Contents/MacOS/Vigil -managesAgentHooks '<false/>'`, which is
+  the same argument `make integration` relies on and whose last check exists to
+  prove it still shadows the stored value
+- SECURITY.md told anyone whose Mac was left with lid-close sleep disabled to
+  run `./Scripts/install-clamshell.sh --uninstall`, which is a path in a
+  checkout. Someone who downloads Vigil has no checkout; their copy of that
+  script is inside the app bundle, and once the app is in the Trash there is no
+  copy at all. Both paths are named now, along with the fact that the order
+  matters
+- The first signed release would have failed notarisation. `bundle.sh` signed
+  with `--timestamp=none` unconditionally, and a secure timestamp is one of the
+  things Apple's notary service requires — the upload comes back Invalid, and
+  the next line that would have noticed is `stapler`, which says only that it
+  could not find a ticket. The flag now follows `IDENTITY`: off for ad-hoc, so
+  `make build` never depends on Apple's timestamp server being reachable, on
+  for a real certificate. `bundle.sh` then reads the signature back and refuses
+  to hand on a Developer ID build with no timestamp in it, because passing the
+  right flag and the signature carrying it are two different claims
+- `BUNDLE_ID` did nothing. `Makefile` and `bundle.sh` both defined it, both
+  exported it, and `Resources/Info.plist` hardcoded `dev.vigil.app`, so
+  `BUNDLE_ID=... make bundle` produced an app with the identifier it was told
+  not to use — silently, since nothing compared the two. The plist now carries
+  a `__BUNDLE_ID__` placeholder like the two version fields, and `bundle.sh`
+  fails if any placeholder survives substitution: an unsubstituted identifier
+  is not a cosmetic defect, it is what launchd, `UserDefaults` and
+  `SMAppService` key off
+- The release disk image had nowhere to drag the app to. `hdiutil create
+  -srcfolder Vigil.app` makes a volume whose only item is the app, and the
+  common thing to do with that window is double-click the app where it sits —
+  which runs it from a read-only volume under App Translocation, so Launch at
+  Login registers a path that disappears on eject and the app dies mid-run when
+  the image is unmounted. Both `make dmg` and `Scripts/release.sh` now stage a
+  folder holding the app and a symlink to `/Applications`, and the release
+  script mounts the finished image and checks both are there
+- FlyingFox's MIT notice now ships. It is statically linked into the executable
+  and MIT asks for its notice in "all copies or substantial portions", so a
+  notice living only in a repo the downloader never cloned does not discharge
+  it. `THIRD-PARTY-NOTICES.md` is at the root and, with `LICENSE`, inside
+  `Vigil.app/Contents/Resources`
+- The version was written down in three places — `Makefile`, `bundle.sh` and
+  `release.sh` each defaulted to `0.1.0` — and nothing compared them, so a
+  release could disagree with itself about what it was. There is now a
+  `VERSION` file and all three read it
+- `Scripts/release.sh` no longer swallows its own last check. The final
+  `spctl --assess` on the disk image ended in `|| true`, which made the one
+  test for the one failure the script exists to prevent advisory. It is fatal,
+  the app is assessed as well as the image, and `notarytool`'s result is read
+  back and required to be `Accepted` rather than inferred from the submission
+  having finished — with the notary log printed when it is not
+- `Scripts/release.sh` refuses to build from a dirty or untracked working tree.
+  `CFBundleVersion` comes from `git rev-list --count HEAD`, so a release cut
+  over uncommitted changes states a provenance that is not true of the binary
+- The release-notes command the script printed would have shipped the whole
+  changelog. `sed -n '/## \[Unreleased\]/,/^## /p'` includes the *next*
+  heading, and with no next heading it runs to the end of the file: against
+  this changelog it selects 547 of 553 lines. `Scripts/changelog-section.sh`
+  takes one version's section, and refuses if `[Unreleased]` has not been
+  rolled into a version heading first
 - `make integration` no longer edits the agent config files of whoever runs it.
   Hooks are installed at launch now, so the repo's own end-to-end gate was
   rewriting `~/.claude/settings.json`, `~/.codex/hooks.json`,

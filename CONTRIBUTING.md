@@ -37,6 +37,18 @@ are what makes the rest of the script safe to ask people to run.
 
 Run `make format` to fix formatting automatically.
 
+The first three of those run in CI on every pull request
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), along with
+`make hooktest`. CI never signs and never runs `make bundle` — there is no
+signing identity in the repository or in Actions, and there is not meant to be.
+
+## Removing Vigil from your machine
+
+`Scripts/uninstall.sh --dry-run` lists everything Vigil has put on this Mac;
+without the flag it removes it. Worth knowing while developing, because Vigil
+installs hooks into your own agents the moment you launch it — including a
+`sudo` rule and a root-owned helper if you ever tried lid-closed working.
+
 ## Where code belongs
 
 - `Sources/VigilCore` — pure logic: event parsing, session tracking, the wake

@@ -220,5 +220,22 @@ is noticed instead of silently disagreed with.
 
 One gap remains: if Vigil is killed with `SIGKILL` (which cannot be trapped) and
 never relaunched, lid-close sleep stays disabled until something restores it.
-Run `sudo ./Scripts/install-clamshell.sh --uninstall`, or
-`sudo pmset -a disablesleep 0`, to clear it by hand.
+Run `sudo pmset -a disablesleep 0` to clear it by hand.
+
+### Removing the privileged parts
+
+`Scripts/uninstall.sh` takes out the helper, the sudoers rule and the
+`SleepDisabled` flag together, and it is the path to prefer: it asks for your
+password once, for that step alone, and says what it is about to run as root
+before it runs it. It also checks `SleepDisabled` afterwards and tells you if
+something still has it set.
+
+The narrower `./Scripts/install-clamshell.sh --uninstall` does the same three
+things and nothing else.
+
+Both ship in two places and they are the same files: a checkout, and
+`/Applications/Vigil.app/Contents/Resources/` in an installed app. Someone who
+downloaded Vigil rather than cloning it has only the second — **and once the
+app is in the Trash, neither.** A sudoers rule granting passwordless root on a
+path whose binary you have just deleted is the worst of the leftovers, so do
+this before deleting the app, not after.

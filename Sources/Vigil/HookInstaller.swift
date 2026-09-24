@@ -70,6 +70,7 @@ struct HookInstaller {
 
   enum InstallError: LocalizedError {
     case scriptMissingFromBundle
+    case scriptNotWritten(String, String)
     case settingsUnreadable(String)
     case settingsHasComments(String)
     case settingsNotWritable(String)
@@ -84,6 +85,11 @@ struct HookInstaller {
       switch self {
       case .scriptMissingFromBundle:
         "Vigil's hook script is missing from the app bundle. Reinstall Vigil."
+      case .scriptNotWritten(let path, let reason):
+        // Names the path because it is one the user can go and look at, and
+        // the reason because the two that actually happen — a full disk and a
+        // `~/.vigil` somebody has made read-only — need opposite answers.
+        "Couldn't write Vigil's hook script to \(path): \(reason)."
       case .settingsUnreadable(let path):
         "Couldn't read \(path). Vigil left it untouched — check it is valid JSON."
       case .settingsShapeUnknown(let path, let keys):
@@ -152,6 +158,29 @@ struct HookInstaller {
   }
 
   var isInstalled: Bool { missingEvents.isEmpty }
+
+  /// Whether this agent's settings file holds anything `uninstall()` would
+  /// take out.
+  ///
+  /// Asked of the settings file, through the very function that would do the
+  /// removing, and deliberately not derived from `missingEvents`. That one
+  /// answers "everything is missing" whenever the shared script is absent or
+  /// not executable — so a user whose `~/.vigil` had been deleted, with four
+  /// config files still full of Vigil's entries, would read as an agent with
+  /// nothing in it. That is exactly the residue a full removal exists to
+  /// collect, and it would have been the one case it skipped.
+  ///
+  /// An unreadable settings file answers true. It may hold our entries and
+  /// nothing here can tell; `uninstall()` refusing it out loud, by name, is a
+  /// better outcome than a removal that quietly passed over the one file it
+  /// could not look inside.
+  var hasSomethingToRemove: Bool {
+    guard let settings = try? Self.readSettings(at: settingsPath) else { return true }
+    let stripped = HookConfiguration.uninstall(from: settings, scriptPath: scriptPath)
+    // `NSDictionary` because `[String: Any]` is not `Equatable` and the values
+    // here are whatever the user's JSON held.
+    return (stripped as NSDictionary) != (settings as NSDictionary)
+  }
 
   /// Which events we expect a hook for and did not find one.
   ///
@@ -490,21 +519,133 @@ struct HookInstaller {
   }
 
   private func copyScript() throws {
-    guard
-      let source = Bundle.main.url(forResource: "vigil-hook", withExtension: "sh")
-    else { throw InstallError.scriptMissingFromBundle }
+    guard let source = Self.bundledScriptURL else { throw InstallError.scriptMissingFromBundle }
+    try Self.writeScript(from: source, to: scriptPath)
+  }
 
-    let destination = URL(fileURLWithPath: scriptPath)
-    try FileManager.default.createDirectory(
-      at: destination.deletingLastPathComponent(),
-      withIntermediateDirectories: true
-    )
+  // MARK: - The shared script
 
-    if FileManager.default.fileExists(atPath: scriptPath) {
-      try FileManager.default.removeItem(at: destination)
+  /// The copy of the hook script inside this app bundle: the one this build of
+  /// Vigil would install.
+  ///
+  /// Named once rather than spelled at both call sites. The install and the
+  /// refresh below have to mean the same file, and two `forResource:` literals
+  /// are two chances for them to stop doing so — in a way where the refresh
+  /// would go on reporting everything up to date against a file that is not
+  /// the one being installed.
+  static var bundledScriptURL: URL? {
+    Bundle.main.url(forResource: "vigil-hook", withExtension: "sh")
+  }
+
+  /// What `refreshSharedScript(at:from:)` found, and what it did about it.
+  enum ScriptRefresh: Equatable {
+    /// Nothing is installed at that path. An install puts the script there;
+    /// this never does, so a user who has never let Vigil write anything still
+    /// has nothing written.
+    case notInstalled
+    /// The installed copy is already this build's, and is executable.
+    case upToDate
+    /// It was not, and now is.
+    case refreshed
+    /// It was not, and still is not. Carries the reason, for the log.
+    case failed(String)
+  }
+
+  /// Bring the installed hook script back into line with the one in this
+  /// bundle.
+  ///
+  /// Nothing else did. `copyScript()` has one caller — `install()` — and
+  /// `install()` runs only when an agent's *settings file* is missing Vigil's
+  /// entries, holds entries for events Vigil has retired, or holds a command
+  /// Vigil no longer writes. Every one of those reads the entries; not one of
+  /// them reads the script's bytes. So somebody who replaced Vigil.app with a
+  /// newer version whose hook entries happen to be identical kept the *old*
+  /// script — same path, still executable, still named by all four agents —
+  /// and went on running it. Every fix to `vigil-hook.sh` after the version
+  /// they installed reached nobody who had already installed. That is the
+  /// drift `HelperIntegrity` catches for the root helper, on the file that
+  /// runs on every lifecycle event of every agent.
+  ///
+  /// Deliberately only the script, and deliberately not a fifth reason for
+  /// `HookConfiguration.setupState` to answer `.outOfDate`. That route would
+  /// rewrite four other programs' config files, unasked, on the first launch
+  /// after any release that touched the script — a new write into somebody
+  /// else's file, to buy nothing: the entries already name this path, and
+  /// replacing what is at it is the whole of the fix.
+  ///
+  /// Not gated on "set up and update agent hooks automatically" either, and
+  /// for the same reason. That switch governs writing into *other programs'*
+  /// files; this writes into none — only `~/.vigil`, which Vigil made. And
+  /// somebody who turned the switch off and then pressed **Set up** asked for
+  /// these hooks by hand, which is a poor reason to leave them running the
+  /// last version's code.
+  ///
+  /// The mode is part of the comparison rather than an afterthought. A copy
+  /// that matches byte for byte but has lost its executable bit fires nothing
+  /// at all, and reads to `missingEvents` as an agent that was never set up.
+  @discardableResult
+  static func refreshSharedScript(at path: String, from source: URL?) -> ScriptRefresh {
+    // `stat` rather than `fileExists`, for the reason `readSettings` gives:
+    // `fileExists` answers false both for "nothing is here" and for "the
+    // directory above cannot be searched", and only the first of those means
+    // there is nothing to refresh.
+    var info = stat()
+    guard stat(path, &info) == 0 else { return .notInstalled }
+
+    guard let source else {
+      // A bundle with no script in it cannot install either, and `install()`
+      // says so where somebody is waiting to hear it. Here there is no press
+      // behind the call, so this goes to the log and no further.
+      return .failed(InstallError.scriptMissingFromBundle.localizedDescription)
     }
-    try FileManager.default.copyItem(at: source, to: destination)
-    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptPath)
+
+    do {
+      let bundled = try Data(contentsOf: source)
+      let installed = try Data(contentsOf: URL(fileURLWithPath: path))
+      if installed == bundled, FileManager.default.isExecutableFile(atPath: path) {
+        return .upToDate
+      }
+      try writeScript(from: source, to: path)
+      log.info("refreshed the shared hook script at \(path, privacy: .public)")
+      return .refreshed
+    } catch {
+      return .failed(error.localizedDescription)
+    }
+  }
+
+  /// Put the bundled script at `path`, atomically.
+  ///
+  /// Written to a neighbour and renamed, rather than removed and copied, which
+  /// is what this used to do. `rename(2)` replaces the name in one step, so an
+  /// agent firing a hook during an install or a refresh finds either the old
+  /// script or the new one — never the window in which there was no file at
+  /// that path at all, which to the agent is a hook that failed to run.
+  /// Anything already executing the old copy keeps it: the inode outlives the
+  /// name.
+  ///
+  /// The mode goes on the temporary file, before the rename, so the script is
+  /// never briefly in place and not executable.
+  private static func writeScript(from source: URL, to path: String) throws {
+    let destination = URL(fileURLWithPath: path)
+    let directory = destination.deletingLastPathComponent()
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+    // Beside the destination rather than in the temporary directory, because
+    // `rename` cannot cross a filesystem and `/tmp` need not be on this one.
+    let temporary = directory.appendingPathComponent(".vigil-hook.sh.\(UUID().uuidString)")
+    do {
+      try Data(contentsOf: source).write(to: temporary)
+      try FileManager.default.setAttributes(
+        [.posixPermissions: 0o755], ofItemAtPath: temporary.path)
+      guard rename(temporary.path, path) == 0 else {
+        throw InstallError.scriptNotWritten(path, String(cString: strerror(errno)))
+      }
+    } catch {
+      // Whatever went wrong, do not leave a dotfile behind in a directory the
+      // uninstaller expects to be able to `rmdir`.
+      try? FileManager.default.removeItem(at: temporary)
+      throw error
+    }
   }
 
   /// An absent settings file is an empty one — first run is not an error.

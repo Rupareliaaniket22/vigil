@@ -12,7 +12,7 @@ Not a minute longer.
 [![Platform](https://img.shields.io/badge/platform-macOS-1C1C1E?style=flat-square)](https://www.apple.com/macos/)
 [![Requirements](https://img.shields.io/badge/requires-macOS%2014%2B-FFB340?style=flat-square)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-6-FFB340?style=flat-square)](https://swift.org)
-[![Tests](https://img.shields.io/badge/tests-420-1C1C1E?style=flat-square)](Tests)
+[![Tests](https://img.shields.io/badge/tests-433-1C1C1E?style=flat-square)](Tests)
 [![License](https://img.shields.io/github/license/Rupareliaaniket22/vigil?style=flat-square&color=1C1C1E)](LICENSE)
 
 </div>
@@ -67,9 +67,24 @@ run in progress and a terminal left open.
 > **Undo**, which takes the hooks, the shared script and the trust record back
 > out.
 >
-> To decide for yourself instead, turn off **Set up and update agent hooks
-> automatically** in Settings. Nothing is then written until you press
-> **Set up** on an agent.
+> To decide for yourself from then on, turn off **Set up and update agent hooks
+> automatically** in Settings. Nothing more is written until you press
+> **Set up** on an agent — but the first launch has already happened by the
+> time you can reach that switch, so it does not help you look before Vigil
+> writes.
+>
+> To look first, build without launching and start the app with that switch
+> already off for this one run:
+>
+> ```sh
+> make bundle
+> dist/Vigil.app/Contents/MacOS/Vigil -managesAgentHooks '<false/>'
+> ```
+>
+> Vigil then writes nothing until you press **Set up**. Run the binary
+> directly: `make run` and a plain `open dist/Vigil.app` pass no arguments, so
+> the switch never reaches the app. And spell it `'<false/>'` — `false`, `NO`
+> and `0` arrive as strings, which is not the same as `false` and is ignored.
 
 ```sh
 git clone https://github.com/Rupareliaaniket22/vigil
@@ -78,6 +93,9 @@ make run
 ```
 
 Requires macOS 14 or later. No Xcode needed — Command Line Tools is enough.
+Budget about **1 GB of free disk** and two to three minutes: `make run` builds
+a release slice for each architecture and fuses them into one binary. (Measured
+from a clean clone: 2m08s, 503 MB of build output.)
 
 Open the menu bar icon and you should see your agents listed. [SECURITY.md](SECURITY.md#writing-into-other-programs-config-files)
 has the full account of what gets written and what bounds it.
@@ -128,13 +146,59 @@ every other user account on the machine.
 
 ## Not done yet
 
-- **No signed release.** Build from source for now
-- **No auto-update**
+- **No signed release.** Build from source for now. A source build is
+  *ad-hoc* signed, which has one consequence worth knowing before it puzzles
+  you: an ad-hoc signature identifies one exact build and nothing else, so
+  **every `make run` is a different program as far as macOS is concerned.**
+  Any permission you grant Vigil — notifications, most visibly — is granted to
+  that build alone, and the next rebuild has to ask again. A Developer ID
+  signature fixes this permanently; nothing else does
+- **No auto-update.** There is no update check at all. A new version means
+  pulling and rebuilding, and nothing will tell you there is one
 - **OpenCode** uses a JavaScript plugin rather than shell hooks
 - **Desktop apps other than Cursor.** Claude and ChatGPT desktop publish no
   lifecycle events and hold no wake lock of their own, so Vigil cannot see
   them working. It will not guess: an idle window and one waiting on the
   model look the same from outside
+
+## Uninstall
+
+```sh
+Scripts/uninstall.sh --dry-run   # say what would go, change nothing
+Scripts/uninstall.sh
+```
+
+A copy ships inside the app, at
+`Vigil.app/Contents/Resources/uninstall.sh`, because the app is what most
+people will have. **Run it before you drag Vigil to the Trash** — some of what
+it removes can only be removed by the script that goes in the Trash with it.
+
+Dragging Vigil to the Trash on its own leaves: hook entries in up to four
+config files, the shared hook script at `~/.vigil/hooks/vigil-hook.sh`, a
+`<file>.vigil-backup` copy beside each config, the trust records Vigil wrote
+into `~/.codex/config.toml`, a socket under
+`~/Library/Application Support/Vigil`, its preferences, a login item, and — if
+you ever turned on lid-closed working — a passwordless `sudo` rule at
+`/etc/sudoers.d/vigil-clamshell` and a root-owned helper in
+`/Library/PrivilegedHelperTools`. The last two are root-level leftovers from an
+app that no longer exists.
+
+Two things the script deliberately does **not** do:
+
+- **It does not edit your agents' config files.** Taking a hook entry out means
+  rewriting your JSON or TOML around it without disturbing anything else, which
+  is what Vigil does in Swift, with tests, and what a shell script cannot do
+  safely. Remove the hooks from inside the app first — open **Settings…** from
+  the panel, then **Vigil → Remove Vigil from This Mac…** in the menu bar,
+  which takes them out of every agent at once and withdraws the Codex trust
+  records. (The menu bar only shows Vigil's own menu while its Settings window
+  is open; an accessory app has no menu of its own otherwise. **Settings → each
+  agent → Remove** does the same thing one agent at a time.) The script then
+  confirms the files are clean, and tells you which still have entries if you
+  skipped this.
+- **It does not delete your backups.** The `.vigil-backup` files are copies of
+  *your* config from before Vigil first touched it. It names them and leaves
+  them; `--include-backups` deletes them too.
 
 ## Building
 

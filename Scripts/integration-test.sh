@@ -43,7 +43,8 @@
 # `CFFIXED_USER_HOME` does not isolate `UserDefaults`: CFPreferences resolves
 # the real home through `cfprefsd`, so `managesAgentHooks`,
 # `agentsVigilHasSetUp` and `agentsVigilHasTrusted` are read from and written
-# to the developer's real `dev.vigil.app` domain whatever `$HOME` says.
+# to the developer's real `io.github.rupareliaaniket22.vigil` domain whatever
+# `$HOME` says.
 # `agentsVigilHasSetUp` is the record that makes a removal stick, so a run that
 # wrote it would quietly take a real agent out of reach of automatic setup on a
 # machine where nothing visible had changed.
@@ -87,7 +88,7 @@ REAL_CONFIGS=(
 # The preferences that decide whether a removal sticks and what the settings
 # rows say Vigil has done. `UserDefaults`, so a fake home cannot reach them.
 REAL_DEFAULTS=(managesAgentHooks agentsVigilHasSetUp agentsVigilHasTrusted)
-DEFAULTS_DOMAIN="${BUNDLE_ID:-dev.vigil.app}"
+DEFAULTS_DOMAIN="${BUNDLE_ID:-io.github.rupareliaaniket22.vigil}"
 
 APP_PID=""
 
