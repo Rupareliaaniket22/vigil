@@ -795,8 +795,20 @@ final class AppModel {
       // the host's own review command.
       let records = HookInstaller.live(for: integration).selfWrittenTrustRecords()
       guard !records.isEmpty else { continue }
-      renewed.append(integration)
-      if let error = record(records, for: integration) { failure = error }
+      // Recorded only once the write has actually landed. `renewed` is what
+      // the panel's note turns into "Codex only runs hooks you've approved, so
+      // Vigil approved its own" — a claim about somebody else's config file,
+      // and the one sentence in this app whose whole job is to be true. A
+      // `config.toml` the user has made read-only, or one in a shape the
+      // writer refuses, throws here while the install beside it succeeded, so
+      // appending before the write made the note say an approval had been
+      // recorded when nothing had been written and the host would go on
+      // running none of the hooks.
+      if let error = record(records, for: integration) {
+        failure = error
+      } else {
+        renewed.append(integration)
+      }
     }
 
     if !renewed.isEmpty { refreshInstalledAgents() }

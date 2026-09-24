@@ -77,6 +77,23 @@ final class EventBridge {
       return
     }
 
+    // `sockaddr_un.sun_path` is a fixed-size buffer, and the address builder
+    // copies into it without complaining: a path that does not fit binds
+    // *successfully* at a silently truncated one. The bridge then reports
+    // itself listening while every hook — which rebuilds the full path from
+    // `$HOME` and exits 0 when no socket is there — posts into nothing, so the
+    // Mac sleeps in the middle of a run with the panel saying the bridge is up.
+    // `isSocketLive` already refuses a path this long; this is the place that
+    // binds, and it is the one that has to say so.
+    guard Self.fitsInSocketAddress(path) else {
+      let reason =
+        "the socket path is \(path.utf8.count) bytes, and a Unix socket address holds at most "
+        + "\(Self.maximumSocketPathBytes): \(path)"
+      log.error("refusing to bind a truncated socket path: \(reason, privacy: .public)")
+      report(.failed(reason: reason), from: generation)
+      return
+    }
+
     let server = HTTPServer(address: sockaddr_un.unix(path: path))
     let handle = onEvent
 
@@ -182,6 +199,19 @@ final class EventBridge {
     }
   }
 
+  /// How many bytes of path a Unix socket address can carry, not counting the
+  /// terminator. Read off `sockaddr_un` rather than written down, so it stays
+  /// right on a platform that sizes it differently.
+  static var maximumSocketPathBytes: Int {
+    MemoryLayout.size(ofValue: sockaddr_un().sun_path) - 1
+  }
+
+  /// Whether this path can be bound at all, rather than at a truncation of
+  /// itself. The two callers are the bind in `start()` and `isSocketLive`.
+  static func fitsInSocketAddress(_ path: String) -> Bool {
+    path.utf8.count <= maximumSocketPathBytes
+  }
+
   /// Whether something is already listening on this socket.
   ///
   /// A socket file left by a crashed run and one owned by a live instance look
@@ -196,7 +226,7 @@ final class EventBridge {
     var address = sockaddr_un()
     address.sun_family = sa_family_t(AF_UNIX)
     let maxLength = MemoryLayout.size(ofValue: address.sun_path)
-    guard path.utf8.count < maxLength else { return false }
+    guard Self.fitsInSocketAddress(path) else { return false }
 
     _ = withUnsafeMutablePointer(to: &address.sun_path) { pointer in
       path.withCString { source in

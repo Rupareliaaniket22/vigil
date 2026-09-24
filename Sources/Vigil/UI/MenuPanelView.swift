@@ -687,6 +687,16 @@ struct AwakeRow: View {
     case action(String, () -> Void)
   }
 
+  /// The least a row's context column may be squeezed to.
+  ///
+  /// Without a floor the name takes everything it wants — it carries
+  /// `layoutPriority(2)` — and the context beside it is handed whatever is
+  /// left, which on a long enough name is less than an ellipsis is wide. The
+  /// ledger's own worst case drew a single orphaned "U" between a truncated
+  /// process name and its elapsed time, which reads as corruption rather than
+  /// as text that ran out of room.
+  private static let secondaryFloor: CGFloat = 56
+
   var isActive: Bool
   /// False for the ledger, whose rows are not agents and must not borrow the
   /// dot that says one is being watched.
@@ -719,6 +729,7 @@ struct AwakeRow: View {
           .lineLimit(1)
           .truncationMode(secondaryTruncation)
           .layoutPriority(0)
+          .frame(minWidth: Self.secondaryFloor, alignment: .leading)
       }
 
       Spacer(minLength: Theme.Metrics.tight)
@@ -773,7 +784,16 @@ struct AwakeRow: View {
     case .text(let text):
       Text(text)
         .font(Theme.Text.detail)
-        .foregroundStyle(.vigilTertiary)
+        // Secondary, which is what DESIGN.md's colour table asks for: elapsed
+        // time is secondary text, and tertiary is reserved for the idle dot
+        // and for things that are disabled. Tertiary was two levels of grey
+        // below the row's name and one below the path beside it, on the one
+        // column the eye is supposed to be able to run down — and the rail
+        // does not only hold elapsed times. It also holds "needs you", which
+        // was then the palest thing in the panel on the row that most wants
+        // reading, while the two rows with nothing running carried
+        // full-strength "Set up" buttons beside them.
+        .foregroundStyle(.vigilSecondary)
         .monospacedDigit()
         .lineLimit(1)
         // `minWidth`, not `width`. The width pins the elapsed times into a
