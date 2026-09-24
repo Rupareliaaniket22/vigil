@@ -205,11 +205,31 @@ public enum NotificationPolicy {
     // about the one thing it exists to do. That silence is worse than the
     // interruption — they find out when they come back to a sleeping Mac.
     //
-    // `previous.workingCount == 0` makes this strictly the moment work begins,
+    // `previous.liveCount == 0` makes this strictly the moment a *run* begins,
     // so it fires once rather than on every five-second tick for as long as
     // the battery stays low; and `!previous.isHolding` keeps it disjoint from
     // the rule above, which owns every case where a hold actually ended.
-    if !previous.isHolding, !current.isHolding, previous.workingCount == 0,
+    //
+    // `liveCount` on the left and `workingCount` on the right, and the two are
+    // not interchangeable. This read `previous.workingCount == 0`, which is the
+    // same mistake the completion chime made one rule over: `waiting` is not
+    // `working`, so an agent stopping to ask permission empties `workingCount`
+    // without ending the run, and the `PostToolUse` that follows the approval
+    // put it back — which read as work beginning again and raised the alarm all
+    // over again. Somebody approving five prompts under a battery floor got
+    // five time-sensitive alerts, at the one interruption level a Focus does
+    // not silence. The right-hand side stays `workingCount` for the reason
+    // above: a run that is only waiting has no hold to be denied yet.
+    //
+    // What that costs, stated rather than left to be discovered: a run whose
+    // very first tick is a `waiting` one — Vigil launched while an agent was
+    // already sitting at a prompt — is live before it is ever working, so the
+    // approval that starts the work finds `previous.liveCount` at one and says
+    // nothing. Telling that case apart from an approval mid-run needs memory of
+    // whether this run has ever been working, and buying it would put the
+    // repeated alarm back for everyone to catch a case that needs Vigil to have
+    // started inside somebody else's prompt.
+    if !previous.isHolding, !current.isHolding, previous.liveCount == 0,
       current.workingCount > 0, current.reason.isGuardrail
     {
       return .guardrailPreventedHold(reason: current.reason)
@@ -457,12 +477,25 @@ extension NotificationPolicy {
       // No previous snapshot means this is the first tick after launch. Finding
       // agents already running is not a transition worth announcing.
       let spoken =
-        previous.flatMap { was in
+        previous.flatMap { was -> Spoken? in
           // A guardrail cutting in outranks a run ending, and it is judged for
           // the Mac as a whole because that is what a battery floor is about.
-          if let event = NotificationPolicy.guardrailEvent(from: was, to: current) {
-            return record(
+          //
+          // On the announcement, not on the event. `record` returns nil for a
+          // guardrail that is the same one all over again inside the hysteresis
+          // window, and committing to this branch on the event alone meant that
+          // suppression swallowed the run ending beside it — which the next tick
+          // could never make good, because `previousPerAgent` advances below
+          // whatever was said. A run that happened to finish on the same tick as
+          // a repeat guardrail was announced by nothing at all: no chime, no
+          // banner, no record of it having ended. Outranking is about which of
+          // two things gets said; a thing that is not being said outranks
+          // nothing.
+          if let event = NotificationPolicy.guardrailEvent(from: was, to: current),
+            let said = record(
               event, cutShort: current.cutShort, completionSoundEnabled: completionSoundEnabled)
+          {
+            return said
           }
           return runEnding(perAgent: perAgent, completionSoundEnabled: completionSoundEnabled)
         }

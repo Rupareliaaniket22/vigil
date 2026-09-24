@@ -107,6 +107,11 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   nothing here to license or keep
 
 ### Changed
+- The README, SECURITY.md, AGENTS.md, CONTRIBUTING.md and docs/PLAN.md say that
+  Vigil sets agents up at launch without asking, above the command that does it.
+  SECURITY.md gains a third component worth scrutiny — writing into other
+  programs' configuration files — with the byte-for-byte bound on what Vigil may
+  approve, and four things that bound does not cover
 - Vigil keeps its own hook entries current without asking. Every release that
   changes a hook command used to leave every agent reading "out of date", with a
   banner and a click each; Vigil has already been granted management of those
@@ -178,6 +183,47 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Help text that only restated the control above it is gone
 
 ### Fixed
+- `make integration` no longer edits the agent config files of whoever runs it.
+  Hooks are installed at launch now, so the repo's own end-to-end gate was
+  rewriting `~/.claude/settings.json`, `~/.codex/hooks.json`,
+  `~/.codex/config.toml`, `~/.gemini/settings.json` and `~/.cursor/hooks.json`
+  — and Vigil's record of which agents it had set up, which silently takes a
+  real agent out of reach of automatic setup. It runs against a throwaway home
+  with hook management off for that one process, and checks afterwards that it
+  changed none of them
+- Removing an agent's hooks removes the trust records Vigil wrote for them in
+  `~/.codex/config.toml`. They were left behind and described as inert. They
+  are not: the hash covers the hook entry, so reinstalling the same hooks
+  re-armed the old approval and Codex was satisfied without anyone being asked
+  again. Undo now puts back all three things setup wrote
+- Codex approvals are bounded on the bytes of a hook command rather than on
+  Swift's `==`, which is Unicode canonical equivalence. A `hooks.json` naming an
+  accented home directory in a different normal form from the one Vigil writes
+  was admitted as Vigil's own, and then approved under a hash Vigil never
+  predicted — the one place in the path where the value compared and the value
+  hashed came apart
+- The "your Mac may sleep" alert no longer fires again every time a permission
+  prompt is approved. Its once-per-run guard counted working sessions, and a
+  prompt empties that count without ending the run. Five approvals produced five
+  alerts
+- A run that finishes on the same tick as a repeated guardrail warning is
+  announced again. The warning's ten-minute hysteresis suppressed the warning
+  and took the run ending with it, so such a run got no chime and no
+  notification at all
+- An automatic setup pass that fails for more than one agent explains every one
+  of them, rather than only the last. The panel also no longer says "Nothing was
+  changed" when a pass set three agents up and failed the fourth
+- The bridge could bind a truncated socket path and report itself listening.
+  `sun_path` is a fixed 104 bytes and the address builder copied into it without
+  complaining, so a longer path bound successfully at a silently shortened one —
+  and the hook, rebuilding the full path, would have found nothing there and
+  exited 0. Every event dropped in silence, with the panel saying the bridge was
+  up
+- The panel no longer claims an approval that was never written: the agent was
+  marked approved before the trust record was written, and not unmarked when
+  that write threw
+- A ledger row with a long process name could draw a single orphaned capital
+  letter where its context had been squeezed below the width of an ellipsis
 - Claude Code's `Notification` is registered per `notification_type` instead of
   whole. Every value mapped to "waiting", so `elicitation_complete`,
   `auth_success`, `agent_completed`, `computer_use_exit`, `push_notification`

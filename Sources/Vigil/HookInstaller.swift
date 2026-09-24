@@ -78,6 +78,7 @@ struct HookInstaller {
     case trustRecordUnfamiliar(String, String)
     case trustConfigUnfamiliar(String, String)
     case trustConfigUnreadable(String)
+    case trustNotWithdrawn(String, String)
 
     var errorDescription: String? {
       switch self {
@@ -125,6 +126,16 @@ struct HookInstaller {
           + "Open \(host) and run /hooks to approve them there."
       case .trustConfigUnreadable(let path):
         "Couldn't read \(path). Vigil left it untouched."
+      case .trustNotWithdrawn(let path, let host):
+        // Reached only on the way out, and the hooks are already gone by the
+        // time it is. Say that plainly: the removal the user asked for did
+        // happen, and what is left behind is one thing in one file, named here
+        // because leaving it unnamed would make this a worry rather than a
+        // task.
+        "Vigil removed \(host)'s hooks, but couldn't safely take its trust record "
+          + "out of \(path) — so it left that file exactly as it was. The record "
+          + "approves hooks that are no longer there. Delete the matching "
+          + "[hooks.state] entry by hand if you want it gone."
       }
     }
   }
@@ -414,6 +425,56 @@ struct HookInstaller {
 
     try Self.writeReplacing(path, with: Data(updated.utf8))
     Self.log.info("trust recorded for \(integration.displayName, privacy: .public)")
+  }
+
+  /// Take Vigil's own approvals back out of the host's trust file.
+  ///
+  /// The mirror of `recordTrust(_:)`, and it takes its list the same way and
+  /// for the same reason: the caller has already narrowed it to entries Vigil
+  /// can prove it wrote, and this must never be able to widen it. It has to be
+  /// *called* the other way round, though — the records are derived from the
+  /// hook entries, so they can only be worked out while those entries are still
+  /// in the file. `AppModel.uninstallHooks` reads them before it removes
+  /// anything.
+  ///
+  /// `CodexTrustWriter.remove` refuses the same shapes `apply` refuses and
+  /// leaves any record whose hash is not the one being removed, so what is left
+  /// here is the file handling — the same backup and atomic rename a settings
+  /// file gets, skipped entirely when there was nothing of ours to take out.
+  ///
+  /// Returns whether anything was actually taken out, which is not the same
+  /// question as whether this succeeded. Nothing to remove is a success and the
+  /// commonest one: three of the four hosts have no trust file at all, and a
+  /// record whose hash is not the one being withdrawn belongs to whoever wrote
+  /// it and stays. Only a true answer entitles the caller to stop saying Vigil
+  /// recorded an approval here.
+  @discardableResult
+  func removeTrust(_ records: [CodexTrustWriter.Record]) throws -> Bool {
+    guard integration.requiresHookTrust, !records.isEmpty else { return false }
+    let path = codexConfigFilePath
+    // An absent file holds no records. `readTrustConfig` would answer the same
+    // empty string, but going on to "write" it would create a `config.toml`
+    // Codex never had, for a host the user may not even run.
+    guard FileManager.default.fileExists(atPath: path) else { return false }
+    let current = try Self.readTrustConfig(at: path)
+
+    let updated: String
+    do {
+      updated = try CodexTrustWriter.remove(records, from: current)
+    } catch {
+      // The write path tells `unfamiliarRecord` and `unfamiliarConfig` apart
+      // because they send the reader to different places — one record in the
+      // way, or a file nothing in can be located in. Taking a record *out*
+      // collapses them: either way the approval is still in `config.toml`,
+      // Vigil will not touch it, and the only thing the user can do about it is
+      // open that file. One sentence, and it names the file.
+      throw InstallError.trustNotWithdrawn(path, integration.displayName)
+    }
+
+    guard updated != current else { return false }
+    try Self.writeReplacing(path, with: Data(updated.utf8))
+    Self.log.info("trust withdrawn for \(integration.displayName, privacy: .public)")
+    return true
   }
 
   // MARK: - Files

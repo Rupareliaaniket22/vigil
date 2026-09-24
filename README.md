@@ -12,7 +12,7 @@ Not a minute longer.
 [![Platform](https://img.shields.io/badge/platform-macOS-1C1C1E?style=flat-square)](https://www.apple.com/macos/)
 [![Requirements](https://img.shields.io/badge/requires-macOS%2014%2B-FFB340?style=flat-square)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-6-FFB340?style=flat-square)](https://swift.org)
-[![Tests](https://img.shields.io/badge/tests-156-1C1C1E?style=flat-square)](Tests)
+[![Tests](https://img.shields.io/badge/tests-420-1C1C1E?style=flat-square)](Tests)
 [![License](https://img.shields.io/github/license/Rupareliaaniket22/vigil?style=flat-square&color=1C1C1E)](LICENSE)
 
 </div>
@@ -51,6 +51,26 @@ run in progress and a terminal left open.
 
 ## Install
 
+> [!IMPORTANT]
+> **Vigil wires your agents up the moment it launches, without asking** — and
+> the command below is that moment, not a later click. Read this first.
+>
+> On launch, Vigil looks for Claude Code, Codex, Gemini CLI and Cursor and
+> writes a hook into the config of each one it finds:
+> `~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.gemini/settings.json`,
+> `~/.cursor/hooks.json`. Codex runs no hook it has not approved, so Vigil also
+> writes a trust record for its own entries into `~/.codex/config.toml`.
+>
+> Every file is copied to `<file>.vigil-backup` before its first edit, nothing
+> else in it is changed, and a file Vigil cannot parse is left alone rather than
+> rewritten. The menu bar panel says which agents it set up and offers
+> **Undo**, which takes the hooks, the shared script and the trust record back
+> out.
+>
+> To decide for yourself instead, turn off **Set up and update agent hooks
+> automatically** in Settings. Nothing is then written until you press
+> **Set up** on an agent.
+
 ```sh
 git clone https://github.com/Rupareliaaniket22/vigil
 cd vigil
@@ -59,9 +79,8 @@ make run
 
 Requires macOS 14 or later. No Xcode needed — Command Line Tools is enough.
 
-Then click the icon in your menu bar and choose **Set up**. Vigil finds the
-agents you have installed, adds a hook to each, and keeps a backup of every file
-it touches.
+Open the menu bar icon and you should see your agents listed. [SECURITY.md](SECURITY.md#writing-into-other-programs-config-files)
+has the full account of what gets written and what bounds it.
 
 ## Features
 
@@ -120,12 +139,16 @@ every other user account on the machine.
 ## Building
 
 ```sh
-make test             # 156 tests
+make test             # unit tests
 make lint             # swift-format, strict
 make smoke            # builds the real panel headlessly
 make integration      # drives a live app, checks macOS's power state follows
 make bundle           # universal, signed .app
 ```
+
+`make integration` launches Vigil against a throwaway home directory, so it
+sets up no agents and touches none of your own config — and it checks that it
+did not, rather than assuming.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) · [AGENTS.md](AGENTS.md) · [DESIGN.md](DESIGN.md)
 

@@ -129,10 +129,20 @@ enum HookManagement {
   /// the settings row can *say so afterwards*, which is the whole difference
   /// between doing something automatically and doing it secretly.
   ///
-  /// Never cleared either. A host Vigil has approved for is one Vigil has
-  /// approved for, and the row goes on saying it — including after the user
-  /// turns automatic management off, because the record is still in their
-  /// `config.toml` and they are entitled to know how it got there.
+  /// Kept for as long as the record is, and cleared with it. A host Vigil has
+  /// approved for is one Vigil has approved for, and the row goes on saying it
+  /// — including after the user turns automatic management off, because the
+  /// record is still in their `config.toml` and they are entitled to know how
+  /// it got there. That last clause is the whole justification, so when Vigil
+  /// takes the record back out of `config.toml` the justification goes with it:
+  /// a row still claiming an approval Vigil has just withdrawn would be the
+  /// same kind of untruth this disclosure exists to prevent.
+  ///
+  /// Not the same rule as `setUpKey` above, and the difference is the point.
+  /// That one records a decision the *user* made and is never cleared, because
+  /// a file with nothing of ours in it cannot say whether it was emptied. This
+  /// one records a decision *Vigil* made, and Vigil knows perfectly well when
+  /// it has unmade it.
   private static let selfTrustedKey = "agentsVigilHasTrusted"
 
   static func hasBeenSetUp(_ agent: AgentKind) -> Bool { contains(agent, in: setUpKey) }
@@ -142,6 +152,11 @@ enum HookManagement {
     contains(agent, in: selfTrustedKey)
   }
   static func rememberSelfTrusted(_ agent: AgentKind) { remember(agent, in: selfTrustedKey) }
+
+  /// Only ever called with a withdrawal that actually landed — see
+  /// `HookInstaller.removeTrust(_:)`, which answers false for a record it left
+  /// alone.
+  static func forgetSelfTrusted(_ agent: AgentKind) { forget(agent, in: selfTrustedKey) }
 
   /// Stored as a sorted array of raw values: `UserDefaults` holds no sets, and
   /// a stable order keeps a plist diff readable for anyone who looks.
@@ -153,6 +168,20 @@ enum HookManagement {
     var stored = Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
     guard stored.insert(agent.rawValue).inserted else { return }
     UserDefaults.standard.set(stored.sorted(), forKey: key)
+  }
+
+  /// Removes the key outright once the last agent leaves it, rather than
+  /// leaving an empty array behind: `object(forKey:)` is how everything here
+  /// tells "never set" from "set to nothing", and a stored `[]` is the one
+  /// value that makes those two look the same to anyone reading the plist.
+  private static func forget(_ agent: AgentKind, in key: String) {
+    var stored = Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
+    guard stored.remove(agent.rawValue) != nil else { return }
+    if stored.isEmpty {
+      UserDefaults.standard.removeObject(forKey: key)
+    } else {
+      UserDefaults.standard.set(stored.sorted(), forKey: key)
+    }
   }
 }
 

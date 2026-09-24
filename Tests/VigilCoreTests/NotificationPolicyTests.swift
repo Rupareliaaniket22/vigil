@@ -158,6 +158,32 @@ struct NotificationPolicyTests {
         == nil)
   }
 
+  /// The same bug the completion chime had, one rule over: `waiting` is not
+  /// `working`, so a permission prompt takes `workingCount` to zero and the
+  /// next `PostToolUse` puts it back — which read as work beginning again and
+  /// raised the alarm a second time. A user approving five prompts under a
+  /// battery floor got five alerts.
+  @Test("a permission prompt is not work beginning again")
+  func aPromptUnderAGuardrailDoesNotRewarn() {
+    let reason = WakeReason.batteryBelowFloor(percent: 12, floor: 20)
+    let working = state(working: 1, holding: false, reason: reason)
+    let prompt = state(working: 0, waiting: 1, holding: false, reason: reason)
+    let resumed = state(working: 1, waiting: 0, holding: false, reason: reason)
+    #expect(NotificationPolicy.event(from: working, to: prompt) == nil)
+    #expect(NotificationPolicy.event(from: prompt, to: resumed) == nil)
+  }
+
+  /// And the run after it is a new run: the guard is `liveCount`, so the
+  /// warning re-arms the moment the last session actually leaves.
+  @Test("the next run under the same guardrail is warned about again")
+  func theNextRunWarnsAgain() {
+    let reason = WakeReason.lowPowerMode
+    let over = state(working: 0, waiting: 0, holding: false, reason: reason)
+    let next = state(working: 1, holding: false, reason: reason)
+    #expect(
+      NotificationPolicy.event(from: over, to: next) == .guardrailPreventedHold(reason: reason))
+  }
+
   /// A pause is not a guardrail, here either — starting work during one is the
   /// user's own arrangement, and the app has already been told.
   @Test("starting work during a pause says nothing")
@@ -1051,5 +1077,123 @@ struct GuardrailRunTests {
     loop.now = loop.now.advanced(by: 5)
     loop.hook(.claudeCode, "s", "PostToolUse")
     #expect(loop.tick()?.announcement == .guardrailStoppedHold, "heat is not the battery")
+  }
+}
+
+/// The two places the guardrail rules meet the rest of the loop: a run that
+/// keeps stopping to ask, and a run that ends on a tick a guardrail has already
+/// been spoken for.
+@Suite("Guardrails and the rest of the run")
+struct GuardrailInterleavingTests {
+
+  /// Every approval was an alert. The alarm's "fires once" guard counted
+  /// `working`, and a permission prompt empties `working` without emptying the
+  /// run — so answering the prompt read as a brand new run starting under the
+  /// same battery floor, over and over, at the one interruption level a Focus
+  /// does not silence.
+  @Test("approving prompts under a guardrail raises one alarm, not one each")
+  func approvalsDoNotRefireTheAlarm() {
+    var loop = Loop()
+    loop.settings = WakeSettings(batteryFloorPercent: 20)
+    loop.conditions = PowerConditions(batteryPercent: 12, isPluggedIn: false)
+    loop.tick()
+
+    loop.hook(.claudeCode, "s", "UserPromptSubmit")
+    #expect(loop.tick()?.announcement == .guardrailPreventedHold, "the run began under it")
+
+    var alarms = 0
+    for _ in 0..<5 {
+      loop.now = loop.now.advanced(by: 5)
+      loop.hook(.claudeCode, "s", "Notification", payload: "permission_prompt")
+      if loop.tick()?.announcement == .guardrailPreventedHold { alarms += 1 }
+      loop.now = loop.now.advanced(by: 5)
+      loop.hook(.claudeCode, "s", "PostToolUse")
+      if loop.tick()?.announcement == .guardrailPreventedHold { alarms += 1 }
+    }
+    #expect(alarms == 0, "five approvals is five alerts nobody asked for")
+  }
+
+  /// And the alarm is not simply spent for good: the next run is a new run
+  /// under the same floor, and it is warned about.
+  @Test("the run after the prompts still gets its own alarm")
+  func theNextRunIsStillWarned() {
+    var loop = Loop()
+    loop.settings = WakeSettings(batteryFloorPercent: 20)
+    loop.conditions = PowerConditions(batteryPercent: 12, isPluggedIn: false)
+    loop.tick()
+
+    loop.hook(.claudeCode, "s", "UserPromptSubmit")
+    #expect(loop.tick()?.announcement == .guardrailPreventedHold)
+    loop.hook(.claudeCode, "s", "Stop")
+    loop.now = loop.now.advanced(by: 5)
+    loop.tick()
+
+    loop.now = loop.now.advanced(by: 30)
+    loop.hook(.claudeCode, "t", "UserPromptSubmit")
+    #expect(loop.tick()?.announcement == .guardrailPreventedHold)
+  }
+
+  /// `observe` committed to the guardrail branch on the *event* existing, but a
+  /// repeat guardrail inside the hysteresis window produces an event and no
+  /// announcement — and by then the run ending had been skipped. The snapshots
+  /// advance on the same tick, so it could never fire later either: a run that
+  /// finished alongside a suppressed guardrail was never announced at all.
+  @Test("a run that ends beside a suppressed guardrail is still announced")
+  func aSuppressedGuardrailDoesNotSwallowTheEnding() {
+    var loop = Loop()
+    loop.settings = WakeSettings(batteryFloorPercent: 20)
+    loop.conditions = PowerConditions(batteryPercent: 80, isPluggedIn: false)
+    loop.tick()
+
+    // Two hosts running at once, so one can end while the machine as a whole
+    // still has work for a guardrail to take a hold away from.
+    loop.hook(.claudeCode, "c", "UserPromptSubmit")
+    loop.hook(.codex, "x", "UserPromptSubmit")
+    #expect(loop.tick() == nil)
+
+    // The battery crosses its floor: the hold ends, and this is the first time,
+    // so it is announced.
+    loop.now = loop.now.advanced(by: 5)
+    loop.conditions.batteryPercent = 19
+    loop.hook(.claudeCode, "c", "PostToolUse")
+    loop.hook(.codex, "x", "PostToolUse")
+    #expect(loop.tick()?.announcement == .guardrailStoppedHold)
+
+    // Back above the floor, holding again — but for well under the ten minutes
+    // the warning needs to be clear before it re-arms.
+    loop.now = loop.now.advanced(by: 5)
+    loop.conditions.batteryPercent = 80
+    loop.hook(.claudeCode, "c", "PostToolUse")
+    loop.hook(.codex, "x", "PostToolUse")
+    #expect(loop.tick() == nil)
+
+    // And down again on the very tick Codex finishes. The guardrail event is
+    // there and is suppressed as a repeat; Codex's run is over and nothing else
+    // in the app will ever say so.
+    loop.now = loop.now.advanced(by: 5)
+    loop.conditions.batteryPercent = 19
+    loop.hook(.claudeCode, "c", "PostToolUse")
+    loop.hook(.codex, "x", "Stop")
+    #expect(loop.tick()?.event == .allAgentsFinished(count: 1))
+  }
+
+  /// The precedence itself is untouched: a guardrail that *is* announced still
+  /// outranks a run ending on the same tick.
+  @Test("a guardrail that is announced still comes first")
+  func anAnnouncedGuardrailStillOutranksTheEnding() {
+    var loop = Loop()
+    loop.settings = WakeSettings(batteryFloorPercent: 20)
+    loop.conditions = PowerConditions(batteryPercent: 80, isPluggedIn: false)
+    loop.tick()
+
+    loop.hook(.claudeCode, "c", "UserPromptSubmit")
+    loop.hook(.codex, "x", "UserPromptSubmit")
+    loop.tick()
+
+    loop.now = loop.now.advanced(by: 5)
+    loop.conditions.batteryPercent = 19
+    loop.hook(.claudeCode, "c", "PostToolUse")
+    loop.hook(.codex, "x", "Stop")
+    #expect(loop.tick()?.announcement == .guardrailStoppedHold)
   }
 }

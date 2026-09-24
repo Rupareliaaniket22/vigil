@@ -25,6 +25,16 @@ checking that macOS's power state actually follows. The unit tests cover the
 decision logic and `make smoke` covers the panel building; this covers the part
 neither can.
 
+It is safe to run on your own machine, and that took work: Vigil installs hooks
+into your agents' config files the moment it launches, so for a while this gate
+edited `~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.codex/config.toml`,
+`~/.gemini/settings.json` and `~/.cursor/hooks.json` on whoever ran it. It now
+launches the binary directly against a throwaway home with automatic hook
+management switched off for that one process, and its last three checks confirm
+your five real files and Vigil's own record of what it has set up came through
+untouched. If you change how the app is launched there, keep those checks — they
+are what makes the rest of the script safe to ask people to run.
+
 Run `make format` to fix formatting automatically.
 
 ## Where code belongs

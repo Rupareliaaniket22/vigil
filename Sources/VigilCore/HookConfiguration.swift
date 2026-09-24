@@ -58,6 +58,45 @@ public enum HookConfiguration {
   struct WrittenEntry: Hashable {
     let matcher: String?
     let command: String
+
+    /// The same entry spelled in the same bytes — which `==` does not mean.
+    ///
+    /// Swift compares and hashes strings under Unicode canonical equivalence:
+    /// `é` as one scalar and `e` followed by a combining acute are one string
+    /// to `==`, to `Hashable`, and therefore to `Set.contains`. That is the
+    /// right answer almost everywhere here, because those are two spellings of
+    /// one real path — macOS filesystems match paths without regard to normal
+    /// form, so both run the same script — and it is the wrong answer in
+    /// exactly one place: `CodexTrustWriter.selfWrittenRecords`, which compares
+    /// an entry and then hashes it. `CodexHookTrust.identityHash` hashes the
+    /// file's actual bytes, so a comparison decided on the normalised form
+    /// admits a command Vigil did not write and approves it under a hash Vigil
+    /// never predicted. The value compared and the value hashed have to be the
+    /// same value, and the hash is not negotiable — Codex computes it from the
+    /// bytes in `hooks.json` — so the comparison is what moves.
+    ///
+    /// This is not a rule against non-ASCII homes. Vigil builds both sides from
+    /// the same `scriptPath`, read from `homeDirectoryForCurrentUser` on every
+    /// pass, so a genuinely decomposed home directory writes decomposed
+    /// commands and matches its own. Only a file something *else* respelled
+    /// fails here, and failing is what it is for: no record, still untrusted,
+    /// and a note in front of the user.
+    func isByteIdentical(to other: WrittenEntry) -> Bool {
+      HookConfiguration.sameBytes(command, other.command)
+        && HookConfiguration.sameBytes(matcher, other.matcher)
+    }
+  }
+
+  /// String equality on the UTF-8 rather than on Unicode's terms.
+  ///
+  /// Two absent matchers are the same matcher; one absent and one present are
+  /// not, whatever the present one says.
+  static func sameBytes(_ a: String?, _ b: String?) -> Bool {
+    switch (a, b) {
+    case (nil, nil): true
+    case (let a?, let b?): a.utf8.elementsEqual(b.utf8)
+    default: false
+    }
   }
 
   /// Our entries inside one group, in either shape a host might use.

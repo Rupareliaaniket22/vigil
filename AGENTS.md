@@ -30,13 +30,28 @@ not an oversight.
 launches a real app and checks the power assertion actually follows hook events
 — run it when you touch the bridge, the model or the policy.
 
+`make integration` is safe to run on the machine you are working on, and the
+reason it needs saying is that for several commits it was not. Launching Vigil
+is itself a write — `AppModel.start()` calls `maintainHooks()` — so a gate that
+launched the app edited the four agents' settings files and `config.toml`
+belonging to whoever ran it. Two things stop that now, and either would be
+enough on its own: `CFFIXED_USER_HOME` points the app at a throwaway home
+(which is why the script launches `Contents/MacOS/Vigil` directly — `open` goes
+through LaunchServices and inherits none of this shell's environment), and
+`-managesAgentHooks '<false/>'` turns automatic management off for that one
+process through Foundation's argument domain, which is the only part that can
+reach `UserDefaults` — a fake home cannot, because CFPreferences resolves the
+real home through `cfprefsd`. The script's last three checks verify all of that
+actually held. Do not remove them, and do not go back to `open`.
+
 `make hooktest` drives `hooks/vigil-hook.sh` against a fake home and a stand-in
 socket — run it when you touch the hook script. It sits outside `make test`
 because its timing case has to watch a producer that keeps producing, and that
 costs seconds by construction; `make test` is a sub-second loop people run
 constantly and should stay one. It is not `make integration` either: that needs
-a real signed app and real power assertions and cannot run while an instance is
-up, and this needs neither.
+a real signed app and real power assertions, and it stops any instance you have
+running so that only one Vigil is in the assertion ledger. This needs none of
+that.
 
 Run `make format`
 rather than hand-fixing style; `.swift-format` is the only source of truth for

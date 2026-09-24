@@ -10,7 +10,104 @@ public issue.
 Vigil's normal operation needs **no elevated privileges**. The wake lock uses
 `IOPMAssertionCreateWithName`, available to any user process.
 
-Two components deserve scrutiny:
+Three components deserve scrutiny. The third has by far the largest blast
+radius, and unlike the other two it is on by default.
+
+### Writing into other programs' config files
+
+Vigil edits four other programs' configuration, automatically, at launch, with
+no prompt. This is the part of Vigil to read closely.
+
+`AppModel.start()` calls `maintainHooks()`, which for every agent it finds
+writes a hook entry into that agent's own settings file:
+
+| File | What Vigil writes |
+| :-- | :-- |
+| `~/.claude/settings.json` | Hook entries invoking `~/.vigil/hooks/vigil-hook.sh` |
+| `~/.codex/hooks.json` | The same |
+| `~/.gemini/settings.json` | The same |
+| `~/.cursor/hooks.json` | The same |
+| `~/.codex/config.toml` | A `[hooks.state."…"]` trust record for those entries |
+
+The same pass runs again every time the menu bar panel is opened. Nobody is
+asked, on either occasion. The argument for that is in `HookMaintenance`: a
+prompt that fires on every release is a prompt people learn to click through,
+and installing hooks is the whole of what this app does. The argument against
+it is that a program which edits other programs' configuration unbidden is
+exactly the shape of thing a threat model exists to describe, so here is the
+description.
+
+**Every write is bounded, in four separate ways:**
+
+- **Backups.** The original file is copied to `<file>.vigil-backup` before the
+  first edit, once — not on every write, or the backup would become Vigil's own
+  output after the second one.
+- **Atomic replacement**, following a symlink to its target first, carrying the
+  original file mode across, and refusing outright to touch a file the user has
+  made read-only.
+- **Refusal over guessing.** A settings file that will not parse, one holding
+  JSON comments, or one whose hook entries are in a shape Vigil does not
+  recognise is reported to the user and left exactly as it was. Vigil never
+  overwrites an entry belonging to another tool.
+- **A byte-for-byte bound on what may be approved.** This is the one that
+  matters most, because approving a hook is the step that makes a hook *run*.
+
+#### The bound on the trust record
+
+Codex will not run a hook it has no matching `trusted_hash` for. Vigil writes
+that record for itself, so the record is the only thing standing between "Vigil
+wrote an entry" and "Codex executes it".
+
+What bounds it is `CodexTrustWriter.selfWrittenRecords`, and it is one rule:
+**a record is written only for an entry whose command is byte-for-byte the
+string `HookConfiguration.command(scriptPath:integration:registration:)`
+produces today for that integration**, under the event it is filed under, with
+that registration's matcher and the timeout Codex would assume. Byte-for-byte
+is meant literally — the comparison is on UTF-8 bytes, not Swift's `==`, which
+is Unicode canonical equivalence and once admitted a command naming the same
+home directory in the other normal form. Anything that fails the comparison
+gets no record, stays untrusted, and is shown to the user with a pointer to
+Codex's own `/hooks` command.
+
+So Vigil cannot approve an entry it did not itself write. An attacker who adds
+a hook to `hooks.json` gains nothing from Vigil: their entry fails the
+comparison and Codex goes on refusing it.
+
+#### What that bound does not cover
+
+- **It does not cover the script.** Codex's `trusted_hash` is computed over the
+  hook *entry* — event, command string, timeout, matcher — and not over the
+  contents of the file the command points at. `~/.vigil/hooks/vigil-hook.sh`
+  never appears in the hashed identity. **Anyone who can write that file gets
+  their code run inside every agent session on the machine, and neither Codex's
+  gate nor Vigil's bound will notice**, because the hash has never covered it
+  and could not. The script lives under the user's home directory at mode 0755;
+  it is protected by filesystem permissions and by nothing else. This is not a
+  weakness Vigil's self-approval introduced — the gate never covered it — but
+  it is the thing a reader of "Vigil approves its own hooks" most needs to know.
+- **It does not cover the installation.** The bound governs what Vigil may
+  *approve*, not what Vigil may *write*. Hook entries go into all four files
+  with no prompt and no equivalent narrowing beyond "don't touch what isn't
+  ours".
+- **It does not cover consent.** Nothing here is a permission check. The
+  defence against an unwanted write is disclosure and a switch — the panel
+  names the agents it set up, the settings row says when Vigil recorded a host's
+  approval, and **Set up and update agent hooks automatically** turns the whole
+  pass off — not a dialog.
+- **It does not reach a record Vigil did not write.** Removing Vigil's hooks
+  now also removes the trust records Vigil wrote, so an undo is a real undo and
+  a later reinstall is not silently pre-approved. But a record filed under one
+  of Vigil's keys holding a hash Vigil did not write belongs to whoever wrote
+  it, and Vigil leaves it alone rather than guessing.
+- **It says nothing about the other three hosts.** Claude Code, Gemini CLI and
+  Cursor have no trust gate. A hook entry in their settings files runs because
+  it is there.
+
+`CodexTrustWriter` refuses to edit `config.toml` at all when it meets a shape
+it cannot rewrite unambiguously — a dotted key under `[hooks.state]`, an inline
+table, an array of tables, a value it cannot find the end of. The reasoning is
+that a `config.toml` Codex cannot parse does not cost the user their wake lock,
+it costs them Codex. The same refusal governs removal.
 
 ### The hook bridge
 

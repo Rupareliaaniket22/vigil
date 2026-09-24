@@ -231,3 +231,92 @@ struct CodexSelfTrustTests {
     #expect(selfRecords(elsewhere).isEmpty)
   }
 }
+
+/// A home directory with an accent in it, spelled two ways.
+///
+/// Both name one real file: macOS filesystems compare paths without regard to
+/// normal form, and a Mac whose home directory is `/Users/José` hands its path
+/// out in whichever form the thing that created it used. So this is not exotic
+/// input — it is what a perfectly ordinary non-ASCII account produces the
+/// moment two different programs write the same path into the same file.
+private let precomposed =
+  "/Users/Jos\u{00E9}/.vigil/hooks/vigil-hook.sh"
+private let decomposed = "/Users/Jose\u{0301}/.vigil/hooks/vigil-hook.sh"
+
+/// Rewrite every one of our commands through `spell`, leaving the rest of the
+/// file exactly as it was.
+private func respelling(
+  _ settings: [String: Any], path: String, _ spell: (String) -> String
+) -> [String: Any] {
+  var settings = settings
+  var hooks = settings["hooks"] as? [String: Any] ?? [:]
+  for (event, value) in hooks {
+    guard let groups = value as? [[String: Any]] else { continue }
+    hooks[event] = groups.map { group -> [String: Any] in
+      guard let handlers = group["hooks"] as? [[String: Any]] else { return group }
+      var rewritten = group
+      rewritten["hooks"] = handlers.map { entry -> [String: Any] in
+        guard let command = entry["command"] as? String,
+          HookConfiguration.isVigilHook(command, scriptPath: path)
+        else { return entry }
+        var respelled = entry
+        respelled["command"] = spell(command)
+        return respelled
+      }
+      return rewritten
+    }
+  }
+  settings["hooks"] = hooks
+  return settings
+}
+
+/// The bound is on the bytes, and Swift's `==` is not.
+///
+/// `String ==` is Unicode canonical equivalence, so the two spellings above
+/// compare equal and hash equal — while `CodexHookTrust.identityHash` hashes
+/// the file's actual bytes. That is the one place in this path where the value
+/// compared and the value hashed come apart, and it is the whole safeguard.
+@Suite("The trust bound is on the bytes")
+struct CodexTrustByteIdentityTests {
+
+  @Test("the two spellings really are one string to Swift and two to a hash")
+  func theyDifferOnlyInBytes() {
+    #expect(precomposed == decomposed, "Swift compares them equal — that is the hazard")
+    #expect(
+      !Array(precomposed.utf8).elementsEqual(Array(decomposed.utf8)),
+      "and they are not the same bytes, which is what Codex hashes")
+  }
+
+  @Test(
+    "a command respelled in another normal form is not one Vigil wrote",
+    arguments: [(precomposed, decomposed), (decomposed, precomposed)])
+  func respelledCommandsAreRefused(ours: String, theirs: String) {
+    let settings = HookConfiguration.install(into: [:], scriptPath: ours, integration: .codex)
+    let respelled = respelling(settings, path: ours) { command in
+      command.replacingOccurrences(of: ours, with: theirs)
+    }
+    #expect(
+      CodexTrustWriter.selfWrittenRecords(
+        hooks: respelled, hooksPath: hooksPath, scriptPath: ours, integration: .codex
+      ).isEmpty,
+      "the bytes in the file are not the bytes Vigil writes, so there is nothing to approve")
+  }
+
+  /// And the bound is not simply "refuse anything with an accent in it": a Mac
+  /// whose home directory is genuinely decomposed writes decomposed commands,
+  /// reads them back, and renews them like any other.
+  @Test(
+    "a non-ASCII home directory still approves its own entries",
+    arguments: [precomposed, decomposed])
+  func ownEntriesStillRenew(path: String) throws {
+    let settings = HookConfiguration.install(into: [:], scriptPath: path, integration: .codex)
+    let records = CodexTrustWriter.selfWrittenRecords(
+      hooks: settings, hooksPath: hooksPath, scriptPath: path, integration: .codex)
+    #expect(!records.isEmpty)
+    let after = try CodexTrustWriter.apply(records, to: "")
+    #expect(
+      CodexHookTrust.status(
+        hooks: settings, hooksPath: hooksPath, configTOML: after, scriptPath: path,
+        integration: .codex) == .trusted)
+  }
+}

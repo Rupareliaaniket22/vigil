@@ -484,7 +484,19 @@ final class AppModel {
         !support.isUsable ? .hostTooOld : (trusted.isSatisfied ? .ready : .untrusted)
     }
     installedAgents = Set(setupStates.filter { $0.value == .ready }.map(\.key))
-    setupError = error
+    // Every agent failing at once, not one. A maintenance pass touches all of
+    // them and now reports all of them, so one installer sentence stopped being
+    // the worst shape this string can be in the moment `SetupFailure.summary`
+    // arrived. The caller passes the sentence and this repeats it under every
+    // agent's name — read off the integrations, so the build that ships a fifth
+    // agent measures a fifth line without anybody remembering to come back.
+    //
+    // What the views do with it is the point of measuring: both hold it to a
+    // line cap and put the whole of it on `.help()`, so this has to come out
+    // the same height as one failure did. If it ever does not, this is where
+    // the build finds out.
+    setupError = SetupFailure.summary(
+      of: AgentIntegration.all.map { SetupFailure(host: $0.displayName, reason: error) })
     self.helperNotice = helperNotice
     // Which of the two things the lid section can say is on screen. They are
     // mutually exclusive — a drifted helper is only worth warning about once
@@ -670,9 +682,34 @@ final class AppModel {
     return nil
   }
 
+  /// Take Vigil back out of an agent: the hook entries, the shared script, and
+  /// the host's record of having approved them.
+  ///
+  /// The third of those used to be left behind, and the code called what
+  /// remained "inert orphaned keys". A `[hooks.state."…"]` record is not inert.
+  /// It is keyed by the hooks file, the event, the group and the handler, and
+  /// its hash covers the entry — so writing the same entries back produces the
+  /// same keys and the same hashes, and the host is satisfied by a decision the
+  /// user is never asked to make again. Which meant this function did not do
+  /// what the button above it says: Undo put the file back and left the
+  /// approval armed.
+  ///
+  /// The records have to be read *before* anything is removed, because they are
+  /// derived from the hook entries themselves — after `uninstall()` there is
+  /// nothing left in `hooks.json` to derive them from, and a list worked out
+  /// afterwards would be empty for every host. That is the whole reason this
+  /// reads first and writes second.
+  ///
+  /// The order after that is: hooks out, then approval out. A failed
+  /// `uninstall()` leaves the entries in place, and withdrawing the approval
+  /// for entries that are still there would leave the user with hooks their
+  /// host has quietly stopped running — worse than the state they were in and
+  /// harder to see.
   func uninstallHooks(for integration: AgentIntegration) {
+    let installer = HookInstaller.live(for: integration)
+    let recorded = installer.selfWrittenTrustRecords()
     do {
-      try HookInstaller.live(for: integration).uninstall()
+      try installer.uninstall()
       // Removal is a decision, and this is where it is recorded. Ordinarily
       // the agent is already remembered — Vigil installed the hooks it is
       // taking out — but somebody removing hooks installed by a build that
@@ -680,6 +717,18 @@ final class AppModel {
       // next panel open, which is the one outcome this must never produce.
       HookManagement.rememberSetUp(integration.id)
       setupError = nil
+      // Reported rather than swallowed, and it does not undo the removal above
+      // it. The hooks really are gone; what failed is one file Vigil has
+      // decided it cannot edit safely, and the message names it so the user can
+      // finish the job by hand if they want to.
+      //
+      // The disclosure is dropped only on a withdrawal that landed. `false`
+      // here means the record is still in `config.toml` — Vigil left one it
+      // could not prove was its own — and a settings row that stopped saying so
+      // would be hiding a live approval rather than reporting a removed one.
+      if try installer.removeTrust(recorded) {
+        HookManagement.forgetSelfTrusted(integration.id)
+      }
     } catch {
       setupError = error.localizedDescription
     }
@@ -746,9 +795,15 @@ final class AppModel {
     guard HookManagement.manages else { return }
 
     var acted = false
-    // The last thing that went wrong, or nil. Collected rather than written
-    // straight into `setupError` — see `performInstall`.
-    var failure: String?
+    // Everything that went wrong, in the order it happened. Collected rather
+    // than written straight into `setupError` — see `performInstall` — and a
+    // list rather than a slot, which is the other half of the same argument.
+    // One slot written on every error reported whichever agent failed last and
+    // lost the first one's reason entirely, on a path where nobody pressed
+    // anything and so nobody is waiting to notice. `SetupFailure.summary(of:)`
+    // is what turns them back into one sentence without letting four of them
+    // become four paragraphs.
+    var failures: [SetupFailure] = []
     // Agents whose hooks Vigil wrote here for the first time. Only these are
     // worth telling the user about: bringing an install up to date is
     // maintenance of a job already granted, and announcing it on every release
@@ -766,7 +821,7 @@ final class AppModel {
       else { continue }
       acted = true
       if let error = performInstall(for: integration) {
-        failure = error
+        failures.append(SetupFailure(host: integration.displayName, reason: error))
         continue
       }
       // The state as it was before the write decides whether this is news.
@@ -805,7 +860,7 @@ final class AppModel {
       // recorded when nothing had been written and the host would go on
       // running none of the hooks.
       if let error = record(records, for: integration) {
-        failure = error
+        failures.append(SetupFailure(host: integration.displayName, reason: error))
       } else {
         renewed.append(integration)
       }
@@ -815,7 +870,7 @@ final class AppModel {
 
     // Only where something was attempted. A pass with nothing to do must not
     // wipe an error the user is still reading from the press that caused it.
-    if acted || !renewed.isEmpty { setupError = failure }
+    if acted || !renewed.isEmpty { setupError = SetupFailure.summary(of: failures) }
 
     guard !announced.isEmpty else { return }
     // Appended rather than replaced: an agent set up at launch and a second
@@ -838,9 +893,15 @@ final class AppModel {
 
   /// Put back what the last automatic setup did, and make sure it stays put.
   ///
-  /// `uninstallHooks` records each agent as one Vigil has set up, which is what
-  /// stops the next panel open putting the hooks straight back — so undo is a
-  /// real undo rather than a thing the app argues with.
+  /// Everything that setup wrote, which is three things and used to be two:
+  /// the hook entries, the shared script once nothing else points at it, and —
+  /// for a host with a trust gate — the approval Vigil recorded in the host's
+  /// own config. `uninstallHooks` does all three, and its comment has the
+  /// reasoning for the order and for why the approval could not simply be left.
+  ///
+  /// `uninstallHooks` also records each agent as one Vigil has set up, which is
+  /// what stops the next panel open putting the hooks straight back — so undo
+  /// is a real undo rather than a thing the app argues with.
   func undoAutoSetup() {
     guard let setup = autoSetup else { return }
     autoSetup = nil

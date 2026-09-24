@@ -219,11 +219,18 @@ struct MenuPanelView: View {
           }
 
           if let error = model.setupError {
-            // A written sentence, with the installer's own text on the hover.
-            // What it says is true of every failure the installer can report:
-            // it refuses before writing rather than half-way through.
+            // A written sentence, with the installer's own text — which now
+            // names every agent that failed — on the hover.
+            //
+            // "for them" is load-bearing. A pass can set three agents up and
+            // fail the fourth, so the older wording, "Nothing was changed",
+            // read as though the whole pass had been abandoned. What is true
+            // of every failure the installer can report is narrower and still
+            // worth saying: it refuses before writing rather than half-way
+            // through, so the agents that failed were left exactly as found.
             RowNote(
-              "That didn't finish. Nothing was changed — open Settings to see why.",
+              "Some agents didn't finish. Nothing was changed for them — "
+                + "open Settings to see why.",
               detail: error,
               lines: 2
             )

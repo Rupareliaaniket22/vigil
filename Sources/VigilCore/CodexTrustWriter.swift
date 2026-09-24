@@ -133,6 +133,17 @@ public enum CodexTrustWriter {
   /// interface for a human to look at, which is the outcome this whole gate is
   /// for.
   ///
+  /// **Byte-for-byte** is meant literally, and Swift's `==` is not it: string
+  /// equality there is Unicode canonical equivalence, which is a different
+  /// question from "the same bytes" the moment a path has an accent in it. This
+  /// was written as a `Set.contains`, and it admitted a `hooks.json` whose
+  /// command named the same home directory in the other normal form — then
+  /// hashed the file's bytes, which are the ones that got approved. The
+  /// comparison and the hash have to be taken over one value; the hash cannot
+  /// move, because Codex computes it from what is in the file, so the
+  /// comparison does. `HookConfiguration.WrittenEntry.isByteIdentical(to:)` is
+  /// where that is spelled, and it is deliberately not `==`.
+  ///
   /// Why this may be written with nobody asked: see the reasoning on the type
   /// above. In one line — the hash covers the entry and not the script, so an
   /// approval limited to entries Vigil would itself write cannot sanction
@@ -171,10 +182,15 @@ public enum CodexTrustWriter {
     var records: [Record] = []
     for entry in ours {
       // The event decides which commands are allowed here at all, the matcher
-      // is part of the entry Codex hashes, and the command is compared whole.
-      guard
-        wanted[entry.event]?.contains(
-          HookConfiguration.WrittenEntry(matcher: entry.matcher, command: entry.command)) == true
+      // is part of the entry Codex hashes, and the command is compared whole —
+      // byte for byte, which `Set.contains` would not do. Swift's string
+      // equality is Unicode canonical equivalence, and the hash below is taken
+      // over the file's own bytes, so anything looser than this lets the value
+      // that passed the comparison and the value that got hashed come apart.
+      // See `HookConfiguration.WrittenEntry.isByteIdentical(to:)`.
+      let candidate = HookConfiguration.WrittenEntry(
+        matcher: entry.matcher, command: entry.command)
+      guard wanted[entry.event]?.contains(where: { $0.isByteIdentical(to: candidate) }) == true
       else { continue }
       // And the timeout, which is part of the hashed identity even though it is
       // absent from the file: an entry carrying a hand-written `timeout` hashes
@@ -272,12 +288,119 @@ public enum CodexTrustWriter {
     return CodexTOML.joined(lines)
   }
 
+  /// The same `config.toml` with these approvals taken back out, or a refusal.
+  ///
+  /// The other half of `apply`, and the reason it exists is that there was no
+  /// other half. Removing Vigil's hooks took the entries out of `hooks.json`
+  /// and deleted the shared script, and left every `[hooks.state."…"]` table
+  /// exactly where it was. Those were described as inert orphaned keys. They
+  /// are not inert: a trust record is keyed by the hooks file, the event, the
+  /// group and the handler, and its hash covers the entry — so the moment the
+  /// same entries are written back, the same keys hash to the same values and
+  /// the host is already satisfied. Nothing asks again, because nothing has to.
+  /// Verified: after a removal and a relaunch the hooks installed and no trust
+  /// write happened, and the state read back `trusted`.
+  ///
+  /// The exposure that creates is genuinely small — the key names an absolute
+  /// path and the hash covers one, so reaching it needs write access to files
+  /// that would let you edit `config.toml` outright. The defect being fixed is
+  /// the plainer one: the button says Undo, and a thing that leaves live
+  /// pre-approvals behind has not undone anything.
+  ///
+  /// Held to the same standard as the writer, because the cost of a bad delete
+  /// is the cost of a bad write — a `config.toml` Codex cannot parse, and
+  /// therefore a Codex that runs no tool's hooks at all. Three bounds:
+  ///
+  /// - Every shape `apply` refuses to write beside, this refuses to delete
+  ///   from. `locateStandardTables` is the same scan for both, so a file that
+  ///   cannot be read with confidence is not edited by either.
+  /// - A record goes only if the hash in the file is **the one being removed**,
+  ///   compared as bytes. A key of ours holding a hash we did not write belongs
+  ///   to whoever wrote it; Vigil leaves it and says nothing, which is the same
+  ///   answer `selfWrittenRecords` gives to an entry it cannot prove is its own.
+  /// - The table header goes only when the table holds nothing but that
+  ///   `trusted_hash`. Anything else in there is somebody else's, and a header
+  ///   is what keeps it reachable.
+  ///
+  /// Blank lines are the one piece of whitespace this touches, and only one
+  /// kind of them. `apply` separates tables it appends with a blank line, so a
+  /// remover that left every blank behind grew the file by one on each
+  /// install-and-undo cycle, for ever. So a blank line immediately above a
+  /// header being removed goes too — but only when the line above *it* is also
+  /// being removed, which is to say only when the blank sits between two of our
+  /// own tables and can have come from nowhere else. The blank line between the
+  /// user's last setting and the first of our tables stays, because it is
+  /// indistinguishable from one they typed. The result settles rather than
+  /// grows: the next `apply` finds a file already ending in a blank line and
+  /// adds no second one, so the second cycle produces the same bytes as the
+  /// first. `cyclesAreStable` is that claim, and it failed on the version of
+  /// this function that tidied nothing.
+  ///
+  /// An empty list is nothing to do rather than a failure — unlike `apply`,
+  /// where an empty list means the entries could not be identified and
+  /// approving none of them would be a half-fix reported as success. Here there
+  /// is no half of anything: nothing was asked for and nothing is removed.
+  public static func remove(_ records: [Record], from toml: String) throws -> String {
+    guard !records.isEmpty else { return toml }
+
+    var lines = CodexTOML.lines(of: toml)
+    let existing = try locateStandardTables(in: CodexTOML.scan(lines), for: records)
+
+    /// The statements themselves: headers and `trusted_hash` lines. Kept apart
+    /// from the blank lines below because whether a blank goes is decided by
+    /// whether the *statement* above it is going, and a set that already held
+    /// blanks could answer that question with one of its own.
+    var doomed: Set<Int> = []
+    var removedHeaders: [Int] = []
+    for record in records {
+      guard let table = existing[record.key], let hashLines = table.hashLines,
+        let recorded = table.recordedHash,
+        // Bytes, not `==`. Swift's string equality is Unicode canonical
+        // equivalence, and what Codex compares is the bytes in the file. A hex
+        // digest has no two normal forms today, so this changes no outcome —
+        // it is here because the comparison beside it in `selfWrittenRecords`
+        // had to be corrected for exactly this, and one of the pair being
+        // looser than the other is how that comes back.
+        recorded.utf8.elementsEqual(record.hash.utf8)
+      else { continue }
+      doomed.formUnion(hashLines)
+      if !table.hasOtherStatements {
+        doomed.insert(table.headerLine)
+        removedHeaders.append(table.headerLine)
+      }
+    }
+    guard !doomed.isEmpty else { return toml }
+
+    // The separator `apply` writes between two tables it appends, and nothing
+    // else that looks like it. `header - 2` is the statement above the blank:
+    // ours, so the blank is ours. A comment there, the user's last setting
+    // there, or the start of the file leaves the blank exactly where it is.
+    var blanks: Set<Int> = []
+    for header in removedHeaders where header >= 2 {
+      guard doomed.contains(header - 2),
+        lines[header - 1].text.trimmingCharacters(in: .whitespaces).isEmpty
+      else { continue }
+      blanks.insert(header - 1)
+    }
+
+    // Last-first, so a removal never shifts an index already worked out.
+    for index in doomed.union(blanks).sorted(by: >) { lines.remove(at: index) }
+    return CodexTOML.joined(lines)
+  }
+
   // MARK: - Reading what is already there
 
   private struct Table {
     let headerLine: Int
     /// The physical lines its `trusted_hash` statement occupies, if it has one.
     var hashLines: Range<Int>?
+    /// What that statement says, if it says one plain string. Read so a
+    /// removal can tell a record Vigil wrote from one it did not.
+    var recordedHash: String?
+    /// Whether anything else is filed in this table. Read so a removal can
+    /// tell a table that is nothing but our record from one that is holding
+    /// somebody else's settings up.
+    var hasOtherStatements = false
   }
 
   /// Where each `[hooks.state."…"]` table is, refusing every shape we could not
@@ -340,7 +463,7 @@ public enum CodexTrustWriter {
           throw Refusal.unfamiliarConfig
         }
         unfamiliar.insert(path[2])
-      case .assignment(let path, _, let first, let last):
+      case .assignment(let path, let value, let first, let last):
         if let currentKey {
           if path == ["trusted_hash"] {
             // A second one in the same table is a file TOML already rejects,
@@ -348,10 +471,21 @@ public enum CodexTrustWriter {
             // the other behind still saying the old thing.
             if tables[currentKey]?.hashLines != nil { unfamiliar.insert(currentKey) }
             tables[currentKey]?.hashLines = first..<(last + 1)
+            // Nil for a value that is not one plain string — an array, a
+            // number, a multi-line string. `apply` overwrites such a statement
+            // whole and needs nothing from it; a removal treats it as a record
+            // it cannot prove is Vigil's and leaves it alone.
+            tables[currentKey]?.recordedHash = CodexTOML.stringValue(value)
           } else if path.count > 1, path[0] == "trusted_hash" {
             // `trusted_hash.something = …` makes the record a table, not a
             // string, and the line we would write cannot replace it.
             unfamiliar.insert(currentKey)
+          } else {
+            // Somebody else's setting, filed inside a table keyed the way ours
+            // are. It is no obstacle to writing — `apply` only ever touches the
+            // `trusted_hash` statement — but it is what stops a removal taking
+            // the header away and leaving it stranded.
+            tables[currentKey]?.hasOtherStatements = true
           }
           continue
         }
