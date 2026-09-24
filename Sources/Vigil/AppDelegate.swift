@@ -124,6 +124,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       _ = model.otherAssertions
       _ = model.installedAgents
       _ = model.availableIntegrations
+      // The notes under the agent rows, which are one per host and wrap. A
+      // setup state changing is what adds or removes a trust note or a
+      // too-old note; `autoSetup` is the note Vigil writes when it has just
+      // wired an agent up, and pressing its Undo takes two lines out of an
+      // open panel.
+      _ = model.setupStates
+      _ = model.autoSetup
       // A host ageing out of `HostProbe`'s cache adds or removes a note under
       // the agent rows without touching anything else in this list.
       _ = model.hostSupports
@@ -473,7 +480,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       // Not the panel's business — it is the settings window that carries the
       // helper notice, and the lid section with it.
       helperNotice: "",
-      clamshellSupported: true
+      clamshellSupported: true,
+      // The fourth note, and the only one that is not about something being
+      // wrong: what Vigil set up without being asked, with its undo. Every
+      // agent at once, which is the longest that sentence can be and the only
+      // length worth measuring — and read off the integrations, so the build
+      // that ships a fifth agent measures a fifth name, and the build that
+      // gives a second host a trust gate measures a second clause naming it.
+      autoSetup: AgentIntegration.all
     )
 
     // Checked rather than assumed. Every one of these notes is drawn from
@@ -482,15 +496,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // looked fine.
     let notes =
       model.untrustedIntegrations.count + model.hostsTooOld.count
-      + (model.setupError == nil ? 0 : 1)
+      + (model.setupError == nil ? 0 : 1) + (model.autoSetup == nil ? 0 : 1)
     guard model.untrustedIntegrations.count == Self.gatingHosts.count,
-      model.hostsTooOld.count == Self.flooredHosts.count, model.setupError != nil
+      model.hostsTooOld.count == Self.flooredHosts.count, model.setupError != nil,
+      model.autoSetup?.integrations.count == AgentIntegration.all.count,
+      // The clause naming the hosts whose approval Vigil recorded. It is the
+      // part of that sentence nobody would have assumed from "set up", so a
+      // fixture that stopped building it would measure the shorter note and
+      // print a number that looked fine.
+      model.autoSetup?.approved.count == Self.gatingHosts.count
     else {
       print(
         "smoke: FAILED - panel worst case built \(model.untrustedIntegrations.count) trust "
-          + "notices, \(model.hostsTooOld.count) host notices and "
-          + "\(model.setupError == nil ? "no" : "an") error note, not "
-          + "\(Self.gatingHosts.count), \(Self.flooredHosts.count) and one")
+          + "notices, \(model.hostsTooOld.count) host notices, "
+          + "\(model.setupError == nil ? "no" : "an") error note, "
+          + "\(model.autoSetup?.integrations.count ?? 0) agents set up and "
+          + "\(model.autoSetup?.approved.count ?? 0) approved, not "
+          + "\(Self.gatingHosts.count), \(Self.flooredHosts.count), one, "
+          + "\(AgentIntegration.all.count) and \(Self.gatingHosts.count)")
       exit(1)
     }
 

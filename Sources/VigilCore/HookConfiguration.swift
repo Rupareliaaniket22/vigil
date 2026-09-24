@@ -343,6 +343,34 @@ public enum HookConfiguration {
     integration: AgentIntegration
   ) -> [String] {
     let hooks = settings["hooks"] as? [String: Any] ?? [:]
+    let wanted = writtenEntries(scriptPath: scriptPath, integration: integration)
+
+    return integration.allEvents.filter { event in
+      guard let groups = hooks[event] as? [[String: Any]] else { return false }
+      let ours = Set(groups.flatMap { vigilEntries(in: $0, scriptPath: scriptPath) })
+      guard !ours.isEmpty else { return false }
+      return !(wanted[event] ?? []).isSubset(of: ours)
+    }
+  }
+
+  /// Every entry Vigil writes for this host today, keyed by the event it goes
+  /// under.
+  ///
+  /// Extracted from `outdatedEvents` so that "what Vigil would write" has one
+  /// spelling. Two things ask it now and they ask for opposite purposes:
+  /// `outdatedEvents` uses it to decide whether what is in the file is stale,
+  /// and `CodexTrustWriter.selfWrittenRecords` uses it to decide whether an
+  /// entry is one Vigil may approve without asking. The second is a consent
+  /// boundary rather than a status check, so it matters more than usual that
+  /// the two cannot come to disagree about what Vigil writes.
+  ///
+  /// Keyed by event rather than flat, because the command is not on its own a
+  /// safe identity: an entry filed under `Stop` carrying the command for
+  /// `PreToolUse` is a real thing a file can contain, and it is not something
+  /// Vigil ever wrote.
+  static func writtenEntries(
+    scriptPath: String, integration: AgentIntegration
+  ) -> [String: Set<WrittenEntry>] {
     var wanted: [String: Set<WrittenEntry>] = [:]
     for registration in integration.registrations {
       let entry = WrittenEntry(
@@ -351,13 +379,7 @@ public enum HookConfiguration {
           scriptPath: scriptPath, integration: integration, registration: registration))
       wanted[registration.event, default: []].insert(entry)
     }
-
-    return integration.allEvents.filter { event in
-      guard let groups = hooks[event] as? [[String: Any]] else { return false }
-      let ours = Set(groups.flatMap { vigilEntries(in: $0, scriptPath: scriptPath) })
-      guard !ours.isEmpty else { return false }
-      return !(wanted[event] ?? []).isSubset(of: ours)
-    }
+    return wanted
   }
 }
 
@@ -960,9 +982,14 @@ enum CodexTOML {
 /// `CodexHookTrustTests` — this is a claim about somebody else's program, and
 /// the only honest way to make it is to run it against that program's output.
 ///
-/// None of this writes anything. Forging a trust record would defeat the
-/// mechanism exactly: the point of the gate is that a human looked at the
-/// command before it ran with their shell.
+/// None of this writes anything, and the separation is deliberate: this type
+/// reads the gate and reports on it, and every judgement about what may be
+/// written to satisfy it lives in `CodexTrustWriter`. Note what the hash is
+/// taken over, because that is what bounds the whole question — `identityJSON`
+/// covers the event name, the command string, the timeout and the matcher, and
+/// nothing else. The contents of the script the command names are not in it, so
+/// a trust record says "this entry is the one I saw" and never "this script is
+/// the one I saw".
 public enum CodexHookTrust {
 
   /// Codex's own name for an event inside a state key.

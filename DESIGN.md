@@ -108,7 +108,7 @@ Apple publishes no popover width, no corner radius, and no point grid.
 | Panel padding | 16pt across, 5pt top and bottom | *(chosen)* |
 | Row height | 24pt | *(chosen)* |
 | Value rail | 56pt, trailing | *(chosen)* |
-| Settings window | 520 × 712pt | *(chosen)* |
+| Settings window | 520 × 740pt | *(chosen)* |
 | Menu bar height | 24pt | Apple |
 | Status item icon | 16×16pt in a 22pt slot | Apple |
 | Minimum hit target | 44×44pt | Apple |
@@ -139,9 +139,9 @@ itself is at the mercy of its longest sentence: the grouped `Form` it replaced
 came to 813pt, which on a 13" MacBook very nearly touches the top and bottom of
 the screen. Naming the size makes it something a reviewer can check.
 
-The number has moved twice, and both times for the same reason: the window has
-no scroll view and no resize handle, so content that does not fit is cut off by
-the window edge with nothing saying so, and what gets cut is the bottom — the
+The number has moved four times, and every time for the same reason: the window
+has no scroll view and no resize handle, so content that does not fit is cut off
+by the window edge with nothing saying so, and what gets cut is the bottom — the
 last switch in the last section. 580 became 620 when the agent rows grew a line
 explaining a host that refuses to run Vigil's hooks. 620 became 680 when the
 layout check stopped measuring only the machine it ran on, where nothing is
@@ -152,6 +152,13 @@ section can say. 680 became 712 when a second kind of notice arrived — a host
 too old for the hooks Vigil installed — and took that worst case to exactly 680
 of 680. A build that passes with nothing to spare passes on one Mac's text
 metrics and no others.
+
+712 became 740 when Vigil stopped asking, and the whole of that is one switch
+row plus margin. The Agents section gained "Set up and update agent hooks
+automatically", 28pt, for somebody who would rather Vigil did not touch their
+settings files by itself. Nothing else grew: the trust gate's notice is still
+two lines, and the confirmation dialog that used to stand in front of its
+button is gone along with the button.
 
 Which is the other half of the rule. **Every block of text in that window that
 Vigil did not write is capped**, with the whole of it on `.help()` — an
@@ -167,8 +174,10 @@ guard that names the only case that exists cannot fire on the case it guards
 against, because the build that gives a second host a trust gate is the build
 that adds a second notice. The same now holds for the hosts carrying a version
 floor. Each notice costs 32pt, and the margin is kept at one spare notice: the
-worst case measures 680, and 712 is that plus the next one, so the build that
-adds a third notice is the build that has to think about this paragraph again.
+worst case measures 708, and 740 is that plus the next one, so the build that
+gives a second host a trust gate or a second host a version floor fits, and the
+one after that fails by 32 on the day it arrives rather than on somebody's Mac
+afterwards.
 
 ---
 
@@ -359,6 +368,34 @@ the panel with every note a fixture can reach showing at once, and the degraded
 gallery holds the one it cannot arrange, so the shape nobody sees until their
 worst day is still drawn by every build.
 
+**And one note that is not a bad day at all.** Vigil sets up every agent it
+finds the first time it runs, without asking, because that is the whole of what
+it is for and there is no useful answer to "shall I?" from somebody who has just
+installed the thing whose job this is. Where a host will not run a hook until
+its own config records an approval, Vigil writes that too. Acting silently and
+acting invisibly are different, though, and only the first is defensible — so a
+fourth note says what was done, names the agents, says plainly where an approval
+was recorded on the user's behalf, and carries an Undo on the same rail every
+row's value sits on.
+
+It is deliberately neither of the two note shapes beside it. The bridge notice
+is a headline, a sentence and a filled button: the shape for something wrong and
+waiting on the user, and nothing here is either. The rest are sentences with no
+action. This is a sentence that happens to have a way back, so it is that with
+the rail borrowed, and its button is plain rather than filled — a loud button
+would be the app asking the question it just decided not to ask. It clears when
+the panel closes, the way a menu forgets what it was showing; what is lost then
+is the shortcut, not the ability, because Remove is still in Settings.
+
+Nothing else Vigil does on its own gets a note. Bringing its own hook entries
+up to date after a release, and renewing an approval that release invalidated,
+are maintenance of a job already granted — and a notice that fires on every
+release is wallpaper by the second one. What those do get is a **settings row
+that says so**: an agent whose host approval Vigil recorded reads "Installed,
+approved by Vigil", permanently, for as long as that record is in the user's
+file, with what was written and the limit on it one hover away. Automatic and
+secret are different things, and a line of state is the difference.
+
 ---
 
 ## Writing
@@ -379,7 +416,17 @@ Errors explain what happened and what to do. They do not apologise.
 
 ## What we deliberately don't do
 
-- **No onboarding carousel.** The panel explains itself.
+- **No onboarding carousel.** The panel explains itself. There is no first-run
+  question either: Vigil wires up what it finds and says so afterwards.
+- **No prompt for a hook entry Vigil wrote itself.** Where a host keeps a
+  record of having approved a hook, Vigil writes that record for its own
+  entries, first time and every time, and never for an entry it cannot prove it
+  wrote. What such a record covers is the entry — the event, the command string,
+  the timeout — and not the script the command points at, so it was never a
+  gate against Vigil and asking could not make it one. What asking did do was
+  fire on every release that changed a command, which teaches people to click
+  through the prompts that matter. The row says afterwards what was done, and
+  one switch turns it off.
 - **No colour beyond amber.** No green/red status pairs — they fail for the
   most common form of colour blindness and this design doesn't need them.
 - **No cards.** Rows separated by whitespace and one hairline. Boxing every

@@ -153,12 +153,19 @@ struct MenuPanelView: View {
               isActive: false,
               primary: integration.displayName,
               value: Self.quietValue(
-                state,
-                fix: { model.installHooks(for: integration) },
-                trust: onSettings
-              ),
+                state, fix: { model.installHooks(for: integration) }),
               spoken: "\(integration.displayName), \(Self.spokenSetup(state))"
             )
+          }
+
+          // What Vigil did without being asked, and the way back.
+          //
+          // First among the notes, because it is the only one about something
+          // that has just changed rather than about something that is wrong,
+          // and because it is the one with a press attached. It clears itself
+          // when the panel closes — see `AppModel.panelBecameHidden`.
+          if let setup = model.autoSetup {
+            ActedNote(setup.sentence, actionTitle: "Undo", action: model.undoAutoSetup)
           }
 
           // A host holding our hooks at arm's length, named, with the one
@@ -168,12 +175,14 @@ struct MenuPanelView: View {
           // no quiet row to carry the button.
           ForEach(model.untrustedIntegrations) { integration in
             RowNote(
-              // "Trust", because that is the word on the button one row up —
-              // and on the one in Settings this sentence sends anyone without
-              // that row to. An instruction that shares no word with the thing
-              // that carries it out is two names for one act.
-              "\(integration.displayName) isn't running Vigil's hooks. "
-                + "Trust them in Settings.",
+              // Narrower than it used to read, because the common case is
+              // gone: Vigil's own entries are approved without anyone being
+              // asked. What reaches this note is an entry in the host's hooks
+              // file that Vigil cannot prove it wrote, so the sentence says
+              // that rather than "isn't running Vigil's hooks", which would
+              // now be pointing at the wrong thing.
+              "\(integration.displayName) is refusing a hook Vigil doesn't "
+                + "recognise. Open \(integration.displayName) to review it.",
               // The host's own sentence — it names the command inside that
               // host that does the same job. DESIGN.md keeps another program's
               // vocabulary off the panel, so it goes on the hover.
@@ -404,20 +413,23 @@ struct MenuPanelView: View {
   }
 
   private static func quietValue(
-    _ state: HookSetupState, fix: @escaping () -> Void, trust: @escaping () -> Void
+    _ state: HookSetupState, fix: @escaping () -> Void
   ) -> AwakeRow.Value {
     switch state {
     case .ready: .text("idle")
     case .outOfDate: .action("Update", fix)
     case .notSetUp: .action("Set up", fix)
-    // An action, but not `fix`: re-running the install is exactly what does not
-    // help, because the hooks are installed and correct and what is missing is
-    // the host's approval of them. This used to be a bare "not trusted" —
-    // the one state the code itself says the user cannot resolve from inside
-    // Vigil, rendered as a dead end with nothing saying where the exit was.
-    // The ellipsis is the same promise the Settings button makes: it opens
-    // what would be approved to be read, and writes nothing.
-    case .untrusted: .action("Trust…", trust)
+    // Text, not an action, for the same reason `hostTooOld` below is. This
+    // state used to be a "Trust" button, and before that a "Trust…" that
+    // opened a confirmation — both from a time when approving the host's hooks
+    // was something the user had to do. It is not: Vigil records that approval
+    // for every entry it can prove it wrote, without asking. So what is left
+    // here is the narrow remainder — an entry Vigil does *not* recognise,
+    // which is exactly what the host's gate is for and exactly what Vigil must
+    // not approve on anybody's behalf. There is no press that could help, and
+    // a row offering one that cannot act is worse than a row that says what is
+    // wrong and points at the note underneath.
+    case .untrusted: .text("not trusted")
     // Text, not an action, and it is the one state in this list where that is
     // the honest answer rather than a gap. `untrusted` became a button because
     // Vigil could open what would be approved; here there is nothing for a
@@ -448,7 +460,7 @@ struct MenuPanelView: View {
     case .ready: "idle"
     case .outOfDate: "set up by an older version of Vigil"
     case .notSetUp: "not set up"
-    case .untrusted: "installed, but the host is not running it"
+    case .untrusted: "installed, and the host is refusing a hook Vigil doesn't recognise"
     case .hostTooOld: "installed, but every copy of the host Vigil can find is too old to run it"
     }
   }
@@ -559,6 +571,67 @@ private struct RowNote: View {
     } else {
       note
     }
+  }
+}
+
+/// Something Vigil has already done, and the way back out of it.
+///
+/// The note with a press, and deliberately neither of the two shapes beside it.
+/// `Notice` is a headline, a sentence and a filled button — the shape for a
+/// thing that is wrong and is waiting on the user, and there is nothing wrong
+/// here and nothing waiting. `RowNote` is the shape for a sentence with no
+/// action, which is most of them. This one is a sentence that happens to have
+/// an undo, so it is `RowNote` with the panel's own trailing rail borrowed off
+/// `AwakeRow`: the words run to the same margin every row's text does, and the
+/// button ends where every elapsed time and every other row action ends.
+///
+/// Baseline-aligned rather than centred, because the sentence wraps and the
+/// button does not — centring would float "Undo" against the middle of a
+/// two-line paragraph, where it reads as belonging to neither line.
+///
+/// `.vigil` plain, not `.vigilFilled`. A filled button is for the single action
+/// that resolves a notice, and undo resolves nothing: the default is that this
+/// was wanted, and the press is the exception. A loud button here would be the
+/// app asking the question it just decided not to ask.
+private struct ActedNote: View {
+  let text: String
+  let actionTitle: String
+  let action: () -> Void
+
+  init(_ text: String, actionTitle: String, action: @escaping () -> Void) {
+    self.text = text
+    self.actionTitle = actionTitle
+    self.action = action
+  }
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: Theme.Metrics.snug) {
+      // Uncapped, unlike `RowNote` beside it, and the difference is whose text
+      // it is. A `RowNote` can be handed an installer's output, which has no
+      // length. This sentence is Vigil's own and its variable parts are an
+      // agent list and a host list, both read off the integrations — so its
+      // length is known at build time and `make smoke` measures the longest one
+      // there is. A cap would make the build that ships a fifth agent quietly
+      // stop naming it, in the one note whose whole job is to say what Vigil
+      // did without being asked.
+      Text(text)
+        .font(Theme.Text.footnote)
+        .foregroundStyle(.vigilPrimary)
+        .fixedSize(horizontal: false, vertical: true)
+
+      Spacer(minLength: Theme.Metrics.tight)
+
+      Button(actionTitle, action: action)
+        .buttonStyle(.vigil)
+        .fixedSize()
+        // The rail is a trailing edge — without this the invisible capsule
+        // takes it and the button stops 12pt short of every row above.
+        .vigilOnRail()
+    }
+    .padding(.horizontal, Theme.Metrics.panelPadding)
+    .padding(.top, Theme.Metrics.tight)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel(text)
   }
 }
 

@@ -41,6 +41,12 @@ struct SettingsView: View {
   @AppStorage(SoundSettings.completionSoundKey)
   var playsCompletionSound = SoundSettings.playsCompletionSoundByDefault
 
+  /// The escape hatch, bound the same way and for the same reason: one key,
+  /// no second copy of the value. `HookManagement` names the key and the
+  /// default; this states neither.
+  @AppStorage(HookManagement.managesKey)
+  var managesAgentHooks = HookManagement.managesByDefault
+
   var body: some View {
     VStack(alignment: .leading, spacing: Theme.Metrics.loose) {
       agents
@@ -78,11 +84,26 @@ struct SettingsView: View {
         AgentRow(
           integration: integration,
           state: model.setupState(for: integration),
+          // The disclosure. Vigil records this host's approval for its own
+          // hook entries without asking, so the row is where that fact lives —
+          // permanently, for as long as the record is in the user's file.
+          selfTrusted: model.vigilRecordedTrust(for: integration),
+          selfTrustNotice: model.selfTrustNotice(for: integration),
           setUp: { model.installHooks(for: integration) },
-          remove: { model.uninstallHooks(for: integration) },
-          trust: { model.reviewTrust(for: integration) }
+          remove: { model.uninstallHooks(for: integration) }
         )
       }
+
+      // The one switch in this window that governs the rows above it rather
+      // than something elsewhere, so it sits directly under them.
+      //
+      // The label states what the switch does rather than naming a policy —
+      // "Let Vigil manage agent hooks" would need a note underneath saying
+      // what managing means, and a note that only exists to explain its own
+      // control is a line asking to be read twice. Off restores the behaviour
+      // Vigil had before: every row that could have been put right on its own
+      // grows a button and waits.
+      SettingsSwitch("Set up and update agent hooks automatically") { $managesAgentHooks }
 
       // Under Agents rather than in a section of its own, and the reason is
       // measured rather than felt: a fifth section costs a 16pt gap, a 20pt
@@ -102,6 +123,11 @@ struct SettingsView: View {
       // host, and the thing it asks for happens in that host's window, not in
       // this one. A row can only say that something is wrong; this says what to
       // go and do about it.
+      //
+      // Much rarer than it was. Vigil records the host's approval for every
+      // entry it can prove it wrote, so what reaches this notice is an entry it
+      // cannot — which is precisely what the host's gate exists to catch, and
+      // precisely what Vigil must not approve on anyone's behalf.
       ForEach(model.availableIntegrations) { integration in
         if let notice = model.trustNotice(for: integration) {
           HostNotice(notice)
@@ -145,40 +171,6 @@ struct SettingsView: View {
           .help(error)
       }
     }
-    // The consent gate, and the reason the button in the row reads "Trust…"
-    // rather than "Trust". The press opens what would be written — the command,
-    // the events it runs on, and the file the approval lands in — and writes
-    // none of it until a second, separate decision. A button that recorded the
-    // approval on the first press is the silent self-approval this whole
-    // feature exists to refuse, with a label stuck on it.
-    //
-    // A system alert rather than something drawn here, and the one place in
-    // Vigil where that is the right answer: this is macOS asking whether a
-    // program may run a command, and it should look like every other time the
-    // user has been asked that — not like a panel Vigil designed for itself.
-    .confirmationDialog(
-      model.pendingTrustApproval?.title ?? "",
-      isPresented: confirmingTrust,
-      titleVisibility: .visible,
-      presenting: model.pendingTrustApproval
-    ) { approval in
-      Button("Approve") { model.trustHooks(for: approval) }
-      Button("Cancel", role: .cancel) { model.cancelTrustReview() }
-    } message: { approval in
-      Text(approval.message)
-    }
-  }
-
-  /// Open for as long as there is something to approve.
-  ///
-  /// Every way out of the dialog other than Approve — Cancel, Escape, the
-  /// window closing — comes back through here as a decline, which is the only
-  /// safe default for a control whose other outcome edits somebody's file.
-  private var confirmingTrust: Binding<Bool> {
-    Binding(
-      get: { model.pendingTrustApproval != nil },
-      set: { if !$0 { model.cancelTrustReview() } }
-    )
   }
 
   // MARK: - Power
@@ -491,6 +483,20 @@ private struct HelperRow: View {
   }
 }
 
+/// A hover and an accessibility hint, or neither of them.
+private struct RowHelp: ViewModifier {
+  let text: String?
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if let text, !text.isEmpty {
+      content.help(text).accessibilityHint(text)
+    } else {
+      content
+    }
+  }
+}
+
 /// One agent, and the one thing to do about it.
 ///
 /// Five states, not two. An agent can be reporting through hooks from an older
@@ -504,9 +510,21 @@ private struct HelperRow: View {
 private struct AgentRow: View {
   let integration: AgentIntegration
   let state: HookSetupState
+  /// Whether Vigil has recorded this host's approval for its own hook entries.
+  ///
+  /// The disclosure, and the reason the row has a third piece of state at all.
+  /// Vigil writes that record without asking — see `HookMaintenance.action` for
+  /// why, and `CodexTrustWriter.selfWrittenRecords` for the bound on it — and a
+  /// row that then said nothing about it would be the difference between doing
+  /// something automatically and doing it secretly. So the row says it, in the
+  /// slot that already carries what state this agent is in.
+  var selfTrusted = false
+  /// What was written, where, and the limit that makes it defensible. On the
+  /// hover and on the row's accessibility hint, the way every other sentence in
+  /// this window that is longer than its row is.
+  var selfTrustNotice: String?
   let setUp: () -> Void
   let remove: () -> Void
-  let trust: () -> Void
 
   var body: some View {
     SettingsRow(integration.displayName) {
@@ -521,19 +539,24 @@ private struct AgentRow: View {
         case .ready: Button("Remove", action: remove)
         case .outOfDate: Button("Update", action: setUp)
         case .notSetUp: Button("Set up", action: setUp)
-        // Not "Update": the hooks are installed and correct, and re-running
-        // the install is exactly what does not help. What is missing is the
-        // host's approval of the command, which is the user's to give and
-        // nobody else's — so the button opens it to be read, and the press
-        // that writes it is the one in the dialog.
-        case .untrusted: Button("Trust…", action: trust)
-        // The same button `ready` gets, because this is `ready` with one more
-        // thing true about it: the install is complete and correct and should
-        // stay, so that the day the user updates the host it simply starts
-        // working. Vigil has nothing else it can offer — the remedy is an
-        // update to another program — and inventing a button for it would be
-        // an action that could not act. The notice under the rows is where the
-        // exit is named, the same as for a host that will not trust us.
+        // The same button `ready` gets, and for the same reason `hostTooOld`
+        // gets it: this is `ready` with one more thing true about it. The
+        // install is complete and correct and should stay.
+        //
+        // It used to be "Trust…", opening a confirmation, and then "Trust",
+        // doing it in one press — both from a time when approving the host's
+        // hooks was the user's job. It is not any more: Vigil records that
+        // approval for every entry it can prove it wrote. What reaches this
+        // state now is the remainder — an entry Vigil does *not* recognise,
+        // which is exactly what the host's gate is for — and there is no press
+        // in this window that could resolve it. The notice under the rows names
+        // the host's own review command, which is where it can be looked at.
+        case .untrusted: Button("Remove", action: remove)
+        // The same button, one refusal further out. The install is complete and
+        // correct and should stay, so that the day the user updates the host it
+        // simply starts working. Vigil has nothing else it can offer — the
+        // remedy is an update to another program — and inventing a button for
+        // it would be an action that could not act.
         case .hostTooOld: Button("Remove", action: remove)
         }
       }
@@ -548,6 +571,11 @@ private struct AgentRow: View {
     }
     .accessibilityElement(children: .contain)
     .accessibilityLabel("\(integration.displayName), \(spoken)")
+    // Applied only when there is something to say. `.help("")` is not nothing:
+    // it installs a tooltip that never has anything in it, and an empty
+    // `AXHelp` with it, so VoiceOver offers help on a row that has none — the
+    // same rule `MenuPanelView.RowNote` holds itself to.
+    .modifier(RowHelp(text: selfTrustNotice))
   }
 
   /// Nothing beside the "Set up" button: the button already says the state, and
@@ -560,9 +588,17 @@ private struct AgentRow: View {
   /// program Vigil has not heard a word from and may never hear one from. It
   /// was the sentence on screen beside a host that was not on the machine at
   /// all — and the two states below it exist because that was not a one-off.
+  ///
+  /// "Installed, approved by Vigil" is the one that is not read off a settings
+  /// file but off what Vigil did, and it is here rather than in a note under
+  /// the rows because it belongs to this agent and would otherwise be a
+  /// permanent paragraph repeating the row's own subject. It says "approved by
+  /// Vigil" and not "trusted": `trusted` is Codex's word for the record, and
+  /// the thing the user needs to know is *who decided*, not what the field is
+  /// called.
   private var status: String? {
     switch state {
-    case .ready: "Installed"
+    case .ready: selfTrusted ? "Installed, approved by Vigil" : "Installed"
     case .outOfDate: "Out of date"
     case .notSetUp: nil
     case .untrusted: "Not trusted"
@@ -574,10 +610,14 @@ private struct AgentRow: View {
 
   private var spoken: String {
     switch state {
-    case .ready: "hooks installed"
+    case .ready:
+      selfTrusted
+        ? "hooks installed, and Vigil recorded \(integration.displayName)'s approval for them"
+        : "hooks installed"
     case .outOfDate: "set up by an older version of Vigil"
     case .notSetUp: "not set up"
-    case .untrusted: "installed, but \(integration.displayName) is not running it"
+    case .untrusted:
+      "installed, and \(integration.displayName) is refusing a hook Vigil doesn't recognise"
     case .hostTooOld:
       "installed, but every copy of \(integration.displayName) Vigil can find is too old to run it"
     }

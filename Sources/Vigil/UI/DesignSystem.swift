@@ -248,15 +248,25 @@ enum Theme {
     /// both at once and came to exactly 680 of 680: a passing build with no
     /// margin at all, on a measurement taken from one Mac's text metrics.
     ///
-    /// Each notice measures 32 points, and that is what the margin is for. It
-    /// is one more notice, deliberately: the build that gives a second host a
-    /// trust gate, or a second host a version floor, measures it here and fits,
-    /// and the one after that fails by 32 on the day it arrives rather than on
-    /// somebody's Mac afterwards. It is margin for the next case and for a
-    /// machine whose metrics differ, not room to grow into — content is what
-    /// shrinks, and `make smoke` fails the build rather than let a row go off
-    /// the bottom of a window with no scroll view.
-    static let settingsHeight: CGFloat = 712
+    /// 712 became 740 when Vigil stopped asking, and the whole of that is one
+    /// switch row plus margin. The Agents section gained "Set up and update
+    /// agent hooks automatically" — 28 points — for somebody who would rather
+    /// Vigil did not touch their settings files on its own. Nothing else in
+    /// this window grew: the trust gate's notice stayed two lines, because the
+    /// thing that used to need explaining in front of a button no longer has a
+    /// button in front of it. What `make smoke` measures is printed on every
+    /// build; it is not repeated here, because a number in a comment is a
+    /// number that drifts.
+    ///
+    /// The margin over that worst case is one more notice, deliberately: the
+    /// build that gives a second host a trust gate, or a second host a version
+    /// floor, measures it here and fits, and the one after that fails by 32 on
+    /// the day it arrives rather than on somebody's Mac afterwards. It is
+    /// margin for the next case and for a machine whose text metrics differ
+    /// from this one's, not room to grow into — content is what shrinks, and
+    /// `make smoke` fails the build rather than let a row go off the bottom of
+    /// a window with no scroll view.
+    static let settingsHeight: CGFloat = 740
     static let settingsInset: CGFloat = 24
     /// Taller than a panel row: this one holds controls, not text.
     static let settingsRowHeight: CGFloat = 28

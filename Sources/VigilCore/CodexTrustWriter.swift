@@ -1,20 +1,37 @@
 import Foundation
 
-/// Writes Codex's trust records for Vigil's own hooks, on the user's say-so.
+/// Writes Codex's trust records for the hook entries Vigil wrote itself.
 ///
 /// Codex drops any hook it has no matching `trusted_hash` for, so a hook Vigil
-/// has installed perfectly is a hook Codex ignores until a human approves it.
-/// The gate exists so that a person reads a command before their agent runs it,
-/// and `CodexHookTrust` deliberately never writes a record on its own — a
-/// program that approves itself has removed the gate for everyone, including
-/// for a later version of itself whose script has been changed.
+/// has installed perfectly is a hook Codex ignores until something approves it.
+/// This type is what approves it — without asking, every time, for Vigil's own
+/// entries and for nothing else.
 ///
-/// This type is the other half of that position. The approval still has to be a
-/// person's, so it is collected in Vigil's own window — the exact records shown
-/// first, written only on a press — rather than taken silently on install. That
-/// is the difference between asking and helping yourself, and it is the whole
-/// reason this is a separate type with its own confirmation rather than a line
-/// inside `install()`.
+/// That is a reversal, and the reasoning it replaces is worth stating so nobody
+/// reinstates it by accident. The old position was that a program which
+/// approves itself has removed the gate for everyone, "including for a later
+/// version of itself whose script has been changed". The second half of that is
+/// simply false: Codex hashes the hook **entry** — event name, command string,
+/// timeout, matcher — and not the contents of the script the command points at.
+/// `CodexHookTrust.identityJSON` is the whole of what is hashed, and
+/// `vigil-hook.sh` does not appear in it. Editing that script has never
+/// invalidated a `trusted_hash` and never could. So the gate was not protecting
+/// the user against Vigil, and the thing it does protect against — an entry
+/// turning up in `hooks.json` that the user did not get — is untouched here,
+/// because `selfWrittenRecords` will not write a record for an entry whose
+/// command is not byte-for-byte the one this version of Vigil installs.
+///
+/// What the old position cost was real: every Vigil release that changed a
+/// command invalidated every hash, and the user was asked to decide again
+/// something they had already decided. A prompt that fires on every release is
+/// a prompt people learn to dismiss, which leaves them less protected than one
+/// they read once — and in this case less protected than none at all, because
+/// the one they are dismissing is the one that matters.
+///
+/// So: no prompt, and the whole safeguard is the comparison in
+/// `selfWrittenRecords`. It is not invisible, though. The settings row says
+/// when Vigil recorded a host's approval, the panel says so when it happens,
+/// and one switch turns it off.
 ///
 /// Everything here is string surgery on a file Vigil does not own. Each rule
 /// below exists because the failure it prevents is worse than not writing at
@@ -26,8 +43,8 @@ public enum CodexTrustWriter {
   public struct Record: Sendable, Equatable {
     public let key: String
     public let hash: String
-    /// Carried for the confirmation text. Codex's key is a path and three
-    /// numbers, which tells a reader nothing about what they are approving.
+    /// Carried so the interface can name what is being approved. Codex's key
+    /// is a path and three numbers, which tells a reader nothing at all.
     public let event: String
 
     public init(key: String, hash: String, event: String) {
@@ -59,11 +76,19 @@ public enum CodexTrustWriter {
     case cannotIdentifyHooks
   }
 
-  /// The approvals that would make Codex run Vigil's hooks.
+  /// Every approval that would make Codex run the hooks of ours in this file,
+  /// whether Vigil wrote them or not.
   ///
-  /// Nil rather than a partial list when anything cannot be identified: these
-  /// are the exact bytes shown to the user for approval, and a list missing an
-  /// entry is a consent form missing a line.
+  /// The unfiltered description, and deliberately **not** what anything writes:
+  /// `selfWrittenRecords` is the list with a bound on it, and it is the only
+  /// one `HookInstaller.recordTrust` is ever handed. This one stays because it
+  /// is what that function narrows — the two are read side by side, and a
+  /// narrowing with nothing to compare against is a claim with no control — and
+  /// because the round-trip tests drive `apply` through it against a file no
+  /// version of Vigil wrote.
+  ///
+  /// Nil rather than a partial list when anything cannot be identified: a list
+  /// missing an entry would describe the file as smaller than it is.
   public static func records(
     hooks settings: [String: Any],
     hooksPath: String,
@@ -85,6 +110,87 @@ public enum CodexTrustWriter {
           event: entry.event, command: entry.command, timeoutSeconds: entry.timeoutSeconds,
           matcher: entry.matcher)
       else { return nil }
+      records.append(Record(key: key, hash: hash, event: entry.event))
+    }
+    return records
+  }
+
+  /// The approvals Vigil may record, and no others.
+  ///
+  /// The narrow sibling of `records`. That one describes whatever is in the
+  /// file; this one is filtered down to entries Vigil can prove it wrote
+  /// itself, and it is the only list that is ever written.
+  ///
+  /// The rule is one line long and everything else here is in service of it:
+  /// an entry qualifies only when its command is **byte-for-byte** what
+  /// `HookConfiguration.command(scriptPath:integration:registration:)` produces
+  /// today for this integration, under the event it is filed under, with the
+  /// matcher that registration carries. Not "looks like ours", not "names our
+  /// script" — `HookConfiguration.isVigilHook` matches the script's filename
+  /// and is deliberately loose, which is right for deciding what to sweep and
+  /// catastrophically wrong for deciding what to approve. An entry that fails
+  /// the comparison gets no record, stays untrusted, and shows up in the
+  /// interface for a human to look at, which is the outcome this whole gate is
+  /// for.
+  ///
+  /// Why this may be written with nobody asked: see the reasoning on the type
+  /// above. In one line — the hash covers the entry and not the script, so an
+  /// approval limited to entries Vigil would itself write cannot sanction
+  /// anything an attacker introduced. A changed command fails the comparison by
+  /// construction; an unchanged one is the string Vigil installs.
+  ///
+  /// Which makes this comparison the entire safeguard, and it is why it is
+  /// spelled out rather than expressed as a helpful predicate somewhere else.
+  /// Everything above it decides *whether* to try; only this decides *what*.
+  ///
+  /// Returns an empty list — never a partial guess — whenever the question
+  /// cannot be answered at all: a host with no trust gate, a `hooks.json`
+  /// carrying a key we cannot hash, or an event Codex has no name for.
+  public static func selfWrittenRecords(
+    hooks settings: [String: Any],
+    hooksPath: String,
+    scriptPath: String,
+    integration: AgentIntegration
+  ) -> [Record] {
+    guard integration.requiresHookTrust,
+      // Vigil writes no `timeout` for the one host that gates hooks, so
+      // `defaultTimeoutSeconds` has the whole answer for what it writes. The
+      // field is spelled in milliseconds and Codex reads the key as seconds, so
+      // a gating host that grew one would need that unit resolved before
+      // anything here could claim to know the bytes. Refuse rather than guess:
+      // the cost is one press, and the cost of guessing is a hash Vigil has no
+      // business writing.
+      integration.timeoutMilliseconds == nil,
+      let ours = CodexHookTrust.entries(
+        in: settings, scriptPath: scriptPath, integration: integration)
+    else { return [] }
+
+    let wanted = HookConfiguration.writtenEntries(
+      scriptPath: scriptPath, integration: integration)
+
+    var records: [Record] = []
+    for entry in ours {
+      // The event decides which commands are allowed here at all, the matcher
+      // is part of the entry Codex hashes, and the command is compared whole.
+      guard
+        wanted[entry.event]?.contains(
+          HookConfiguration.WrittenEntry(matcher: entry.matcher, command: entry.command)) == true
+      else { continue }
+      // And the timeout, which is part of the hashed identity even though it is
+      // absent from the file: an entry carrying a hand-written `timeout` hashes
+      // differently and is not one of ours, however right the command reads.
+      guard
+        entry.timeoutSeconds
+          == CodexHookTrust.normalisedTimeoutSeconds(
+            CodexHookTrust.defaultTimeoutSeconds(for: entry.event), for: entry.event)
+      else { continue }
+      guard
+        let key = CodexHookTrust.stateKey(
+          hooksPath: hooksPath, event: entry.event, group: entry.group, handler: entry.handler),
+        let hash = CodexHookTrust.identityHash(
+          event: entry.event, command: entry.command, timeoutSeconds: entry.timeoutSeconds,
+          matcher: entry.matcher)
+      else { continue }
       records.append(Record(key: key, hash: hash, event: entry.event))
     }
     return records

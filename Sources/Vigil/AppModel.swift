@@ -145,11 +145,45 @@ final class AppModel {
 
   /// A sentence for when a host is holding our hooks at arm's length.
   ///
+  /// Reachable for one reason now, and it is a narrow one: an entry in the
+  /// host's hooks file that Vigil does not recognise as byte-for-byte its own.
+  /// Everything Vigil wrote itself is approved without anyone being asked, so
+  /// what is left here is an entry somebody or something else put there — which
+  /// is exactly what the host's gate exists to catch, and exactly what Vigil
+  /// must not approve on anyone's behalf. The sentence names the host's own
+  /// review command, because that is where such an entry can be looked at.
+  ///
   /// Settings prints it under the rows. The panel puts it on the hover behind
   /// a shorter line of its own, because this one names a command inside
   /// another program and DESIGN.md keeps that vocabulary off the panel.
   func trustNotice(for integration: AgentIntegration) -> String? {
     (trustStates[integration.id] ?? .notRequired).explanation(host: integration.displayName)
+  }
+
+  /// Whether Vigil has recorded this host's approval for its own hook entries.
+  ///
+  /// The disclosure, and the reason it is kept at all. Vigil writes that record
+  /// without asking; a row that then said nothing about it would be the
+  /// difference between automatic and secret. So the row says it, permanently,
+  /// for as long as the record is in the user's file.
+  func vigilRecordedTrust(for integration: AgentIntegration) -> Bool {
+    integration.requiresHookTrust && HookManagement.hasBeenSelfTrusted(integration.id)
+  }
+
+  /// The whole of what that record is and how it got there, for the hover and
+  /// for VoiceOver.
+  ///
+  /// Says what was written, where, and the one limit that makes it defensible
+  /// — because "Vigil approved its own hooks" is a sentence that deserves the
+  /// bound stated in the same breath. Names the switch that turns it off, so
+  /// the row is not a dead end for somebody who disagrees.
+  func selfTrustNotice(for integration: AgentIntegration) -> String? {
+    guard vigilRecordedTrust(for: integration) else { return nil }
+    return "\(integration.displayName) only runs hooks it has a trust record for, so Vigil "
+      + "wrote one in \(Self.underHome(HookInstaller.codexConfigFilePath)) for the entries it "
+      + "installed. It writes one only for an entry that is exactly what this version of Vigil "
+      + "would install; anything else is left for you to look at. Turn off \u{201C}Set up and "
+      + "update agent hooks automatically\u{201D} to do it yourself instead."
   }
 
   /// A sentence for when no copy of a host Vigil can find could run our hooks.
@@ -173,60 +207,65 @@ final class AppModel {
     hostSupports[integration.id] ?? .notChecked
   }
 
-  /// Exactly what one press of "Trust" would record, held while it is read.
+  /// What Vigil has just done on its own, until the user has seen it.
   ///
-  /// State on the model rather than a flag in a row, because it is not a
-  /// presentation detail: the records are captured at the moment they are put
-  /// in front of the user and carried through to the write, so that what the
-  /// confirmation names is what lands in the file. Anything that re-derived
-  /// them on the way out would be a consent dialog describing one thing and
-  /// approving another.
-  private(set) var pendingTrustApproval: TrustApproval?
+  /// The other half of acting without asking. Vigil sets an agent up the first
+  /// time it finds one, because that is the entire point of the app and there
+  /// is no useful answer to "shall I?" from somebody who has just installed a
+  /// thing whose job this is — but acting silently and acting invisibly are
+  /// different, and only the first is defensible. So the panel says what was
+  /// done, names the agents, and offers to undo it.
+  ///
+  /// Only ever set for an install Vigil chose to make. Keeping its own entries
+  /// current is maintenance of a job already granted and says nothing, and
+  /// re-recording an approval the user has already given says nothing either.
+  private(set) var autoSetup: AutoSetup?
 
-  /// One host's hooks, as a sentence somebody can decide on.
-  struct TrustApproval: Equatable, Identifiable {
-    let integration: AgentIntegration
-    /// Approved verbatim. Nothing between here and disk recomputes them.
-    let records: [CodexTrustWriter.Record]
-    /// The command being approved, written the way the user knows it.
-    let command: String
-    /// The file the approval is written into.
-    let configPath: String
+  /// The agents Vigil wired up by itself, and the sentence for them.
+  struct AutoSetup: Equatable {
+    let integrations: [AgentIntegration]
+    /// Of those, the ones that would not run a hook until their own config
+    /// recorded an approval, so Vigil wrote one.
+    var approved: [AgentIntegration] = []
 
-    var id: AgentKind { integration.id }
-    var host: String { integration.displayName }
-    var events: [String] { records.map(\.event) }
+    var names: [String] { integrations.map(\.displayName) }
 
-    var title: String { "Let \(host) run Vigil's hooks?" }
-
-    /// What will run, and when. The command leads: approving a hook is a
-    /// statement about a command, and a dialog that named only the file would
-    /// be asking for consent to the paperwork.
-    var summary: String {
-      "\(host) will run \(command) on \(Self.list(events))."
-    }
-
-    /// What the press does to the file, and what it leaves alone.
-    var consequence: String {
-      "Approving writes one trust record per event into \(configPath). "
-        + "Nothing else in that file changes."
-    }
-
-    /// The two together, as the confirmation shows them.
+    /// Past tense, and no apology. DESIGN.md: say what is true from the user's
+    /// side — which is not "hooks were installed" but that these agents will
+    /// now say when they are working, which is the whole reason anything was
+    /// written.
     ///
-    /// Assembled here rather than in the view so that a `String` reaches
-    /// `Text` — interpolating into it there would resolve to the
-    /// `LocalizedStringKey` overload and send a sentence built at runtime
-    /// through a lookup table, which is not what any other line in this app
-    /// does with text it has just composed.
-    var message: String { summary + "\n\n" + consequence }
-
-    /// "A, B and C", no Oxford comma — the house style everywhere else.
-    private static func list(_ items: [String]) -> String {
-      guard let last = items.last else { return "" }
-      guard items.count > 1 else { return last }
-      return items.dropLast().joined(separator: ", ") + " and " + last
+    /// The second sentence only where a host had a gate. It is the one thing
+    /// Vigil did here that a reader would not have assumed from "set up", and
+    /// leaving it to be discovered later in Settings would make the notice a
+    /// partial account of the same minute's work.
+    var sentence: String {
+      let pronoun = integrations.count == 1 ? "it'll" : "they'll"
+      var text =
+        "Vigil set up \(AppModel.list(names)) — \(pronoun) say when your runs "
+        + "start and stop."
+      guard !approved.isEmpty else { return text }
+      let hosts = AppModel.list(approved.map(\.displayName))
+      text +=
+        approved.count == 1
+        ? " \(hosts) only runs hooks you've approved, so Vigil approved its own."
+        : " \(hosts) only run hooks you've approved, so Vigil approved its own."
+      return text
     }
+  }
+
+  /// "A, B and C", no Oxford comma — the house style everywhere else.
+  ///
+  /// One copy. Two sentences in this file list things, and two copies of four
+  /// lines is two chances for one of them to grow a comma the other does not.
+  ///
+  /// `nonisolated` because both callers are computed properties on value types
+  /// nested in this class, which are not on the main actor and have no reason
+  /// to be — this reads nothing but its argument.
+  nonisolated static func list(_ items: [String]) -> String {
+    guard let last = items.last else { return "" }
+    guard items.count > 1 else { return last }
+    return items.dropLast().joined(separator: ", ") + " and " + last
   }
 
   func isInstalled(_ integration: AgentIntegration) -> Bool {
@@ -298,7 +337,9 @@ final class AppModel {
         }
       }
     )
-    refreshInstalledAgents()
+    // Before the bridge, so an agent Vigil wires up here is wired up before
+    // anything it might say could arrive.
+    maintainHooks()
     bridge?.start()
 
     let tick = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
@@ -342,8 +383,10 @@ final class AppModel {
     now = .now
     // Hooks can be changed on disk by an uninstall, an upgrade, or another
     // tool. Re-reading them when the panel opens is the cheapest cadence that
-    // still means what the panel shows is true when someone looks at it.
-    refreshInstalledAgents()
+    // still means what the panel shows is true when someone looks at it — and
+    // it is also the moment to put right anything that can be put right
+    // without asking, because this is where the asking would otherwise happen.
+    maintainHooks()
     clock?.invalidate()
     let clock = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
       Task { @MainActor in self?.now = .now }
@@ -362,6 +405,10 @@ final class AppModel {
     isPanelVisible = false
     clock?.invalidate()
     clock = nil
+    // The notice has been on screen; it does not follow the user around.
+    // Undoing an install is still one Remove away in Settings, so what is lost
+    // when this clears is a shortcut rather than the ability.
+    dismissAutoSetup()
   }
 
   func handle(_ event: AgentEvent) {
@@ -407,13 +454,24 @@ final class AppModel {
     host: [AgentKind: HostHookSupport],
     error: String,
     helperNotice: String,
-    clamshellSupported: Bool
+    clamshellSupported: Bool,
+    autoSetup autoSetupHosts: [AgentIntegration] = []
   ) {
     // Every integration offered, because four rows are taller than the
     // sentence that stands in for them when none is installed.
     availableIntegrations = AgentIntegration.all
     trustStates = trust
     hostSupports = host
+    // Every gating host announced at once, which is the longest that sentence
+    // gets. Read off the integrations rather than written out, for the reason
+    // every other fixture here is: the build that gives a second host a trust
+    // gate measures a second name without anybody remembering to come back.
+    autoSetup =
+      autoSetupHosts.isEmpty
+      ? nil
+      : AutoSetup(
+        integrations: autoSetupHosts,
+        approved: autoSetupHosts.filter(\.requiresHookTrust))
     // Both host-side refusals at once, on the hosts that can have them, in the
     // precedence `HookConfiguration.setupState` uses. They fall on different
     // integrations today, so the window is measured with a trust notice and a
@@ -573,26 +631,54 @@ final class AppModel {
 
   /// Wire an agent up to report to us, or bring an older install up to date.
   func installHooks(for integration: AgentIntegration) {
-    do {
-      try HookInstaller.live(for: integration).install()
-      setupError = nil
-    } catch {
-      setupError = error.localizedDescription
-    }
-    // The moment the user is looking, and the cheapest one to take a fresh
-    // reading at. `HostProbe` otherwise holds its answer for ten minutes, which
-    // is the right cadence for a panel opening and the wrong one for somebody
-    // who has just gone and updated a host because Vigil told them to.
-    HostProbe.invalidate()
+    setupError = performInstall(for: integration)
     // Re-read rather than assume. An install that threw part-way, or one whose
     // script did not end up executable, must not leave the panel claiming the
     // agent is reporting when it is not.
     refreshInstalledAgents()
   }
 
+  /// The write half of an install. Nil means it worked.
+  ///
+  /// Split out so the maintenance pass can act on several agents and pay for
+  /// one refresh rather than one per agent — each refresh opens every agent's
+  /// settings file five times over, and on a Mac with four agents needing
+  /// attention that was twenty file reads bought for nothing.
+  ///
+  /// It hands the failure back rather than assigning `setupError` itself, and
+  /// that is the part that matters now Vigil installs without being asked. A
+  /// loop where each agent wrote straight into the one error slot reported
+  /// whichever agent went last: three agents set up and a fourth that failed
+  /// read as four that worked if the order happened to be kind. Nobody presses
+  /// anything here, so nobody is standing by to notice the silence.
+  private func performInstall(for integration: AgentIntegration) -> String? {
+    do {
+      try HookInstaller.live(for: integration).install()
+      // The record that makes a later removal stick. Written on the way in,
+      // not on the way out: an install that threw is an install that changed
+      // nothing, and remembering it would silently take this agent out of
+      // reach of the automatic setup forever.
+      HookManagement.rememberSetUp(integration.id)
+    } catch {
+      return error.localizedDescription
+    }
+    // The moment the user is looking, and the cheapest one to take a fresh
+    // reading at. `HostProbe` otherwise holds its answer for ten minutes, which
+    // is the right cadence for a panel opening and the wrong one for somebody
+    // who has just gone and updated a host because Vigil told them to.
+    HostProbe.invalidate()
+    return nil
+  }
+
   func uninstallHooks(for integration: AgentIntegration) {
     do {
       try HookInstaller.live(for: integration).uninstall()
+      // Removal is a decision, and this is where it is recorded. Ordinarily
+      // the agent is already remembered — Vigil installed the hooks it is
+      // taking out — but somebody removing hooks installed by a build that
+      // remembered nothing would otherwise have them put straight back on the
+      // next panel open, which is the one outcome this must never produce.
+      HookManagement.rememberSetUp(integration.id)
       setupError = nil
     } catch {
       setupError = error.localizedDescription
@@ -601,55 +687,159 @@ final class AppModel {
     refreshInstalledAgents()
   }
 
-  /// Work out what the host would be told to trust, and put it in front of the
-  /// user. Writes nothing.
+  /// Write approvals into the host's own file, and remember having done it.
+  /// Nil means it worked.
   ///
-  /// The two halves are separate calls on purpose. A single `trust()` that
-  /// read the hooks and wrote the record in one press would be the thing this
-  /// feature exists not to be — the competitor's silent self-approval with a
-  /// button in front of it. Nothing reaches `config.toml` until someone has
-  /// seen the command, the events and the file, and said yes to those.
-  func reviewTrust(for integration: AgentIntegration) {
-    let installer = HookInstaller.live(for: integration)
+  /// The only path that writes to `config.toml`, and it is reached from one
+  /// place: the maintenance pass, with a list `CodexTrustWriter
+  /// .selfWrittenRecords` has already filtered down to entries Vigil can prove
+  /// it wrote. There is no press behind it and no other caller — which is why
+  /// the filtering, not a button, is where the whole safeguard lives.
+  ///
+  /// Remembering is not a permission and nothing reads it before acting. It is
+  /// what lets the settings row say afterwards that Vigil did this, which is
+  /// the difference between automatic and secret.
+  ///
+  /// Hands the failure back rather than assigning `setupError`, for the reason
+  /// `performInstall` does.
+  private func record(
+    _ records: [CodexTrustWriter.Record], for integration: AgentIntegration
+  ) -> String? {
+    guard !records.isEmpty else { return nil }
     do {
-      let records = try installer.trustRecords()
-      setupError = nil
-      pendingTrustApproval = TrustApproval(
-        integration: integration,
-        records: records,
-        // The installer's own script path, not a second lookup of the same
-        // constant: the command shown has to be the command hashed.
-        command: Self.underHome(installer.scriptPath),
-        configPath: Self.underHome(HookInstaller.codexConfigFilePath)
-      )
+      try HookInstaller.live(for: integration).recordTrust(records)
+      HookManagement.rememberSelfTrusted(integration.id)
     } catch {
-      pendingTrustApproval = nil
-      setupError = error.localizedDescription
+      return error.localizedDescription
     }
+    return nil
   }
 
-  /// The user read it and closed it without approving. Nothing happened.
-  func cancelTrustReview() {
-    pendingTrustApproval = nil
-  }
+  // MARK: - Keeping hooks in order
 
-  /// Record the approval the user has just read.
+  /// Guards the one re-entrant path: installing re-reads, and re-reading is
+  /// what this runs off.
+  private var isMaintaining = false
+
+  /// Do whatever can be done without asking, then say what was done.
   ///
-  /// Takes the approval rather than reading `pendingTrustApproval`, because
-  /// dismissing the confirmation and running its action are two events whose
-  /// order SwiftUI does not promise — and the one ordering that loses the
-  /// records would write nothing while the row went on saying "Not trusted".
-  func trustHooks(for approval: TrustApproval) {
-    pendingTrustApproval = nil
-    do {
-      try HookInstaller.live(for: approval.integration).recordTrust(approval.records)
-      setupError = nil
-    } catch {
-      setupError = error.localizedDescription
-    }
-    // Re-read rather than assume, the same as `installHooks`: the row must not
-    // claim the host is running our hooks until the host's own file says so.
+  /// Runs at launch and on every panel open, which is the same cadence
+  /// `refreshInstalledAgents` already ran at — the panel is where any of this
+  /// becomes visible, so it is the cheapest moment at which the answer has to
+  /// be true.
+  ///
+  /// *What* it may do is `HookMaintenance.action`'s to decide, and nothing
+  /// here argues with it. What this adds is the *order* — every install first,
+  /// then one re-read, then the trust renewals those installs have just
+  /// invalidated — because for Codex the two are one event seen twice:
+  /// rewriting an entry changes the bytes its `trusted_hash` covers, so a host
+  /// that was `outOfDate` at the top of this function is `untrusted` by the
+  /// middle of it. Doing them in one pass would leave the user with a freshly
+  /// correct install their host refuses to run, which is the state this whole
+  /// exercise exists to stop happening on every release.
+  func maintainHooks() {
+    guard !isMaintaining else { return }
+    isMaintaining = true
+    defer { isMaintaining = false }
+
     refreshInstalledAgents()
+    guard HookManagement.manages else { return }
+
+    var acted = false
+    // The last thing that went wrong, or nil. Collected rather than written
+    // straight into `setupError` — see `performInstall`.
+    var failure: String?
+    // Agents whose hooks Vigil wrote here for the first time. Only these are
+    // worth telling the user about: bringing an install up to date is
+    // maintenance of a job already granted, and announcing it on every release
+    // is the notification nobody reads.
+    var announced: [AgentIntegration] = []
+
+    for integration in availableIntegrations {
+      let state = setupState(for: integration)
+      guard
+        HookMaintenance.action(
+          for: state,
+          manages: true,
+          hasBeenSetUp: HookManagement.hasBeenSetUp(integration.id)
+        ) == .install
+      else { continue }
+      acted = true
+      if let error = performInstall(for: integration) {
+        failure = error
+        continue
+      }
+      // The state as it was before the write decides whether this is news.
+      // `notSetUp` is an agent Vigil has just taken over and has to say so
+      // about; `outOfDate` is one it already had, and saying so on every
+      // release is how a notice becomes wallpaper.
+      if state == .notSetUp { announced.append(integration) }
+    }
+
+    if acted { refreshInstalledAgents() }
+
+    var renewed: [AgentIntegration] = []
+    for integration in availableIntegrations {
+      guard
+        HookMaintenance.action(
+          for: setupState(for: integration),
+          manages: true,
+          hasBeenSetUp: HookManagement.hasBeenSetUp(integration.id)
+        ) == .trust
+      else { continue }
+      // Not every entry of ours in the file — only the ones Vigil can prove it
+      // wrote, byte for byte, which is what `CodexTrustWriter
+      // .selfWrittenRecords` narrows to and the only safeguard this path has.
+      // An entry that fails that comparison gets no record, leaves the host
+      // still refusing it, and arrives in front of the user as a note naming
+      // the host's own review command.
+      let records = HookInstaller.live(for: integration).selfWrittenTrustRecords()
+      guard !records.isEmpty else { continue }
+      renewed.append(integration)
+      if let error = record(records, for: integration) { failure = error }
+    }
+
+    if !renewed.isEmpty { refreshInstalledAgents() }
+
+    // Only where something was attempted. A pass with nothing to do must not
+    // wipe an error the user is still reading from the press that caused it.
+    if acted || !renewed.isEmpty { setupError = failure }
+
+    guard !announced.isEmpty else { return }
+    // Appended rather than replaced: an agent set up at launch and a second
+    // one set up when the panel opened are one thing that happened as far as
+    // the reader is concerned, and two notices in a row would be Vigil telling
+    // them twice.
+    //
+    // The approvals named are only those for agents in this notice. A host
+    // whose approval was merely renewed after a release is not news — its
+    // hooks were already installed and already approved, and nothing about the
+    // user's machine changed in a way they would recognise.
+    let all = (autoSetup?.integrations ?? []) + announced
+    let approved =
+      (autoSetup?.approved ?? [])
+      + renewed.filter { host in
+        announced.contains { $0.id == host.id }
+      }
+    autoSetup = AutoSetup(integrations: all, approved: approved)
+  }
+
+  /// Put back what the last automatic setup did, and make sure it stays put.
+  ///
+  /// `uninstallHooks` records each agent as one Vigil has set up, which is what
+  /// stops the next panel open putting the hooks straight back — so undo is a
+  /// real undo rather than a thing the app argues with.
+  func undoAutoSetup() {
+    guard let setup = autoSetup else { return }
+    autoSetup = nil
+    for integration in setup.integrations { uninstallHooks(for: integration) }
+  }
+
+  /// The user has read it. Cleared when the panel closes, the way a menu
+  /// forgets what it was showing — this is news, and news that outlives being
+  /// read is a nag.
+  func dismissAutoSetup() {
+    autoSetup = nil
   }
 
   // MARK: - The loop

@@ -103,9 +103,9 @@ struct HookInstaller {
         "\(path) is read-only. Vigil left it alone — make it writable and try again."
       case .trustNotOffered(let host):
         // Reached when the hooks cannot be identified well enough to say what
-        // approving them would mean. There is nothing to show the user, so
-        // there is nothing for them to approve — send them to the host's own
-        // review command rather than writing a record they never read.
+        // approving them would mean. Vigil approves only what it can prove it
+        // wrote, so there is nothing here it may touch — send the user to the
+        // host's own review command, where the entry can be looked at.
         "Vigil couldn't work out exactly what \(host) would be approving, so it "
           + "wrote nothing. Open \(host) and run /hooks to review the hooks there."
       case .trustRecordUnfamiliar(let path, let host):
@@ -191,11 +191,11 @@ struct HookInstaller {
   /// rather than beside the hooks — the one place in this file where answering
   /// a question about one agent means opening a second file.
   ///
-  /// Read-only. Writing a record is `recordTrust(_:)`, and it happens only
-  /// once the user has been shown the records and pressed a button: the gate
-  /// exists so that a human looked at the command before their agent ran it,
-  /// and an app that granted itself that approval on install would have
-  /// removed the only thing the mechanism is for.
+  /// Read-only. Writing a record is `recordTrust(_:)`, and the only list that
+  /// may be handed to it is `selfWrittenTrustRecords()` — entries Vigil can
+  /// prove it wrote itself, byte for byte. Nothing else is ever approved, by
+  /// Vigil or through it; see that function for why writing those without
+  /// asking is not the self-approval it looks like.
   ///
   /// A missing script is the same "nothing is firing either way" case
   /// `retiredEvents` treats as empty, and an absent `config.toml` is a Codex
@@ -361,37 +361,42 @@ struct HookInstaller {
 
   // MARK: - Trust
 
-  /// What approving would record, so the user can read it before it is written.
+  /// The approvals Vigil may record, which is often an empty list.
   ///
-  /// Handed back rather than worked out again inside `recordTrust` on purpose.
-  /// The records shown in the confirmation have to be the records written, and
-  /// two passes over `hooks.json` are two chances for the file to have changed
-  /// in between — which is the one way a consent dialog can lie.
-  func trustRecords() throws -> [CodexTrustWriter.Record] {
-    guard integration.requiresHookTrust else {
-      throw InstallError.trustNotOffered(integration.displayName)
-    }
-    let settings = try Self.readSettings(at: settingsPath)
-    guard
-      let records = CodexTrustWriter.records(
-        hooks: settings,
-        // The path as given, never the symlink-resolved one — same rule, and
-        // the same reason, as `trustState`.
-        hooksPath: settingsPath,
-        scriptPath: scriptPath,
-        integration: integration
-      ), !records.isEmpty
-    else { throw InstallError.trustNotOffered(integration.displayName) }
-    return records
+  /// Everything that decides *which* entries qualify is in
+  /// `CodexTrustWriter.selfWrittenRecords`, beside the comparison it makes and
+  /// inside the tests that pin it. This is only the file handling: a missing
+  /// script means nothing is firing either way, and an unreadable settings file
+  /// means nothing here can be claimed about it. Both answer "nothing", which
+  /// leaves the state untrusted and the row in front of the user.
+  ///
+  /// Empty is not a failure and is never reported as one. It means Vigil has
+  /// nothing it can approve, which is the safe half of every ambiguity this
+  /// path can meet: the host goes on refusing, and the interface says so.
+  func selfWrittenTrustRecords() -> [CodexTrustWriter.Record] {
+    guard integration.requiresHookTrust,
+      FileManager.default.isExecutableFile(atPath: scriptPath),
+      let settings = try? Self.readSettings(at: settingsPath)
+    else { return [] }
+
+    return CodexTrustWriter.selfWrittenRecords(
+      hooks: settings,
+      // The path as given, never the symlink-resolved one — same rule, and the
+      // same reason, as `trustState`.
+      hooksPath: settingsPath,
+      scriptPath: scriptPath,
+      integration: integration
+    )
   }
 
-  /// Write the approval the user has just read into the host's trust file.
+  /// Write approvals into the host's trust file.
   ///
-  /// Takes the records rather than deriving them, so that what lands on disk
-  /// is exactly what was shown. `CodexTrustWriter.apply` returns every other
-  /// byte of `config.toml` unchanged and refuses the shapes it cannot rewrite,
-  /// which leaves this with only the file handling to get right — and that is
-  /// `writeReplacing`, the same backup and atomic rename a settings file gets.
+  /// Takes the records rather than deriving them, so that the list this writes
+  /// is the list its caller filtered — this must never be able to widen it.
+  /// `CodexTrustWriter.apply` returns every other byte of `config.toml`
+  /// unchanged and refuses the shapes it cannot rewrite, which leaves this with
+  /// only the file handling to get right — and that is `writeReplacing`, the
+  /// same backup and atomic rename a settings file gets.
   func recordTrust(_ records: [CodexTrustWriter.Record]) throws {
     let path = codexConfigFilePath
     let current = try Self.readTrustConfig(at: path)
@@ -413,8 +418,8 @@ struct HookInstaller {
 
   // MARK: - Files
 
-  /// An absent `config.toml` is an empty one: a Codex that has never been
-  /// asked about anything still has hooks waiting to be approved.
+  /// An absent `config.toml` is an empty one: a Codex with no trust records at
+  /// all is one that will run no hooks, which is a fact rather than an error.
   private static func readTrustConfig(at path: String) throws -> String {
     guard FileManager.default.fileExists(atPath: path) else { return "" }
     guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
