@@ -47,7 +47,30 @@ public enum HookConfiguration {
     }
   }
 
-  /// The command Vigil writes for one event, and the only place it is spelled.
+  /// One of our entries as written: the group's matcher, and the command.
+  ///
+  /// The pair rather than the command alone, because an event can now hold
+  /// several of our entries and the matcher is what tells them apart. An entry
+  /// carrying the right command under the wrong matcher — or under none, which
+  /// is what every install written before matchers existed looks like — fires
+  /// for payloads it was never meant to see, and the command by itself cannot
+  /// say so.
+  struct WrittenEntry: Hashable {
+    let matcher: String?
+    let command: String
+  }
+
+  /// Our entries inside one group, in either shape a host might use.
+  static func vigilEntries(in group: [String: Any], scriptPath: String) -> [WrittenEntry] {
+    // A flat entry is its own group, so it carries no matcher — and Cursor,
+    // the only host Vigil writes flat entries for, has no matcher to carry.
+    let matcher = group["command"] == nil ? group["matcher"] as? String : nil
+    return vigilCommands(in: group, scriptPath: scriptPath).map {
+      WrittenEntry(matcher: matcher, command: $0)
+    }
+  }
+
+  /// The command Vigil writes for one entry, and the only place it is spelled.
   ///
   /// Extracted from `install` so that "what we wrote" and "what we would write"
   /// cannot disagree. They did, and silently: `isVigilHook` matches the
@@ -65,11 +88,17 @@ public enum HookConfiguration {
   /// the mapping in Swift where it is typed and tested. The quoting is
   /// load-bearing too: an unquoted path containing a space made the shell try
   /// to run its first word, so every hook failed silently.
+  ///
+  /// Takes a `HookRegistration` rather than an event name, and that is the
+  /// change matchers forced: an event can now be registered twice with two
+  /// different states, so "the command for this event" is no longer a question
+  /// with one answer. Asking `integration.state(for:)` here would have quietly
+  /// answered `.idle` for both halves of Claude Code's `Notification`.
   public static func command(
-    scriptPath: String, integration: AgentIntegration, event: String
+    scriptPath: String, integration: AgentIntegration, registration: HookRegistration
   ) -> String {
-    let state = integration.state(for: event)
-    return "'\(scriptPath)' \(integration.id.rawValue) \(event) \(state.rawValue)"
+    "'\(scriptPath)' \(integration.id.rawValue) \(registration.event) "
+      + registration.state.rawValue
   }
 
   /// Whether a value is really absent.
@@ -138,7 +167,12 @@ public enum HookConfiguration {
       }
     }
 
-    for event in integration.allEvents {
+    // Per registration rather than per event: an event whose meaning lives in a
+    // payload field gets one entry per meaning, each with its own matcher and
+    // its own state. They append in order, so re-running the install produces
+    // the same file — the sweep above has already taken the previous round out.
+    for registration in integration.registrations {
+      let event = registration.event
       // The same rule one level down. `hooks[event] as? [[String: Any]] ?? []`
       // read another tool's differently-shaped entry as an empty slot and wrote
       // over it, so installing Vigil silently deleted their hook.
@@ -152,14 +186,24 @@ public enum HookConfiguration {
       var matchers = hooks[event] as? [[String: Any]] ?? []
 
       let command = Self.command(
-        scriptPath: scriptPath, integration: integration, event: event)
+        scriptPath: scriptPath, integration: integration, registration: registration)
 
       switch integration.entryFormat {
       case .nested:
         var entry: [String: Any] = ["type": "command", "command": command]
         if let timeout = integration.timeoutMilliseconds { entry["timeout"] = timeout }
-        matchers.append(["hooks": [entry]])
+        var group: [String: Any] = ["hooks": [entry]]
+        // Written only when there is one. An absent `matcher` is how both
+        // hosts spell "every occurrence", and it is also what Codex hashes
+        // for an entry without one — so writing `"matcher": ""` instead
+        // would change the trust identity of every hook Vigil has installed.
+        if let matcher = registration.matcher { group["matcher"] = matcher }
+        matchers.append(group)
       case .flat:
+        // Cursor's entries have no group to hang a matcher on, and Cursor
+        // publishes no matcher metadata to hang there. A registration that
+        // asked for one against a flat host would be silently dropped, so
+        // `HookConfigurationTests` refuses the combination instead.
         var entry: [String: Any] = ["command": command]
         if let timeout = integration.timeoutMilliseconds { entry["timeout"] = timeout }
         matchers.append(entry)
@@ -274,14 +318,23 @@ public enum HookConfiguration {
   /// and neither could reach `outOfDate`, so the user was never offered the
   /// button that fixes it.
   ///
-  /// Compares against `command(scriptPath:integration:event:)`, which is the
-  /// same call `install` makes, so the two cannot drift apart. An event with
-  /// several of our entries counts as current if any one of them is the current
-  /// command: the sweep will take the rest out on the next install, and the
-  /// hook is firing correctly in the meantime.
+  /// Compares against `command(scriptPath:integration:registration:)`, which is
+  /// the same call `install` makes, so the two cannot drift apart.
   ///
-  /// Deliberately not a check on the whole entry. A host's own additions — a
-  /// `timeout` Vigil did not write, a key a newer version of the host added —
+  /// Every registration Vigil would write for the event has to be present, not
+  /// merely one of them — that is what matchers changed. An install from before
+  /// `Notification` was split holds one entry saying `waiting`, which used to
+  /// satisfy "at least one of ours is current" and now does not, because the
+  /// `idle_prompt` half is missing and an event half-registered is an event
+  /// that still reports the wrong thing. Extra entries of ours beyond those are
+  /// left alone: the sweep takes them out on the next install and they are
+  /// firing correctly in the meantime.
+  ///
+  /// The matcher counts as part of the entry, and only the matcher. An entry
+  /// carrying our current command with no matcher is *not* current — that is
+  /// precisely the old `Notification` install, firing `waiting` for values that
+  /// mean work is resuming. A host's own additions are still ignored: a
+  /// `timeout` Vigil did not write, or a key a newer version of the host added,
   /// are not evidence of an old install, and refusing them would turn every
   /// hand-tuned settings file into a permanent "Update" badge.
   public static func outdatedEvents(
@@ -290,12 +343,20 @@ public enum HookConfiguration {
     integration: AgentIntegration
   ) -> [String] {
     let hooks = settings["hooks"] as? [String: Any] ?? [:]
+    var wanted: [String: Set<WrittenEntry>] = [:]
+    for registration in integration.registrations {
+      let entry = WrittenEntry(
+        matcher: registration.matcher,
+        command: command(
+          scriptPath: scriptPath, integration: integration, registration: registration))
+      wanted[registration.event, default: []].insert(entry)
+    }
+
     return integration.allEvents.filter { event in
-      guard let matchers = hooks[event] as? [[String: Any]] else { return false }
-      let ours = matchers.flatMap { vigilCommands(in: $0, scriptPath: scriptPath) }
+      guard let groups = hooks[event] as? [[String: Any]] else { return false }
+      let ours = Set(groups.flatMap { vigilEntries(in: $0, scriptPath: scriptPath) })
       guard !ours.isEmpty else { return false }
-      let current = command(scriptPath: scriptPath, integration: integration, event: event)
-      return !ours.contains(current)
+      return !(wanted[event] ?? []).isSubset(of: ours)
     }
   }
 }
@@ -963,6 +1024,33 @@ public enum CodexHookTrust {
     return "\(hooksPath):\(label):\(group):\(handler)"
   }
 
+  /// The matcher Codex hashes for an event, which is not always the one written.
+  ///
+  /// `matcher_pattern_for_event` forces `None` for exactly three events —
+  /// `UserPromptSubmit`, `Stop` and `Interrupt` — and passes the matcher
+  /// through for the other nine. The reason is visible at the other end: those
+  /// three dispatch through `select_handlers(…, /*matcher_input*/ None)`,
+  /// because none of them carries a field there would be anything to match
+  /// against. Left alone, a matcher on one of them would make
+  /// `matches_matcher(Some(m), None)` return false and silently drop every hook
+  /// on the event; forcing it to `None` makes a stray matcher inert instead.
+  ///
+  /// It is normalised *before* the hash, not after, so on those three events a
+  /// group with a matcher and the same group without one are one trust
+  /// identity. Hashing the written string there would invent a hash Codex never
+  /// computes and report a working hook as `modified`.
+  ///
+  /// Vigil writes a matcher on `SessionStart` alone, which is in the
+  /// pass-through nine — but this is applied to whatever is in the file rather
+  /// than to what Vigil would write, because `entries` reads the user's file
+  /// and the user may have hand-edited it.
+  static func hashedMatcher(_ matcher: String?, for event: String) -> String? {
+    switch event {
+    case "UserPromptSubmit", "Stop", "Interrupt": nil
+    default: matcher
+    }
+  }
+
   /// The hash Codex computes for one command hook.
   ///
   /// Codex builds a normalised identity, turns it into a TOML value, converts
@@ -978,16 +1066,52 @@ public enum CodexHookTrust {
   ///     {"event_name":"stop","hooks":[{"async":false,"command":"…",
   ///      "timeout":600,"type":"command"}]}
   ///
+  /// and with a matcher, exactly that with one key appended — `"matcher"` sorts
+  /// after `"hooks"`, and it is the last key either way:
+  ///
+  ///     {"event_name":"session_start","hooks":[{…}],"matcher":"startup|resume"}
+  ///
+  /// That comes out of `hook_hash`, which clones the group, replaces its
+  /// `matcher` with the normalised one and its `hooks` with the single
+  /// normalised handler, and hands the result to `version_for_toml` wrapped in
+  /// `NormalizedHookIdentity { event_name, #[serde(flatten)] group }`.
+  /// `MatcherGroup` is `{ matcher: Option<String>, hooks: Vec<…> }` with no
+  /// `skip_serializing_if` on either field, so `Some` is written and `None` is
+  /// dropped by TOML itself — which is why the no-matcher bytes above have no
+  /// `matcher` key at all and must keep not having one.
+  ///
+  /// The no-matcher form is pinned against five records a real Codex wrote, in
+  /// `CodexHookTrustTests`. The matcher form is not — no machine here has a
+  /// Codex to ask — so it is derived from the source of `hook_hash`,
+  /// `MatcherGroup` and `version_for_toml`, and pinned in the same file both as
+  /// a hash and as the literal bytes it is taken over, so the derivation is
+  /// there to be checked rather than merely trusted.
+  ///
   /// Hand-assembled rather than run through `JSONSerialization`, because the
   /// bytes have to match another program's serialiser and not merely be valid
   /// JSON. Foundation gives no promise about how it escapes, and a single
   /// differently-spelled escape would turn every answer here into a false
   /// accusation.
-  static func identityHash(event: String, command: String, timeoutSeconds: Int) -> String? {
+  static func identityJSON(
+    event: String, command: String, timeoutSeconds: Int, matcher: String? = nil
+  ) -> String? {
     guard let label = eventLabels[event] else { return nil }
-    let json =
+    var json =
       "{\"event_name\":\(quoted(label)),\"hooks\":[{\"async\":false,"
-      + "\"command\":\(quoted(command)),\"timeout\":\(timeoutSeconds),\"type\":\"command\"}]}"
+      + "\"command\":\(quoted(command)),\"timeout\":\(timeoutSeconds),\"type\":\"command\"}]"
+    if let matcher = hashedMatcher(matcher, for: event) {
+      json += ",\"matcher\":\(quoted(matcher))"
+    }
+    return json + "}"
+  }
+
+  static func identityHash(
+    event: String, command: String, timeoutSeconds: Int, matcher: String? = nil
+  ) -> String? {
+    guard
+      let json = identityJSON(
+        event: event, command: command, timeoutSeconds: timeoutSeconds, matcher: matcher)
+    else { return nil }
     let digest = SHA256.hash(data: Data(json.utf8))
     return "sha256:" + digest.map { String(format: "%02x", $0) }.joined()
   }
@@ -1089,6 +1213,8 @@ public enum CodexHookTrust {
     let handler: Int
     let command: String
     let timeoutSeconds: Int
+    /// The group's matcher as written, before `hashedMatcher` has its say.
+    let matcher: String?
   }
 
   /// Our entries in a parsed `hooks.json`, with their positions.
@@ -1105,13 +1231,24 @@ public enum CodexHookTrust {
 
     for event in integration.allEvents.sorted() {
       guard let matchers = hooks[event] as? [[String: Any]] else { continue }
-      for (group, matcher) in matchers.enumerated() {
-        // A matcher string is part of the hashed identity and Vigil never
-        // writes one, so a group carrying anything but `hooks` is not a group
-        // we can speak for.
-        guard Set(matcher.keys) == ["hooks"],
-          let handlers = matcher["hooks"] as? [[String: Any]]
+      for (group, groupValue) in matchers.enumerated() {
+        // A matcher string is part of the hashed identity, so a group is only
+        // one we can speak for if we know every key it carries. `hooks` alone,
+        // or `hooks` and a `matcher` that really is a string — which is what
+        // Vigil writes for `SessionStart` and what a user may have written by
+        // hand for anything. Anything else is somebody's group, not ours, and
+        // is skipped rather than hashed as though the extra key were not there.
+        //
+        // The index still counts it. Codex keys trust on the group's position
+        // in the array — `groups.into_iter().enumerate()`, advanced even for a
+        // group it goes on to reject — so skipping without counting would file
+        // every later entry under the wrong key.
+        let keys = Set(groupValue.keys)
+        guard keys == ["hooks"] || keys == ["hooks", "matcher"],
+          keys.contains("matcher") == (groupValue["matcher"] is String),
+          let handlers = groupValue["hooks"] as? [[String: Any]]
         else { continue }
+        let matcher = groupValue["matcher"] as? String
         for (handler, entry) in handlers.enumerated() {
           guard let command = entry["command"] as? String,
             HookConfiguration.isVigilHook(command, scriptPath: scriptPath)
@@ -1121,7 +1258,8 @@ public enum CodexHookTrust {
           found.append(
             Entry(
               event: event, group: group, handler: handler, command: command,
-              timeoutSeconds: normalisedTimeoutSeconds(timeout, for: event)))
+              timeoutSeconds: normalisedTimeoutSeconds(timeout, for: event),
+              matcher: matcher))
         }
       }
     }
@@ -1155,7 +1293,8 @@ public enum CodexHookTrust {
         let key = stateKey(
           hooksPath: hooksPath, event: entry.event, group: entry.group, handler: entry.handler),
         let expected = identityHash(
-          event: entry.event, command: entry.command, timeoutSeconds: entry.timeoutSeconds)
+          event: entry.event, command: entry.command, timeoutSeconds: entry.timeoutSeconds,
+          matcher: entry.matcher)
       else { return .unknown }
 
       guard let recorded = records[key] else {
@@ -1219,19 +1358,34 @@ extension HookConfiguration {
     host: HostHookSupport = .notChecked
   ) -> HookSetupState {
     if missingEvents.isEmpty {
-      // The two host-side refusals come before the ones about our own file, and
-      // in this order, because each is more fundamental than the next: a host
-      // too old to have a hook subsystem cannot be made to run one by trusting
-      // it, and a host that will not run our hooks at all is not helped by
-      // being told our event list has drifted. Both are also the cases the user
-      // cannot fix from inside Vigil, which is the thing worth saying first.
-      //
-      // They cannot both be true today — only Codex gates and only Gemini CLI
-      // has a floor — so the order is a statement of precedence for whichever
-      // host first has both, not a live branch.
+      // A host too old to have a hook subsystem comes first and always will:
+      // nothing the user can do inside Vigil, and nothing they can do inside
+      // the host short of upgrading it, makes a hook run. Being told our event
+      // list has drifted is no help to them at all.
       if !host.isUsable { return .hostTooOld }
+
+      // Then our own file, and this order is a correction. `untrusted` used to
+      // come first, on the reasoning that a host refusing to run our hooks is
+      // not helped by hearing our event list has drifted, and that offering
+      // "Update" for a trust problem sends the user to re-install a file that
+      // was never at fault.
+      //
+      // That reasoning only holds while the two are independent, and they are
+      // not. Codex hashes the entry — command, timeout and matcher — so an
+      // entry of ours that has changed since it was approved is *both* out of
+      // date and `modified`, and it is the first fact that caused the second.
+      // Sending that user to `/hooks` asks them to approve the old entry: they
+      // would be re-arming precisely the hook the update exists to replace,
+      // and Vigil would still be reporting the same file as out of date
+      // afterwards. Re-running the install first costs them one extra press
+      // and is never a no-op, because something really has drifted.
+      //
+      // A trust problem with nothing out of date — a fresh install, or one the
+      // user has never approved — is unaffected: `outdatedEvents` is empty
+      // there, and this falls straight through to `untrusted` as before.
+      if !retiredEvents.isEmpty || !outdatedEvents.isEmpty { return .outOfDate }
       if !trust.isSatisfied { return .untrusted }
-      return retiredEvents.isEmpty && outdatedEvents.isEmpty ? .ready : .outOfDate
+      return .ready
     }
     // Hooks left over from a previous version — registered for an event we have
     // retired, or written in a command we no longer write — are proof this

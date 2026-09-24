@@ -82,7 +82,8 @@ public enum CodexTrustWriter {
         let key = CodexHookTrust.stateKey(
           hooksPath: hooksPath, event: entry.event, group: entry.group, handler: entry.handler),
         let hash = CodexHookTrust.identityHash(
-          event: entry.event, command: entry.command, timeoutSeconds: entry.timeoutSeconds)
+          event: entry.event, command: entry.command, timeoutSeconds: entry.timeoutSeconds,
+          matcher: entry.matcher)
       else { return nil }
       records.append(Record(key: key, hash: hash, event: entry.event))
     }

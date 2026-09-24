@@ -16,19 +16,56 @@ struct HookInstaller {
   let settingsPath: String
   let integration: AgentIntegration
 
+  /// The home directory the paths this installer is *not* given are resolved
+  /// against: the other three agents' settings files, which `uninstall()`
+  /// consults before deleting the shared script, and Codex's `config.toml`.
+  ///
+  /// A parameter rather than a read of `homeDirectoryForCurrentUser`, because
+  /// those are the reads a test cannot otherwise redirect. Exercising the
+  /// delete rule used to mean moving the whole process's idea of home with
+  /// `CFFIXED_USER_HOME` — a global, so every suite touching it had to hold a
+  /// lock and run serially, and a redirect that silently failed ran the
+  /// scenario against the developer's real `~/.claude`, `~/.codex`, `~/.gemini`
+  /// and `~/.cursor`. Passed in, the fake home is visible in the call and
+  /// cannot leak past it.
+  let home: URL
+
+  /// Spelled out rather than left to the memberwise initializer so that `home`
+  /// can default: the app always wants the real one, and only a test ever says
+  /// otherwise.
+  init(
+    scriptPath: String,
+    settingsPath: String,
+    integration: AgentIntegration,
+    home: URL = FileManager.default.homeDirectoryForCurrentUser
+  ) {
+    self.scriptPath = scriptPath
+    self.settingsPath = settingsPath
+    self.integration = integration
+    self.home = home
+  }
+
   /// One installer per agent Vigil knows about.
-  static func live(for integration: AgentIntegration) -> HookInstaller {
+  static func live(
+    for integration: AgentIntegration,
+    home: URL = FileManager.default.homeDirectoryForCurrentUser
+  ) -> HookInstaller {
     HookInstaller(
-      scriptPath: defaultScriptPath,
-      settingsPath: settingsPath(for: integration),
-      integration: integration
+      scriptPath: defaultScriptPath(home: home),
+      settingsPath: settingsPath(for: integration, home: home),
+      integration: integration,
+      home: home
     )
   }
 
-  /// Where this agent keeps its settings, for this user.
-  static func settingsPath(for integration: AgentIntegration) -> String {
-    FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent(integration.settingsPath).path
+  /// Where this agent keeps its settings, under `home`.
+  ///
+  /// `home` has no default on purpose. Every caller inside this file already
+  /// has one to pass, and a default would make the real user's home the thing
+  /// that happens when you say nothing — which is precisely the mistake a test
+  /// makes once and never notices.
+  static func settingsPath(for integration: AgentIntegration, home: URL) -> String {
+    home.appendingPathComponent(integration.settingsPath).path
   }
 
   enum InstallError: LocalizedError {
@@ -96,10 +133,11 @@ struct HookInstaller {
   ///
   /// Copied out of the bundle rather than referenced inside it, so moving or
   /// replacing the app doesn't break a hook Claude Code has already recorded.
-  static var defaultScriptPath: String {
-    FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent(".vigil/hooks/vigil-hook.sh")
-      .path
+  ///
+  /// Takes the home for the reason `settingsPath(for:home:)` does, and has no
+  /// default for the same one: this is the path an uninstall deletes.
+  static func defaultScriptPath(home: URL) -> String {
+    home.appendingPathComponent(".vigil/hooks/vigil-hook.sh").path
   }
 
   var isInstalled: Bool { missingEvents.isEmpty }
@@ -170,7 +208,7 @@ struct HookInstaller {
       let settings = try? Self.readSettings(at: settingsPath)
     else { return .unknown }
 
-    let toml = (try? Self.readTrustConfig(at: Self.codexConfigFilePath)) ?? ""
+    let toml = (try? Self.readTrustConfig(at: codexConfigFilePath)) ?? ""
 
     return CodexHookTrust.status(
       hooks: settings,
@@ -187,7 +225,17 @@ struct HookInstaller {
   /// Where Codex keeps its hook trust records, relative to home.
   static let codexConfigPath = ".codex/config.toml"
 
-  /// The same file, resolved against this user's home directory.
+  /// The same file, resolved against this installer's home.
+  ///
+  /// Everything in this type that reads or writes that file goes through here,
+  /// never through the static below — it is the one path an installer writes
+  /// that it is not handed, so it is the one a test most needs moved.
+  var codexConfigFilePath: String {
+    home.appendingPathComponent(Self.codexConfigPath).path
+  }
+
+  /// The same file for whoever is running the app, for showing them where it
+  /// is. Not for reading or writing: that is the instance property above.
   static var codexConfigFilePath: String {
     FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent(codexConfigPath).path
@@ -234,7 +282,7 @@ struct HookInstaller {
     // hook entries that still read as correct, pointing at a file that is not
     // there: nothing fires, nothing in any settings file hints at why, and the
     // first anyone hears of it is a Mac that slept in the middle of a run.
-    if Self.anyIntegrationReferencesScript(at: scriptPath) == .notReferenced {
+    if Self.anyIntegrationReferencesScript(at: scriptPath, home: home) == .notReferenced {
       try? FileManager.default.removeItem(atPath: scriptPath)
     }
     Self.log.info("hooks removed for \(integration.displayName, privacy: .public)")
@@ -269,19 +317,24 @@ struct HookInstaller {
   /// one agent we could not ask is enough to leave the question open. Only
   /// four clean "no"s produce a `.notReferenced`.
   ///
-  /// Takes the path rather than assuming `defaultScriptPath`, so it answers
-  /// the question its caller is actually asking. An installer pointed at a
-  /// script somewhere else — the install/uninstall check in `AppDelegate` runs
-  /// against a temporary directory — would otherwise have the fate of its own
-  /// script decided by whether this user's real settings still reference the
-  /// real one.
-  static func anyIntegrationReferencesScript(at scriptPath: String) -> ScriptReference {
+  /// Takes the path rather than assuming the default one, so it answers the
+  /// question its caller is actually asking. An installer pointed at a script
+  /// somewhere else — the install/uninstall check in `AppDelegate` runs against
+  /// a temporary directory — would otherwise have the fate of its own script
+  /// decided by whether this user's real settings still reference the real one.
+  ///
+  /// Takes the home for the same reason: four settings files are read here, and
+  /// which four is the whole question.
+  static func anyIntegrationReferencesScript(at scriptPath: String, home: URL)
+    -> ScriptReference
+  {
     var anyUnreadable = false
     for integration in AgentIntegration.all {
       let installer = HookInstaller(
         scriptPath: scriptPath,
-        settingsPath: settingsPath(for: integration),
-        integration: integration
+        settingsPath: settingsPath(for: integration, home: home),
+        integration: integration,
+        home: home
       )
       switch installer.scriptReference {
       case .referenced: return .referenced
@@ -340,7 +393,7 @@ struct HookInstaller {
   /// which leaves this with only the file handling to get right — and that is
   /// `writeReplacing`, the same backup and atomic rename a settings file gets.
   func recordTrust(_ records: [CodexTrustWriter.Record]) throws {
-    let path = Self.codexConfigFilePath
+    let path = codexConfigFilePath
     let current = try Self.readTrustConfig(at: path)
 
     let updated: String

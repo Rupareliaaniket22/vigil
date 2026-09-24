@@ -406,19 +406,40 @@ struct SessionLifecycleTests {
 @Suite("How a session's work ended")
 struct SessionOutcomeTests {
 
+  /// One event, resolved through the entry Vigil installs for it.
+  ///
+  /// `payload` is the value of the field the host matches on, for the events
+  /// whose meaning is in the payload rather than in the name — so this asks the
+  /// same question the running app does rather than `state(for:)`, which has no
+  /// answer to give for those.
   private func session(
-    _ agent: AgentKind, _ event: String, now: Timestamp = .now
+    _ agent: AgentKind, _ event: String, payload: String? = nil, now: Timestamp = .now
   ) -> AgentSession {
     guard let integration = AgentIntegration.all.first(where: { $0.id == agent }) else {
       Issue.record("no integration for \(agent.rawValue)")
       return AgentSession(
         event: AgentEvent(agent: agent, sessionID: "s", state: .idle), now: now)
     }
+    let entries = integration.registrations.filter { $0.event == event }
+    let fired = entries.first { entry in
+      guard let matcher = entry.matcher else { return payload == nil }
+      guard let payload else { return false }
+      return matcher.split(separator: "|").contains { $0 == payload }
+    }
+    // A name this host does not register for at all is a name from somebody
+    // else's vocabulary, and `state(for:)` calls anything it does not know
+    // idle — which is the reading `namesAreNotSharedBetweenHosts` is about.
+    // A name it *does* register for, arriving with a value none of its
+    // matchers names, runs no hook at all and so has no session to return.
+    guard let state = fired?.state ?? (entries.isEmpty ? integration.state(for: event) : nil)
+    else {
+      Issue.record("\(agent.rawValue) runs no hook for \(event) \(payload ?? "")")
+      return AgentSession(
+        event: AgentEvent(agent: agent, sessionID: "s", state: .idle), now: now)
+    }
     var store = SessionStore()
     return store.apply(
-      AgentEvent(
-        agent: agent, sessionID: "s", state: integration.state(for: event), event: event),
-      now: now)
+      AgentEvent(agent: agent, sessionID: "s", state: state, event: event), now: now)
   }
 
   @Test("a session still in flight has no outcome yet")
@@ -427,8 +448,12 @@ struct SessionOutcomeTests {
     // The one that matters: an agent stopped on a permission prompt has not
     // finished, and reading it as finished is what announced the end of a run
     // on every approval.
-    #expect(session(.claudeCode, "Notification").outcome == nil)
-    #expect(session(.claudeCode, "Notification").isLive)
+    #expect(session(.claudeCode, "Notification", payload: "permission_prompt").outcome == nil)
+    #expect(session(.claudeCode, "Notification", payload: "permission_prompt").isLive)
+    // And the other half of the same event: the REPL sitting at the prompt with
+    // nothing running really has ended the run, which is the only thing Claude
+    // Code ever says after the user presses escape.
+    #expect(session(.claudeCode, "Notification", payload: "idle_prompt").outcome == .finished)
   }
 
   @Test("a host reporting its ordinary ending reports a finish")

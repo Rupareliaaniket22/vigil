@@ -316,9 +316,10 @@ struct OutdatedHookTests {
   /// would turn every hand-tuned settings file into a permanent "Update" badge.
   @Test("an extra key beside the right command is not an old install")
   func extraKeysAreFine() {
-    let event = AgentIntegration.claudeCode.allEvents[0]
+    let registration = AgentIntegration.claudeCode.registrations[0]
+    let event = registration.event
     let command = HookConfiguration.command(
-      scriptPath: script, integration: .claudeCode, event: event)
+      scriptPath: script, integration: .claudeCode, registration: registration)
     let settings: [String: Any] = [
       "hooks": [
         event: [["hooks": [["type": "command", "command": command, "somethingNew": true]]]]

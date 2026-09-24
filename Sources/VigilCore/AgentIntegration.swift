@@ -9,6 +9,45 @@ public enum HookEntryFormat: Sendable, Equatable {
   case flat
 }
 
+/// One entry Vigil writes into a host's settings file.
+///
+/// Usually one per event, which is why this type did not exist for a long time:
+/// an event name meant one thing, so a list of names and a state each was the
+/// whole story. Two hosts publish an event whose meaning lives in a *payload
+/// field* rather than in its name — Claude Code's `Notification` carries a
+/// `notification_type` that runs from "a permission dialog is up" to "the MCP
+/// server finished, carry on", and Codex's `SessionStart` carries a `source`
+/// that is `compact` in the middle of a turn — and for those, one name with one
+/// state is wrong whichever state is chosen.
+///
+/// Both hosts also publish a matcher for the field in question, so the fix is
+/// to register several entries for the one event, each narrowed to the values
+/// that mean the same thing and each carrying its own state. The mapping stays
+/// in Swift, baked into the command at install time, which is the property
+/// `hooks/vigil-hook.sh` exists to keep.
+public struct HookRegistration: Sendable, Equatable {
+  /// The host's own event name.
+  public let event: String
+  /// What this entry means, in Vigil's terms. Baked into the command.
+  public let state: AgentState
+  /// The host's matcher, verbatim, or nil to register for every occurrence.
+  ///
+  /// Both hosts that take one read a pipe-separated list of literal values as
+  /// an exact-match set before they try it as a regular expression, and both
+  /// treat an entry whose matcher matches nothing as simply not applying —
+  /// no warning, no error, no hook. That is what makes this safe against an
+  /// open set: a value neither matcher names fires nothing at all, and a
+  /// session's state is left exactly as the last event found it, which is the
+  /// one answer that cannot be wrong.
+  public let matcher: String?
+
+  public init(event: String, state: AgentState, matcher: String? = nil) {
+    self.event = event
+    self.state = state
+    self.matcher = matcher
+  }
+}
+
 /// One agent Vigil knows how to wire itself into.
 ///
 /// Each host names its lifecycle events differently and keeps its settings
@@ -160,13 +199,51 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
   /// floor answers only what it can: below it, nothing can help.
   public let hookFloor: HookFloor?
 
-  public var allEvents: [String] { workingEvents + waitingEvents + idleEvents }
+  /// The events whose meaning is in a payload field rather than in the name.
+  ///
+  /// One entry per meaning, each with the host's own matcher narrowing it. An
+  /// event named here is deliberately absent from the three arrays above: it
+  /// has no single state, and `state(for:)` would have to invent one.
+  public let matchedEvents: [HookRegistration]
+
+  /// Every entry Vigil writes for this host, in the order it writes them.
+  ///
+  /// The three arrays are the whole story for an event whose name means one
+  /// thing; `matchedEvents` holds the ones where it does not. `install` walks
+  /// this rather than `allEvents`, so one event can be written twice with a
+  /// different matcher and a different state baked into each command.
+  public var registrations: [HookRegistration] {
+    workingEvents.map { HookRegistration(event: $0, state: .working) }
+      + waitingEvents.map { HookRegistration(event: $0, state: .waiting) }
+      + idleEvents.map { HookRegistration(event: $0, state: .idle) }
+      + matchedEvents
+  }
+
+  /// Every event Vigil registers for, each named once however many entries it
+  /// holds.
+  ///
+  /// An event with two matchers is still one key in the settings file, and
+  /// every check phrased as "is there one of ours under this key" — `install`'s
+  /// sweep, `missingEvents`, `retiredEvents`, `unmergeableKeys` — is asking
+  /// about the key rather than about the entries beneath it. Which entries
+  /// belong there is `outdatedEvents`' question, and it reads `registrations`.
+  public var allEvents: [String] {
+    var seen = Set<String>()
+    return registrations.compactMap { seen.insert($0.event).inserted ? $0.event : nil }
+  }
 
   /// What this host's event name means, in Vigil's terms.
   ///
   /// Anything unrecognised is treated as idle: assuming an unknown event means
   /// work would let a mislabelled hook hold the Mac awake indefinitely, which
   /// is the failure worth avoiding.
+  ///
+  /// Deliberately blind to `matchedEvents`, and that is not an oversight. An
+  /// event listed there means two or three different things depending on a
+  /// field in its payload, so there is no answer to give and any answer given
+  /// would be wrong some of the time. The state for those is decided per entry
+  /// at install time and lives in `registrations`; nothing at runtime asks this
+  /// question at all, because the state arrives in the hook's own payload.
   public func state(for event: String) -> AgentState {
     if workingEvents.contains(event) { return .working }
     if waitingEvents.contains(event) { return .waiting }
@@ -207,7 +284,8 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
     timeoutMilliseconds: Int? = nil,
     entryFormat: HookEntryFormat = .nested,
     requiresHookTrust: Bool = false,
-    hookFloor: HookFloor? = nil
+    hookFloor: HookFloor? = nil,
+    matchedEvents: [HookRegistration] = []
   ) {
     self.id = id
     self.displayName = displayName
@@ -220,6 +298,7 @@ public struct AgentIntegration: Sendable, Identifiable, Equatable {
     self.entryFormat = entryFormat
     self.requiresHookTrust = requiresHookTrust
     self.hookFloor = hookFloor
+    self.matchedEvents = matchedEvents
   }
 }
 
@@ -255,40 +334,10 @@ extension AgentIntegration {
     // decline to decide. `Elicitation`'s exit code 2 *would* deny the
     // elicitation; Vigil's hook exits 0 on every path.
     //
-    // `Notification` stays, and it is the uncomfortable one. It is an open
-    // set — seventeen `notification_type` values today, with no promise there
-    // will not be an eighteenth — and they do not agree with each other about
-    // what is happening:
-    //
-    // - `idle_prompt` means the REPL is sitting at the prompt with nothing
-    //   running. That is `idle`, not `waiting`.
-    // - `permission_prompt`, `agent_needs_input`, `worker_permission_prompt`,
-    //   `elicitation_dialog`, `elicitation_url_dialog` mean waiting — and the
-    //   two dedicated events above now cover the cases that matter.
-    // - `elicitation_complete` ("MCP server confirmed elicitation complete"),
-    //   `auth_success`, `computer_use_exit`, `agent_completed`,
-    //   `push_notification`, `quota_auto_resume_*` and `model_refusal_fallback`
-    //   arrive *mid-turn*. Vigil reads `waiting` and drops the hold while the
-    //   agent is still working.
-    //
-    // One name cannot mean three things, so this is wrong however it is
-    // classified. It is kept as `waiting` because the alternatives are worse
-    // and because the mistake it makes is the cheap one: a stray `waiting`
-    // releases a hold the next `PreToolUse` takes straight back, while the
-    // `idle` reading would announce "the agent finished, your Mac can sleep"
-    // in the middle of a permission prompt — the bug `live()` exists to
-    // prevent — and dropping `Notification` altogether would throw away
-    // `idle_prompt`, which is the only thing Claude Code ever says after the
-    // user presses escape. See the gap recorded below.
-    //
-    // The real fix is a `matcher` on `notification_type`: Claude Code
-    // publishes one for this event, so Vigil could register several
-    // `Notification` entries with different matchers and a different state
-    // baked into each command, and the mapping would stay in Swift where it
-    // is typed. That is a change to `HookConfiguration.install` (and to
-    // `CodexHookTrust.hash`, which today refuses any matcher key), not to this
-    // file, and it is the one worth making next.
-    waitingEvents: ["Notification", "PermissionRequest", "Elicitation"],
+    // `Notification` is not here any more, and it is not gone either: it is in
+    // `matchedEvents` below, split in two. See that comment for why one name
+    // could not stay one entry.
+    waitingEvents: ["PermissionRequest", "Elicitation"],
     // `Stop` ends a turn; `SessionEnd` only fires when the whole session goes
     // away. Without `Stop`, every finished turn held the Mac awake until the
     // session went stale.
@@ -345,19 +394,72 @@ extension AgentIntegration {
     //   main turn works would mark the whole session idle and drop the hold
     //   mid-run. Same shape as the mid-turn `Notification` values above.
     //
-    // What actually covers it, partly and by accident, is `Notification` with
-    // `notification_type: "idle_prompt"` — "Claude is waiting for your input",
-    // armed whenever the turn stops loading and fired once the REPL has been
-    // untouched for `messageIdleNotifThresholdMs`, 60 seconds by default. The
-    // hook runs even for someone who has turned notifications off, because
-    // the sender executes the hooks before it consults the channel. So escape
-    // costs about a minute of holding the Mac awake rather than five — but
-    // only as `waiting`, so the run never ends, no completion sound is played,
-    // and the session lingers until it is pruned as `lostContact`. That is the
-    // real cost of the gap, and it is the best available reading until either
-    // Claude Code publishes an interrupt event or Vigil can discriminate on
-    // `notification_type`.
-    idleEvents: ["Stop", "StopFailure", "SessionEnd"]
+    // What covers it, as far as anything does, is the `idle_prompt` entry in
+    // `matchedEvents` below — and it covers it properly now rather than by
+    // accident, because it arrives as `idle` instead of as `waiting`. Escape
+    // costs about a minute of holding the Mac awake rather than five, and the
+    // run ends when the minute is up instead of lingering until it is pruned
+    // as `lostContact`.
+    idleEvents: ["Stop", "StopFailure", "SessionEnd"],
+    // `Notification`, in two.
+    //
+    // It is an open set — seventeen `notification_type` values in 2.1.280,
+    // with no promise there will not be an eighteenth — and they do not agree
+    // with each other about what is happening. Mapped whole to `waiting`, as
+    // it was, `elicitation_complete` ("MCP server confirmed elicitation
+    // complete"), `auth_success`, `computer_use_exit`, `agent_completed`,
+    // `push_notification`, `quota_auto_resume_*` and `model_refusal_fallback`
+    // each dropped the wake hold in the middle of a turn. The next `PreToolUse`
+    // takes it back, but on a Mac whose idle timer has already elapsed that gap
+    // is enough to sleep mid-task — which is the one failure this app exists to
+    // prevent, so "erring towards release is the cheap mistake" is exactly
+    // backwards here.
+    //
+    // Claude Code publishes `matcherMetadata: {fieldToMatch: "notification_type"}`
+    // for this event, and the dispatcher honours it: `Notification` is in the
+    // set of events that carry a match query, the query is the
+    // `notification_type` verbatim, and a matcher made only of
+    // `[A-Za-z0-9_|, -]` is split on `|` or `,` and compared as *exact strings*
+    // before any regular expression is tried. A group whose matcher matches
+    // nothing is filtered out of the run list — no warning, no error, no hook.
+    //
+    // So: two entries, and deliberately no third.
+    //
+    // - The five values that mean a human is being asked something.
+    //   `permission_prompt` duplicates `PermissionRequest` six seconds late and
+    //   the two `elicitation_*_dialog` values duplicate `Elicitation`; both
+    //   duplicates are kept because a redundant `waiting` costs one event and a
+    //   missing one costs an unattended Mac held awake at a prompt.
+    // - `idle_prompt` alone, as `idle`. Its notifier only fires when the turn
+    //   is not loading, no dialog and no local overlay is on screen, no loop
+    //   wakeup is pending, no quota auto-resume is armed, and the REPL has been
+    //   untouched since the turn completed for `messageIdleNotifThresholdMs`
+    //   (60s). Every one of those is checked inside the timer callback, so this
+    //   value cannot reach us while a permission prompt is up — which was the
+    //   whole objection to reading it as `idle` before there was a matcher to
+    //   separate it from the rest. It runs even for someone who has turned
+    //   notifications off: the sender dispatches the hooks before it consults
+    //   the channel.
+    // - Everything else is *not registered*. Not `working` — a stray `working`
+    //   would hold the Mac awake for a session that had finished — but nothing
+    //   at all. No entry means no hook, which means no event, which means the
+    //   session keeps whatever state the last real event gave it. That is the
+    //   only reading that cannot be wrong, and it is also what an eighteenth
+    //   value will get for free.
+    //
+    // One caveat worth recording: after an escape the run now ends as
+    // `finished` rather than eventually as `lostContact`, because `idle_prompt`
+    // is the same signal for a turn that completed and a turn that was
+    // cancelled and Claude Code does not distinguish them. For the common case
+    // — a turn that ended with `Stop` a minute earlier — the session is already
+    // idle and nothing changes.
+    matchedEvents: [
+      HookRegistration(
+        event: "Notification", state: .waiting,
+        matcher: "permission_prompt|agent_needs_input|worker_permission_prompt"
+          + "|elicitation_dialog|elicitation_url_dialog"),
+      HookRegistration(event: "Notification", state: .idle, matcher: "idle_prompt"),
+    ]
   )
 
   public static let codex = AgentIntegration(
@@ -381,30 +483,8 @@ extension AgentIntegration {
     // as Claude Code's missing `Stop`, and the same five minutes of holding the
     // Mac awake for work that finished.
     //
-    // `SessionStart` used to be here, on the reading that a session opening is
-    // a session not yet working. That reading is wrong, and it was costing the
-    // hold at the worst possible moment. Codex's `SessionStartSource` is
-    // `{Startup, Resume, Clear, Compact, Fork}`, and `Compact` is not a
-    // session opening at all: `Session::compact` queues
-    // `SessionStartSource::Compact` as its last act, and the turn loop in
-    // `session/turn.rs` drains that queue with
-    // `run_pending_session_start_hooks` *inside the loop*, immediately after
-    // `run_auto_compact(…, CompactionPhase::MidTurn)` and immediately before
-    // it `continue`s. So a long Codex run that hits its context limit mid-turn
-    // fires `SessionStart` while it is still working, Vigil flipped the
-    // session to idle, and the hold was dropped for the whole post-compaction
-    // model round trip — typically the slowest request in the session — until
-    // the next `PreToolUse` took it back. On a Mac whose idle timer had
-    // elapsed, that gap is enough to sleep mid-task.
-    //
-    // Dropped rather than reclassified. `working` would be worse — a terminal
-    // opened and left alone would hold the Mac awake until it went stale — and
-    // the other four sources buy nothing that the first `UserPromptSubmit`
-    // does not deliver one prompt later. Codex does match `SessionStart`
-    // handlers on the source string, so a `matcher` of everything but
-    // `compact` would bring it back honestly; that needs
-    // `HookConfiguration.install` to write matchers and `CodexHookTrust.hash`
-    // to hash them, and neither does today.
+    // `SessionStart` is not here. It is in `matchedEvents` below, narrowed to
+    // the four sources that really are a session opening.
     idleEvents: ["Stop", "Interrupt", "SessionEnd"],
     // Verified against `codex_protocol::protocol::HookEventName`, which is the
     // whole vocabulary: PreToolUse, PermissionRequest, PostToolUse,
@@ -415,7 +495,41 @@ extension AgentIntegration {
     // having checked, and worth `CodexHookTrust.eventLabel` refusing a name it
     // does not recognise instead of inventing a snake_case form for it.
     interruptEvent: "Interrupt",
-    requiresHookTrust: true
+    requiresHookTrust: true,
+    // `SessionStart`, minus the one source that is not a session start.
+    //
+    // Codex's `SessionStartSource` is `{Startup, Resume, Clear, Compact, Fork}`
+    // and `Compact` is not a session opening at all: `Session::compact` queues
+    // `SessionStartSource::Compact` as its last act, and the turn loop in
+    // `session/turn.rs` drains that queue with `run_pending_session_start_hooks`
+    // *inside the loop*, immediately after
+    // `run_auto_compact(…, CompactionPhase::MidTurn)` and immediately before it
+    // `continue`s. A long run that hits its context limit mid-turn therefore
+    // fired `SessionStart` while it was still working, Vigil flipped the session
+    // to idle, and the hold was dropped for the whole post-compaction model
+    // round trip — typically the slowest request in the session.
+    //
+    // Registering the whole event was the bug and dropping it whole was the
+    // blunt fix: a genuine `Startup` or `Resume` then went unobserved, so a
+    // Codex window that had been opened and not yet prompted was invisible to
+    // Vigil, and `Clear` and `Fork` — both of which really do end whatever came
+    // before — said nothing either.
+    //
+    // `StartHookTarget::matcher_input` hands `SessionStart` its source string,
+    // and `matches_matcher` reads a matcher of `[A-Za-z0-9_|]` as an exact
+    // list split on `|` before it tries a regular expression, so this is four
+    // literal names rather than a pattern. A handler whose matcher does not
+    // match is left out of `select_handlers`' result; it is not an error and
+    // there is no warning. `compact` therefore fires nothing and the hold
+    // survives a mid-turn compaction, which is the whole point.
+    //
+    // The matcher is part of the hashed trust identity — see
+    // `CodexHookTrust.hashedMatcher` for how, and for the three events where
+    // Codex forces it back to nothing.
+    matchedEvents: [
+      HookRegistration(
+        event: "SessionStart", state: .idle, matcher: "startup|resume|clear|fork")
+    ]
   )
 
   public static let gemini = AgentIntegration(

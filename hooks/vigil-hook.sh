@@ -164,6 +164,22 @@ scrape() {
     | head -n 1
 }
 
+# The same question about the first element of an array.
+#
+# `scrape` cannot answer it: after the colon comes `[`, not a quote, so its
+# pattern never matches. Only `workspace_roots` is read this way, and only its
+# first element is wanted — which is the element `tr` leaves on the same line
+# as the key, because splitting on `,` puts every later element on a line of
+# its own. The rest is `scrape`'s reasoning unchanged: `tr` first so the match
+# is the first occurrence rather than the last, byte-wise so no locale can
+# refuse the input, and a value containing `{` or `,` simply fails to match.
+scrape_first() {
+  printf '%s' "$INPUT" | LC_ALL=C tr '{,' '\n\n' \
+    | LC_ALL=C sed -n \
+      "s/.*\"$1\"[[:space:]]*:[[:space:]]*\[[[:space:]]*\"\([^\"]*\)\".*/\1/p" \
+    | head -n 1
+}
+
 # Whether what arrived is JSON at all — the difference between "this payload
 # has no session id in it" and "it has one and the read stopped short of it".
 #
@@ -198,6 +214,40 @@ SESSION_ID=$(extract session_id)
 [ -z "$SESSION_ID" ] && SESSION_ID=$(extract conversationId)
 CWD=$(extract cwd)
 
+# Cursor sends no `cwd` at all. Without what follows, every Cursor row was
+# labelled with whatever directory the hook process happened to inherit from
+# Cursor itself — the same wrong path for every window on the machine, and
+# never the project the user is working in.
+#
+# What Cursor sends instead is `workspace_roots`: the folders open in that
+# window, assembled as `getWorkspace().folders.map(f => f.uri.path)` in the one
+# place every Cursor hook payload is built, so it is on every event rather than
+# on some of them. One entry for an ordinary window, several for a multi-root
+# workspace, none at all when no folder is open.
+#
+# `.0` is plutil's syntax for indexing an array, and the first root is the
+# answer to give: a session carries one cwd and the panel row shows one path,
+# so a multi-root window is labelled with the folder Cursor itself lists first
+# rather than with a list the row has nowhere to put.
+#
+# The second call is not asking for the array. plutil's `raw` on an array
+# prints its element *count* — ask for `workspace_roots` and a two-folder
+# window answers `2` — and a count is what is wanted here. Reached only when
+# there was no first root, any answer at all means the payload named its roots
+# and there are none: a Cursor window with no folder open. There is no
+# directory to report, so none is reported and the `$PWD` fallback below is
+# skipped rather than inventing one; the panel draws a session's path only
+# when it is non-empty, so such a row is simply the agent's name. A payload
+# with no roots in it answers nothing here, and the fallback stands as it did.
+#
+# Neither call is made when the host does send a cwd, which is every host but
+# this one.
+ROOTS=""
+if [ -z "$CWD" ]; then
+  CWD=$(extract workspace_roots.0)
+  [ -z "$CWD" ] && ROOTS=$(extract workspace_roots)
+fi
+
 # Same four names, asked of a payload that stopped mid-object. Nothing above
 # answered and there is something to answer from, so the one extra parse this
 # costs is paid only by a payload that already went wrong.
@@ -207,9 +257,19 @@ if [ -z "$SESSION_ID" ] && [ -n "$INPUT" ] && ! parses; then
   [ -z "$SESSION_ID" ] && SESSION_ID=$(scrape conversation_id)
   [ -z "$SESSION_ID" ] && SESSION_ID=$(scrape conversationId)
   [ -z "$CWD" ] && CWD=$(scrape cwd)
+  # A Cursor payload that stopped mid-object, for the same reason: its roots
+  # are as scrapeable as anyone else's cwd, and leaving them out would put the
+  # inherited directory back on exactly the rows this is here to fix.
+  [ -z "$CWD" ] && CWD=$(scrape_first workspace_roots)
 fi
 
-[ -z "$CWD" ] && CWD="$PWD"
+# Last resort, and only when the payload said nothing about where the session
+# is. It is the right answer for a host that runs its hook inside the project
+# and sends no path, which is what it was always for. The one case that now
+# reaches here with `$ROOTS` set is a Cursor window with no folder open, and
+# there no path at all is the honest answer: the directory this process
+# inherited is Cursor's, not any project of the user's.
+[ -z "$CWD" ] && [ -z "$ROOTS" ] && CWD="$PWD"
 
 # Bound everything that came out of the payload. The body has to stay under the
 # 64KB the bridge accepts, or the event is refused outright — and losing the

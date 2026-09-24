@@ -539,8 +539,10 @@ struct CompletionSoundTests {
 /// prompt, because it has already decided that is what happened.
 ///
 /// Events go in by their host's own name and are mapped by the host's own
-/// `AgentIntegration`, so `Notification` becomes `waiting` and `StopFailure`
-/// becomes `idle` here for exactly the reason they do in the running app.
+/// `AgentIntegration`, so `PermissionRequest` becomes `waiting` and
+/// `StopFailure` becomes `idle` here for exactly the reason they do in the
+/// running app — through the entry Vigil would have installed, not through a
+/// state a test picked.
 private struct Loop {
   var store = SessionStore(staleAfter: 300)
   var watch = NotificationPolicy.Watch()
@@ -552,14 +554,36 @@ private struct Loop {
   var now = Timestamp.now
 
   /// Post a hook event, the way the bridge does.
-  mutating func hook(_ agent: AgentKind, _ session: String, _ event: String) {
+  ///
+  /// `payload` is the value of whichever field the host matches this event on —
+  /// Claude Code's `notification_type`, Codex's `SessionStart` source. Resolved
+  /// through the entries Vigil installs rather than through
+  /// `state(for:)`, so a test cannot post a state the host would never have
+  /// produced: an event whose only registrations are matched, arriving with a
+  /// value none of them names, fires nothing at all, exactly as it does in the
+  /// running app.
+  mutating func hook(
+    _ agent: AgentKind, _ session: String, _ event: String, payload: String? = nil
+  ) {
     guard let integration = AgentIntegration.all.first(where: { $0.id == agent }) else {
       Issue.record("no integration for \(agent.rawValue)")
       return
     }
+    let entries = integration.registrations.filter { $0.event == event }
+    let fired = entries.first { entry in
+      guard let matcher = entry.matcher else { return payload == nil }
+      guard let payload else { return false }
+      return matcher.split(separator: "|").contains { $0 == payload }
+    }
+    guard let fired else {
+      // Either the host runs no hook for this payload, or the test named an
+      // event Vigil does not register for — which `state(for:)` would have
+      // answered `.idle` to, silently ending the run.
+      if entries.isEmpty { Issue.record("\(agent.rawValue) does not register for \(event)") }
+      return
+    }
     store.apply(
-      AgentEvent(
-        agent: agent, sessionID: session, state: integration.state(for: event), event: event),
+      AgentEvent(agent: agent, sessionID: session, state: fired.state, event: event),
       now: now)
   }
 
@@ -620,7 +644,7 @@ struct RunAnnouncementTests {
     loop.hook(.claudeCode, "s", "UserPromptSubmit")
     #expect(loop.tick() == nil, "starting is not an announcement")
 
-    loop.hook(.claudeCode, "s", "Notification")
+    loop.hook(.claudeCode, "s", "Notification", payload: "permission_prompt")
     #expect(loop.tick() == nil, "an agent asking permission has not finished")
 
     loop.hook(.claudeCode, "s", "PreToolUse")
@@ -643,7 +667,7 @@ struct RunAnnouncementTests {
     var spoken = [loop.tick()].compactMap { $0 }
 
     for _ in 0..<approvals {
-      loop.hook(.claudeCode, "s", "Notification")
+      loop.hook(.claudeCode, "s", "Notification", payload: "permission_prompt")
       spoken += [loop.tick()].compactMap { $0 }
       loop.now = loop.now.advanced(by: 30)
       loop.hook(.claudeCode, "s", "PostToolUse")
@@ -733,7 +757,7 @@ struct RunAnnouncementTests {
     loop.tick()
     loop.hook(.claudeCode, "s", "UserPromptSubmit")
     loop.tick()
-    loop.hook(.claudeCode, "s", "Notification")
+    loop.hook(.claudeCode, "s", "Notification", payload: "permission_prompt")
     loop.tick()
 
     let spoken = loop.silence(for: 320)

@@ -94,6 +94,9 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   nothing here to license or keep
 
 ### Changed
+- Existing installs read as out of date and need Install re-run. Codex users
+  will then need to approve the `SessionStart` entry once, in `/hooks` or from
+  Vigil; every other approval already given still stands
 - The settings window's worst-case height check reads the hosts that gate hooks
   off the integrations instead of assuming Codex is the only one. Each trust
   notice costs 32pt, so a second gating host measures 680 of 680 and a third
@@ -123,6 +126,34 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Help text that only restated the control above it is gone
 
 ### Fixed
+- Claude Code's `Notification` is registered per `notification_type` instead of
+  whole. Every value mapped to "waiting", so `elicitation_complete`,
+  `auth_success`, `agent_completed`, `computer_use_exit`, `push_notification`
+  and the `quota_auto_resume_*` values each released the wake hold in the middle
+  of a turn — long enough to sleep mid-task on a Mac whose idle timer had
+  already elapsed. The five values that mean a human is being asked something
+  now map to "waiting", `idle_prompt` maps to "idle", and the mid-turn values
+  are not registered for at all, so they fire no hook and change no state. A
+  value Claude Code adds later gets the same treatment
+- Pressing escape in Claude Code ends the run about a minute later instead of
+  leaving it live for the full five-minute staleness window. `idle_prompt` is
+  the only thing Claude Code says after an interrupt, and it can now be read as
+  the ending it is
+- Codex's `SessionStart` is listened for again, narrowed to
+  `startup|resume|clear|fork`. It had been dropped entirely because Codex
+  re-fires it mid-turn with source `compact` after a compaction, releasing the
+  hold across the slowest request in the session; the matcher excludes that one
+  source, so a genuine session start is observed again without it
+- An install that is both out of date and untrusted offers "Update" before "run
+  /hooks". For Codex the trust record covers the entry itself, so a hook that
+  changed since it was approved is both — and approving the old entry first
+  would only re-arm what the update replaces
+- Cursor sessions are labelled with the folder you actually have open. Cursor's
+  hook payload carries no working directory at all — it sends `workspace_roots`
+  — so every Cursor row showed whatever directory Cursor happened to launch the
+  hook from: the same wrong path for every window on the machine. A window with
+  several folders open is named after the first; one with no folder open shows
+  no path rather than a made-up one
 - A hook installed by a version of Vigil older than the quoting fix reads as out
   of date and offers "Update". Vigil recognised its own hooks by the script's
   filename alone, so an entry with an unquoted path — which fails silently on a

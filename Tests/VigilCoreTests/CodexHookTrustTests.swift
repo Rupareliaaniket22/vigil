@@ -172,6 +172,86 @@ struct CodexIdentityHashTests {
         == expected)
   }
 
+  /// The hash a matcher produces, and the bytes it is taken over.
+  ///
+  /// Not ground truth, and the difference matters. The five hashes above came
+  /// off a real machine; no machine here has a Codex to ask for one of these,
+  /// so these are derived from Codex's own source — `hook_hash` builds
+  /// `NormalizedHookIdentity { event_name, #[serde(flatten)] group }` with the
+  /// group's `matcher` replaced by the normalised one and its `hooks` replaced
+  /// by the single normalised handler, `MatcherGroup` declares
+  /// `matcher: Option<String>` with no `skip_serializing_if`, and
+  /// `version_for_toml` sorts every object's keys before serialising — and then
+  /// confirmed against a second implementation of that pipeline outside Swift,
+  /// which reproduces all five of the real records above unchanged.
+  ///
+  /// The bytes are asserted beside the hash deliberately. A hash that stops
+  /// matching says only "something moved"; the bytes say what, and they are the
+  /// thing a reader can check against Codex's source without running anything.
+  @Test("a matcher is the last key, and only where Codex keeps one")
+  func matcherIdentity() {
+    let command = "'\(script)' codex SessionStart idle"
+    let body =
+      "{\"event_name\":\"session_start\",\"hooks\":[{\"async\":false,"
+      + "\"command\":\"\(command)\",\"timeout\":600,\"type\":\"command\"}]"
+    #expect(
+      CodexHookTrust.identityJSON(
+        event: "SessionStart", command: command, timeoutSeconds: 600,
+        matcher: "startup|resume|clear|fork")
+        == body + ",\"matcher\":\"startup|resume|clear|fork\"}")
+    #expect(
+      CodexHookTrust.identityHash(
+        event: "SessionStart", command: command, timeoutSeconds: 600,
+        matcher: "startup|resume|clear|fork")
+        == "sha256:493379af4faf13ded5797be8b4b0f485c65cd760727f2005333f3266feb9b56e")
+
+    // The same entry without one. No `matcher` key at all rather than an empty
+    // string: TOML cannot hold a null, so an absent optional is dropped before
+    // the JSON is ever built, and this is the form the five real records above
+    // are in. It must stay byte-identical or every approval the user has
+    // already given turns into `modified`.
+    #expect(
+      CodexHookTrust.identityJSON(event: "SessionStart", command: command, timeoutSeconds: 600)
+        == body + "}")
+    #expect(
+      CodexHookTrust.identityHash(event: "SessionStart", command: command, timeoutSeconds: 600)
+        == "sha256:307037049dcd5ade318b635b26ae80a7d79c1c1f0b7884184ff8751ed0ef4b66")
+  }
+
+  /// `matcher_pattern_for_event` forces the matcher to `None` for exactly three
+  /// events, and it does it before the hash. Those three dispatch through
+  /// `select_handlers(…, /*matcher_input*/ None)` — they carry no field there
+  /// would be anything to match against — so a matcher on one of them is inert
+  /// at run time, and hashing the written string would invent an identity Codex
+  /// never computes.
+  @Test(
+    "the three events Codex hashes without their matcher",
+    arguments: ["UserPromptSubmit", "Stop", "Interrupt"])
+  func matcherlessEvents(event: String) {
+    #expect(CodexHookTrust.hashedMatcher("anything", for: event) == nil)
+    #expect(
+      CodexHookTrust.identityHash(
+        event: event, command: "x", timeoutSeconds: 600, matcher: "anything")
+        == CodexHookTrust.identityHash(event: event, command: "x", timeoutSeconds: 600))
+  }
+
+  /// And the nine that keep it. `SessionStart` is the one Vigil writes a
+  /// matcher for; the rest are listed because getting the split wrong in either
+  /// direction is a false accusation.
+  @Test(
+    "the nine events Codex hashes with their matcher",
+    arguments: [
+      "PreToolUse", "PermissionRequest", "PostToolUse", "PreCompact", "PostCompact",
+      "SessionStart", "SessionEnd", "SubagentStart", "SubagentStop",
+    ])
+  func matcherBearingEvents(event: String) {
+    #expect(CodexHookTrust.hashedMatcher("anything", for: event) == "anything")
+    #expect(
+      CodexHookTrust.identityHash(
+        event: event, command: "x", timeoutSeconds: 600, matcher: "anything")
+        != CodexHookTrust.identityHash(event: event, command: "x", timeoutSeconds: 600))
+  }
+
   /// The two events Codex gives a different default to, because both run during
   /// teardown. Hashing them at 600 would make every SessionEnd and Interrupt
   /// entry read as `modified` — an install accused of having changed when it
@@ -433,10 +513,16 @@ struct CodexTrustStatusTests {
     #expect(state.isSatisfied, "an unreadable gate must never hold an install back")
   }
 
-  /// A matcher string is part of what Codex hashes. Vigil never writes one, so
-  /// a group carrying one is not a group we put there and not one we can speak
-  /// for — it is skipped rather than hashed without it.
-  @Test("a group with a matcher is not treated as ours")
+  /// A matcher string is part of what Codex hashes, and now that Vigil knows
+  /// how it is hashed a group carrying one is a group we can speak for. It used
+  /// to be refused outright — correct while the hash could not account for it,
+  /// and now merely blind.
+  ///
+  /// `Stop` is the interesting one to prove it on: `matcher_pattern_for_event`
+  /// forces the matcher to `None` for `Stop`, so this entry must hash exactly
+  /// as the same entry without a matcher does. Reading the written string
+  /// instead would produce a hash Codex never computes.
+  @Test("a group with a matcher is hashed, and Stop's matcher is hashed away")
   func matcherGroup() {
     let json = """
       {"hooks":{"Stop":[{"matcher":"Bash","hooks":[{"type":"command",
@@ -445,10 +531,172 @@ struct CodexTrustStatusTests {
     let state = CodexHookTrust.status(
       hooks: parse(json), hooksPath: hooksPath, configTOML: "",
       scriptPath: script, integration: .codex)
-    #expect(state == .unknown)
+    #expect(state == .untrusted(events: ["Stop"]), "no record for it, rather than unreadable")
+
+    #expect(
+      CodexHookTrust.identityHash(
+        event: "Stop", command: "'\(script)' codex Stop idle", timeoutSeconds: 600,
+        matcher: "Bash")
+        == CodexHookTrust.identityHash(
+          event: "Stop", command: "'\(script)' codex Stop idle", timeoutSeconds: 600))
+  }
+
+  /// A group whose keys we do not recognise is still not ours to speak for.
+  /// The extra key changes the bytes Codex hashes, and a hash computed without
+  /// it reads as `modified` — an accusation that the user tampered with a file
+  /// they never touched.
+  @Test("a group carrying a key beyond hooks and matcher is still unknown")
+  func groupWithAnUnknownKey() {
+    let json = """
+      {"hooks":{"Stop":[{"enabled":true,"hooks":[{"type":"command",
+      "command":"'\(script)' codex Stop idle"}]}]}}
+      """
+    #expect(
+      CodexHookTrust.status(
+        hooks: parse(json), hooksPath: hooksPath, configTOML: "",
+        scriptPath: script, integration: .codex) == .unknown)
+  }
+
+  /// And a `matcher` that is not a string is not a matcher we can hash either.
+  @Test("a matcher of the wrong type is not hashed as though it were absent")
+  func matcherOfTheWrongType() {
+    let json = """
+      {"hooks":{"SessionStart":[{"matcher":7,"hooks":[{"type":"command",
+      "command":"'\(script)' codex SessionStart idle"}]}]}}
+      """
+    #expect(
+      CodexHookTrust.status(
+        hooks: parse(json), hooksPath: hooksPath, configTOML: "",
+        scriptPath: script, integration: .codex) == .unknown)
+  }
+
+  /// The upgrade, from the side that can cost the user something.
+  ///
+  /// Codex keys trust on the hooks file, the snake_case event, the group index
+  /// and the handler index — so adding a whole new event key cannot move any
+  /// existing entry, and the commands of the seven that were already there do
+  /// not change either. Every approval the user has already given must
+  /// therefore still apply, and the only thing to answer for is the one new
+  /// entry.
+  ///
+  /// If this ever fails, every hook Vigil installed for that user has silently
+  /// become `modified` and Codex has stopped running all of them.
+  @Test("adding SessionStart leaves every existing approval standing")
+  func addingAnEventKeepsTheRest() {
+    let before = HookConfiguration.install(
+      into: [:], scriptPath: script, integration: codexBeforeSessionStart)
+    let toml = trustEverything(in: before)
+    let after = HookConfiguration.install(into: before, scriptPath: script, integration: .codex)
+
+    #expect(
+      CodexHookTrust.status(
+        hooks: after, hooksPath: hooksPath, configTOML: toml,
+        scriptPath: script, integration: .codex) == .untrusted(events: ["SessionStart"]),
+      "only the new entry is unapproved — anything else means the old ones moved")
+  }
+
+  /// And the same with another tool already holding index 0 on five of the
+  /// events, which is what the machine this was captured from actually looks
+  /// like. Vigil's entries sit at index 1 there, and a new event key must not
+  /// renumber them.
+  @Test("a file shared with another tool keeps its indices too")
+  func addingAnEventBesideAnotherTool() {
+    let theirs = parse(realHooksJSON)
+    let before = HookConfiguration.install(
+      into: theirs, scriptPath: script, integration: codexBeforeSessionStart)
+    let toml = trustEverything(in: before)
+    let after = HookConfiguration.install(into: before, scriptPath: script, integration: .codex)
+
+    #expect(
+      CodexHookTrust.status(
+        hooks: after, hooksPath: hooksPath, configTOML: toml,
+        scriptPath: script, integration: .codex) == .untrusted(events: ["SessionStart"]))
+  }
+
+  /// The captured machine, brought up to date — the case with something real
+  /// to lose.
+  ///
+  /// That file still holds a `SessionStart` entry of Vigil's, unmatched, at
+  /// group index 1, and the config.toml beside it holds an approval for
+  /// `session_start:1:0`. Re-installing rewrites that one entry with a matcher,
+  /// so Codex's hash for it changes and the approval stops applying. That is
+  /// not an accusation, it is the truth — the entry really did change, Codex
+  /// really will stop running it, and until it is approved again the
+  /// unmatched entry is not firing on `compact` mid-turn either.
+  ///
+  /// What must *not* happen is the other six moving with it. An event key is
+  /// added and an entry is rewritten in place; no index shifts, and no command
+  /// of the six changes.
+  @Test("the captured machine loses exactly one approval and no more")
+  func reinstallingOverTheCapturedMachine() {
+    let live = parse(realHooksJSON)
+    let toml = trustEverything(in: live)
+    let updated = HookConfiguration.install(into: live, scriptPath: script, integration: .codex)
+
+    let state = CodexHookTrust.status(
+      hooks: updated, hooksPath: hooksPath, configTOML: toml,
+      scriptPath: script, integration: .codex)
+    #expect(state == .modified(events: ["SessionStart"]))
+
+    // And every other entry of ours still matches the record it had. Read off
+    // the entries rather than the event names, so an index that moved shows up
+    // here rather than as a missing record somewhere else.
+    let records = CodexHookTrust.trustRecords(inConfigTOML: toml)
+    for entry in CodexHookTrust.entries(in: updated, scriptPath: script, integration: .codex) ?? []
+    where entry.event != "SessionStart" && entry.event != "PermissionRequest" {
+      let key = CodexHookTrust.stateKey(
+        hooksPath: hooksPath, event: entry.event, group: entry.group, handler: entry.handler)
+      #expect(
+        records[key ?? ""]
+          == CodexHookTrust.identityHash(
+            event: entry.event, command: entry.command, timeoutSeconds: entry.timeoutSeconds,
+            matcher: entry.matcher),
+        "\(entry.event) lost its approval")
+    }
+  }
+
+  /// Approving the new entry then has to be enough, which means the matcher
+  /// hash has to be the one Codex computes. This is the assertion that turns
+  /// into a false accusation if `identityHash` has the matcher form wrong.
+  @Test("and approving it once makes the whole install trusted")
+  func approvingTheNewEntryFinishesIt() {
+    let settings = HookConfiguration.install(into: [:], scriptPath: script, integration: .codex)
+    #expect(
+      CodexHookTrust.status(
+        hooks: settings, hooksPath: hooksPath, configTOML: trustEverything(in: settings),
+        scriptPath: script, integration: .codex) == .trusted)
+  }
+
+  /// Vigil's Codex install written in full, with the matcher on the one entry
+  /// that takes one. Pinned as text because this is the file Codex reads and
+  /// the thing the user is asked to approve.
+  @Test("the SessionStart entry carries its matcher into the file")
+  func sessionStartEntryShape() {
+    let settings = HookConfiguration.install(into: [:], scriptPath: script, integration: .codex)
+    let groups = (settings["hooks"] as? [String: Any])?["SessionStart"] as? [[String: Any]] ?? []
+
+    #expect(groups.count == 1)
+    #expect(groups.first?["matcher"] as? String == "startup|resume|clear|fork")
+    #expect(
+      (groups.first?["hooks"] as? [[String: Any]])?.first?["command"] as? String
+        == "'\(script)' codex SessionStart idle")
   }
 
   // MARK: Helpers
+
+  /// Codex as Vigil registered it the release before `SessionStart` came back
+  /// with a matcher. Pinned rather than derived, for the reason `capturedCodex`
+  /// is: this is the shape somebody's machine is in right now.
+  private let codexBeforeSessionStart = AgentIntegration(
+    id: .codex,
+    displayName: "Codex",
+    settingsPath: ".codex/hooks.json",
+    workingEvents: ["UserPromptSubmit", "PreToolUse", "PostToolUse"],
+    waitingEvents: ["PermissionRequest"],
+    idleEvents: ["Stop", "Interrupt", "SessionEnd"],
+    interruptEvent: "Interrupt",
+    requiresHookTrust: true
+  )
 
   /// The records Codex would write if the user trusted every one of our
   /// entries. Deliberately built from `entries` and `identityHash` — the
@@ -463,7 +711,8 @@ struct CodexTrustStatusTests {
         let key = CodexHookTrust.stateKey(
           hooksPath: hooksPath, event: entry.event, group: entry.group, handler: entry.handler),
         let hash = CodexHookTrust.identityHash(
-          event: entry.event, command: entry.command, timeoutSeconds: entry.timeoutSeconds)
+          event: entry.event, command: entry.command, timeoutSeconds: entry.timeoutSeconds,
+          matcher: entry.matcher)
       else { continue }
       records[key] = hash
     }

@@ -33,14 +33,74 @@ private func commands(_ settings: [String: Any], event: String) -> [String] {
 @Suite("Hook installation")
 struct HookConfigurationTests {
 
-  @Test("installs a hook for every event we listen for")
-  func installsAllEvents() {
-    let result = HookConfiguration.install(into: [:], scriptPath: script, integration: .claudeCode)
-    for event in AgentIntegration.claudeCode.allEvents {
-      let state = AgentIntegration.claudeCode.state(for: event)
+  @Test("installs a hook for every entry we register", arguments: AgentIntegration.all)
+  func installsEveryRegistration(integration: AgentIntegration) {
+    let result = HookConfiguration.install(
+      into: [:], scriptPath: script, integration: integration)
+    for registration in integration.registrations {
+      let expected =
+        "'\(script)' \(integration.id.rawValue) \(registration.event) "
+        + registration.state.rawValue
       #expect(
-        commands(result, event: event)
-          .contains("'\(script)' claude-code \(event) \(state.rawValue)"))
+        commands(result, event: registration.event).contains(expected),
+        "\(integration.displayName) did not write \(expected)")
+    }
+  }
+
+  /// The matcher is what makes two entries for one event two different things.
+  /// Written without it they would be two copies of the same hook firing on
+  /// every payload, which is worse than the single entry they replaced.
+  @Test("an entry that narrows an event carries the host's matcher")
+  func writesMatchers() {
+    let result = HookConfiguration.install(into: [:], scriptPath: script, integration: .claudeCode)
+    let groups = (result["hooks"] as? [String: Any])?["Notification"] as? [[String: Any]] ?? []
+
+    #expect(groups.count == 2, "Notification should be registered twice, once per meaning")
+    let byState = Dictionary(
+      uniqueKeysWithValues: groups.compactMap { group -> (String, String)? in
+        guard let matcher = group["matcher"] as? String,
+          let command = (group["hooks"] as? [[String: Any]])?.first?["command"] as? String,
+          let state = command.split(separator: " ").last
+        else { return nil }
+        return (String(state), matcher)
+      })
+
+    #expect(byState["waiting"]?.contains("permission_prompt") == true)
+    #expect(byState["idle"] == "idle_prompt")
+    // Disjoint, or a single notification would fire two hooks disagreeing
+    // about what it meant — and neither host deduplicates overlapping groups.
+    let waiting = Set((byState["waiting"] ?? "").split(separator: "|"))
+    let idle = Set((byState["idle"] ?? "").split(separator: "|"))
+    #expect(waiting.isDisjoint(with: idle))
+  }
+
+  /// An unmatched entry must stay unmatched. `"matcher": ""` reads as
+  /// match-all to both hosts, so it would behave the same — and for Codex it
+  /// would change the hashed trust identity of every hook Vigil has installed,
+  /// turning every approval the user has already given into `modified`.
+  @Test("an entry with no matcher writes no matcher key", arguments: AgentIntegration.all)
+  func unmatchedEntriesCarryNoMatcherKey(integration: AgentIntegration) {
+    let result = HookConfiguration.install(
+      into: [:], scriptPath: script, integration: integration)
+    let hooks = result["hooks"] as? [String: Any] ?? [:]
+    let matched = Set(integration.matchedEvents.map(\.event))
+    for event in integration.allEvents where !matched.contains(event) {
+      for group in hooks[event] as? [[String: Any]] ?? [] {
+        #expect(group["matcher"] == nil, "\(integration.displayName) wrote a matcher on \(event)")
+      }
+    }
+  }
+
+  /// Cursor's entries have no group to hang a matcher on, and Cursor publishes
+  /// no matcher metadata to hang there. A registration asking for one would be
+  /// written into a flat entry that the host ignores, so the hook would fire
+  /// for everything while the code claimed it was narrowed.
+  @Test("no flat-format host registers a matcher")
+  func flatHostsHaveNoMatchers() {
+    for integration in AgentIntegration.all where integration.entryFormat == .flat {
+      #expect(
+        integration.matchedEvents.isEmpty,
+        "\(integration.displayName) writes flat entries, which cannot carry a matcher")
     }
   }
 
@@ -70,8 +130,14 @@ struct HookConfigurationTests {
       into: existingSettings(), scriptPath: script, integration: integration)
     let twice = HookConfiguration.install(into: once, scriptPath: script, integration: integration)
     for event in integration.allEvents {
+      // One per registration, not one per event: an event registered twice
+      // with two matchers is meant to hold two entries, and counting them as
+      // duplicates would have hidden the real duplication underneath.
+      let expected = integration.registrations.filter { $0.event == event }.count
       let ours = commands(twice, event: event).filter { $0.contains(script) }
-      #expect(ours.count == 1, "\(integration.displayName) duplicated its hook for \(event)")
+      #expect(
+        ours.count == expected,
+        "\(integration.displayName) wrote \(ours.count) hooks for \(event), wanted \(expected)")
     }
   }
 
@@ -264,9 +330,26 @@ struct AgentIntegrationTests {
         "\(event) is in two categories at once")
     }
 
+    // An event whose meaning lives in a payload field is deliberately absent
+    // from all three arrays: it has no single state, and listing it in one
+    // would both give `state(for:)` a wrong answer to hand out and make
+    // `install` write an unmatched entry beside the matched ones — which is
+    // the bug the matchers exist to remove, reintroduced as a duplicate.
+    for registration in integration.matchedEvents {
+      #expect(
+        !integration.workingEvents.contains(registration.event)
+          && !integration.waitingEvents.contains(registration.event)
+          && !integration.idleEvents.contains(registration.event),
+        "\(registration.event) is both matched and unconditionally registered")
+      #expect(
+        registration.matcher != nil,
+        "\(registration.event) is listed as matched and carries no matcher")
+    }
+
+    let written = integration.registrations.map { "\($0.event)\u{1F}\($0.matcher ?? "")" }
     #expect(
-      Set(integration.allEvents).count == integration.allEvents.count,
-      "\(integration.displayName) lists an event twice, so it installs two hooks for it")
+      Set(written).count == written.count,
+      "\(integration.displayName) writes the same entry twice, so one event fires two hooks")
   }
 
   /// A deliberate golden master.
@@ -286,7 +369,7 @@ struct AgentIntegrationTests {
       ],
       .codex: [
         "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop", "Interrupt",
-        "SessionEnd",
+        "SessionEnd", "SessionStart",
       ],
       .gemini: [
         "BeforeAgent", "BeforeTool", "AfterTool", "Notification", "AfterAgent", "SessionEnd",
@@ -393,12 +476,12 @@ struct AgentIntegrationTests {
   /// about somebody else's source that a reader should be able to check.
   @Test("the blocked-on-user events are the ones the hosts actually publish")
   func blockedOnUserEventsAreNamed() {
-    // Claude Code: `Notification` (open set, kept as a backstop),
-    // `PermissionRequest` ("When a permission dialog is displayed") and
-    // `Elicitation` ("When an MCP server requests user input").
+    // Claude Code: `PermissionRequest` ("When a permission dialog is
+    // displayed") and `Elicitation` ("When an MCP server requests user
+    // input"). `Notification` used to be a third, unconditionally, and is now
+    // a matched entry — see `notificationIsSplitByType`.
     #expect(
-      Set(AgentIntegration.claudeCode.waitingEvents)
-        == ["Notification", "PermissionRequest", "Elicitation"])
+      Set(AgentIntegration.claudeCode.waitingEvents) == ["PermissionRequest", "Elicitation"])
     // Codex: `HookEventName::PermissionRequest`, stage one of
     // `Session::request_approval`, ahead of Guardian and ahead of the user.
     #expect(AgentIntegration.codex.waitingEvents == ["PermissionRequest"])
@@ -479,6 +562,39 @@ struct AgentIntegrationTests {
     #expect(AgentIntegration.claudeCode.state(for: "SubagentStop") == .working)
   }
 
+  /// Every entry Vigil writes, pinned — the golden master `allEvents` can no
+  /// longer be.
+  ///
+  /// An event that appears once in `allEvents` may be two entries with two
+  /// states, so the event set alone would no longer notice `idle_prompt`
+  /// quietly becoming `waiting` again, or the `compact` source creeping back
+  /// into Codex's matcher. Both of those are the *dangerous* direction: the
+  /// first stops a run ever ending, the second drops the wake hold in the
+  /// middle of the slowest request a Codex session makes.
+  @Test("the matched entries only change on purpose")
+  func matchedEntriesArePinned() {
+    let expected: [AgentKind: [HookRegistration]] = [
+      .claudeCode: [
+        HookRegistration(
+          event: "Notification", state: .waiting,
+          matcher: "permission_prompt|agent_needs_input|worker_permission_prompt"
+            + "|elicitation_dialog|elicitation_url_dialog"),
+        HookRegistration(event: "Notification", state: .idle, matcher: "idle_prompt"),
+      ],
+      .codex: [
+        HookRegistration(
+          event: "SessionStart", state: .idle, matcher: "startup|resume|clear|fork")
+      ],
+      .gemini: [],
+      .cursor: [],
+    ]
+    for integration in AgentIntegration.all {
+      #expect(
+        integration.matchedEvents == expected[integration.id],
+        "\(integration.displayName)'s matched entries changed")
+    }
+  }
+
   /// Codex re-fires `SessionStart` in the middle of a turn.
   ///
   /// `SessionStartSource` is `{Startup, Resume, Clear, Compact, Fork}`, and
@@ -488,14 +604,66 @@ struct AgentIntegrationTests {
   /// continues — so a long run that hits its context limit fired `SessionStart`
   /// while still working, and Vigil dropped the hold for the whole
   /// post-compaction round trip.
-  @Test("Codex's SessionStart is not treated as an ending")
-  func codexSessionStartIsNotIdle() {
-    #expect(
-      !AgentIntegration.codex.allEvents.contains("SessionStart"),
-      """
-      Codex fires SessionStart mid-turn after a compaction, so registering for it \
-      drops the wake hold across the slowest request in the session
-      """)
+  ///
+  /// Registering the event at all was the first bug and un-registering it whole
+  /// was the blunt fix. What has to hold is narrower and permanent: whatever
+  /// Vigil registers for `SessionStart`, `compact` must not reach it.
+  @Test("Codex's SessionStart never fires for a mid-turn compaction")
+  func codexSessionStartExcludesCompact() {
+    for registration in AgentIntegration.codex.registrations
+    where registration.event == "SessionStart" {
+      let sources = Set((registration.matcher ?? "").split(separator: "|").map(String.init))
+      #expect(
+        !sources.isEmpty,
+        """
+        Codex's SessionStart is registered with no matcher, so it fires on the \
+        compact source mid-turn and drops the wake hold across the slowest \
+        request in the session
+        """)
+      #expect(!sources.contains("compact"), "the compact source is a mid-turn event, not a start")
+      // The other four are the real ones, and the matcher is compared as an
+      // exact list — a name that is not one of Codex's five matches nothing
+      // and quietly registers a hook that can never fire.
+      #expect(sources.isSubset(of: ["startup", "resume", "clear", "fork"]))
+    }
+  }
+
+  /// `Notification` means at least three different things depending on its
+  /// `notification_type`, and Vigil used to read every one of them as
+  /// `waiting`. The mid-turn values — `elicitation_complete`, `auth_success`,
+  /// `computer_use_exit` and the rest — therefore dropped the wake hold while
+  /// the agent was still working, which is the one failure this app exists to
+  /// prevent.
+  @Test("Claude Code's Notification is split by notification_type")
+  func notificationIsSplitByType() {
+    let ours = AgentIntegration.claudeCode.registrations.filter { $0.event == "Notification" }
+    #expect(ours.count == 2)
+
+    let values = Dictionary(
+      uniqueKeysWithValues: ours.map {
+        ($0.state, Set(($0.matcher ?? "").split(separator: "|").map(String.init)))
+      })
+
+    // Blocked on a human.
+    #expect(values[.waiting]?.contains("permission_prompt") == true)
+    #expect(values[.waiting]?.contains("agent_needs_input") == true)
+    // The REPL sitting at the prompt with nothing running. Its notifier checks
+    // that no dialog and no overlay is on screen before it fires, so this
+    // cannot arrive while a permission prompt is up.
+    #expect(values[.idle] == ["idle_prompt"])
+
+    // And the mid-turn values are registered for by nobody. Not `working` —
+    // that would hold the Mac awake for a session that had finished — but
+    // nothing at all, so the session keeps the state its last real event gave
+    // it. An eighteenth value Claude Code adds tomorrow gets the same.
+    let registered = values.values.reduce(into: Set<String>()) { $0.formUnion($1) }
+    for midTurn in [
+      "elicitation_complete", "elicitation_response", "auth_success", "agent_completed",
+      "computer_use_enter", "computer_use_exit", "push_notification", "model_refusal_fallback",
+      "quota_auto_resume_fired", "quota_auto_resume_stale", "quota_auto_resume_disabled",
+    ] {
+      #expect(!registered.contains(midTurn), "\(midTurn) arrives mid-turn and must fire nothing")
+    }
   }
 
   @Test("agents are named for people, not by their event vocabulary")
@@ -517,7 +685,8 @@ struct AgentIntegrationTests {
     let result = HookConfiguration.install(
       into: [:], scriptPath: script, integration: integration)
 
-    for event in integration.allEvents {
+    let matched = Set(integration.matchedEvents.map(\.event))
+    for event in integration.allEvents where !matched.contains(event) {
       let expected =
         "'\(script)' \(integration.id.rawValue) \(event) \(integration.state(for: event).rawValue)"
       #expect(commands(result, event: event).contains(expected))
@@ -549,6 +718,151 @@ struct AgentIntegrationTests {
   func distinctSettingsPaths() {
     let paths = Set(AgentIntegration.all.map(\.settingsPath))
     #expect(paths.count == AgentIntegration.all.count)
+  }
+}
+
+/// Upgrading an install written before an event could be registered twice.
+///
+/// Several entries under one event name is a shape this file had never written,
+/// and every check that reads a settings file was phrased for one. The failure
+/// to avoid is the quiet one: an old install that still satisfies every check,
+/// so the user is never offered the button that would fix it — which is exactly
+/// how the pre-quoting form survived a release.
+@Suite("Upgrading to matched entries")
+struct MatchedEntryUpgradeTests {
+
+  /// Claude Code as Vigil wrote it before `Notification` was split: one entry
+  /// per event, no matcher anywhere, and `waiting` baked into `Notification`
+  /// for every `notification_type` there is.
+  private static let beforeMatchers = AgentIntegration(
+    id: .claudeCode,
+    displayName: "Claude Code",
+    settingsPath: ".claude/settings.json",
+    workingEvents: [
+      "UserPromptSubmit", "PreToolUse", "PostToolUse", "SubagentStart", "SubagentStop",
+    ],
+    waitingEvents: ["Notification", "PermissionRequest", "Elicitation"],
+    idleEvents: ["Stop", "StopFailure", "SessionEnd"]
+  )
+
+  private func oldInstall() -> [String: Any] {
+    HookConfiguration.install(into: [:], scriptPath: script, integration: Self.beforeMatchers)
+  }
+
+  /// The event set did not change, so nothing about *which* events are present
+  /// can notice this. Both of the checks that answer that question are happy.
+  @Test("the event-level checks cannot see it")
+  func eventChecksAreBlind() {
+    let settings = oldInstall()
+    #expect(
+      HookConfiguration.missingEvents(
+        in: settings, scriptPath: script, integration: .claudeCode
+      ).isEmpty)
+    #expect(
+      HookConfiguration.retiredEvents(
+        in: settings, scriptPath: script, integration: .claudeCode
+      ).isEmpty)
+  }
+
+  /// So this has to, and it has to name the one event that changed rather than
+  /// shrugging at the whole file.
+  @Test("the entry-level check names Notification and nothing else")
+  func outdatedNamesNotification() {
+    #expect(
+      HookConfiguration.outdatedEvents(
+        in: oldInstall(), scriptPath: script, integration: .claudeCode) == ["Notification"])
+  }
+
+  @Test("and the agent reads as out of date, so Update is offered")
+  func readsAsOutOfDate() {
+    let settings = oldInstall()
+    #expect(
+      HookConfiguration.setupState(
+        missingEvents: HookConfiguration.missingEvents(
+          in: settings, scriptPath: script, integration: .claudeCode),
+        expectedEvents: AgentIntegration.claudeCode.allEvents,
+        retiredEvents: HookConfiguration.retiredEvents(
+          in: settings, scriptPath: script, integration: .claudeCode),
+        outdatedEvents: HookConfiguration.outdatedEvents(
+          in: settings, scriptPath: script, integration: .claudeCode)
+      ) == .outOfDate)
+  }
+
+  /// Pressing Update has to be the fix, which means the sweep must take the old
+  /// unmatched entry out rather than leaving it beside the two new ones — it
+  /// would go on firing `waiting` for every `notification_type` if it stayed.
+  @Test("re-running the install replaces the one entry with the two")
+  func installReplacesIt() {
+    let updated = HookConfiguration.install(
+      into: oldInstall(), scriptPath: script, integration: .claudeCode)
+    let groups =
+      (updated["hooks"] as? [String: Any])?["Notification"] as? [[String: Any]] ?? []
+
+    #expect(groups.count == 2)
+    #expect(groups.allSatisfy { $0["matcher"] is String }, "the unmatched entry survived")
+    #expect(
+      HookConfiguration.outdatedEvents(
+        in: updated, scriptPath: script, integration: .claudeCode
+      ).isEmpty)
+  }
+
+  /// Half an upgrade is still an upgrade to finish: an event holding one of the
+  /// two entries it should have is an event that reports the wrong thing for
+  /// every payload the missing one covers.
+  @Test("one of the two entries present is still out of date")
+  func halfInstalledIsOutOfDate() {
+    var settings = HookConfiguration.install(
+      into: [:], scriptPath: script, integration: .claudeCode)
+    var hooks = settings["hooks"] as! [String: Any]
+    hooks["Notification"] = [(hooks["Notification"] as! [[String: Any]])[0]]
+    settings["hooks"] = hooks
+
+    #expect(
+      HookConfiguration.missingEvents(
+        in: settings, scriptPath: script, integration: .claudeCode
+      ).isEmpty, "one of ours is there, so the event-level check is satisfied")
+    #expect(
+      HookConfiguration.outdatedEvents(
+        in: settings, scriptPath: script, integration: .claudeCode) == ["Notification"])
+  }
+
+  /// Uninstalling has to take both, and leave no scaffolding behind.
+  @Test("uninstall removes every entry under a doubly-registered event")
+  func uninstallTakesBoth() {
+    let installed = HookConfiguration.install(
+      into: ["hooks": ["Notification": [["hooks": [["type": "command", "command": other]]]]]],
+      scriptPath: script, integration: .claudeCode)
+    #expect(commands(installed, event: "Notification").count == 3)
+
+    let removed = HookConfiguration.uninstall(from: installed, scriptPath: script)
+    #expect(commands(removed, event: "Notification") == [other])
+  }
+
+  /// The same command under a different matcher is a different entry. An
+  /// install that somehow held both of our commands with no matchers on either
+  /// would fire both for every `notification_type` — the original bug twice
+  /// over — and the command alone cannot say so.
+  @Test("the right commands under the wrong matchers are still out of date")
+  func matchersAreCompared() {
+    let ours = AgentIntegration.claudeCode.registrations.filter { $0.event == "Notification" }
+    let settings: [String: Any] = [
+      "hooks": [
+        "Notification": ours.map { registration in
+          [
+            "hooks": [
+              [
+                "type": "command",
+                "command": HookConfiguration.command(
+                  scriptPath: script, integration: .claudeCode, registration: registration),
+              ]
+            ]
+          ]
+        }
+      ]
+    ]
+    #expect(
+      HookConfiguration.outdatedEvents(
+        in: settings, scriptPath: script, integration: .claudeCode) == ["Notification"])
   }
 }
 

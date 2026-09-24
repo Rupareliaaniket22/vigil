@@ -140,6 +140,57 @@ struct HookSetupStateTests {
       ).isEmpty)
   }
 
+  /// Which of the two the user is asked to do when both are true.
+  ///
+  /// Codex hashes the entry, so an entry of ours that changed since it was
+  /// approved is out of date *and* `modified`, and the first caused the
+  /// second. Sending that user to `/hooks` would have them approve the entry
+  /// Vigil is about to replace — re-arming the hook the update exists to fix —
+  /// and leave the file just as out of date afterwards.
+  @Test("an install that is both stale and untrusted asks to be updated first")
+  func outOfDateOutranksUntrusted() {
+    #expect(
+      HookConfiguration.setupState(
+        missingEvents: [], expectedEvents: ["SessionStart"],
+        outdatedEvents: ["SessionStart"],
+        trust: .modified(events: ["SessionStart"])) == .outOfDate)
+    #expect(
+      HookConfiguration.setupState(
+        missingEvents: [], expectedEvents: ["Stop"],
+        retiredEvents: ["OldEvent"],
+        trust: .untrusted(events: ["Stop"])) == .outOfDate)
+  }
+
+  /// And the case that made `untrusted` its own state in the first place is
+  /// untouched: nothing of ours has drifted, so "Update" would be the no-op
+  /// the old ordering existed to prevent.
+  @Test("a current install the host will not run is still untrusted")
+  func untrustedSurvivesTheReorder() {
+    #expect(
+      HookConfiguration.setupState(
+        missingEvents: [], expectedEvents: ["Stop"],
+        trust: .untrusted(events: ["Stop"])) == .untrusted)
+    #expect(
+      HookConfiguration.setupState(
+        missingEvents: [], expectedEvents: ["Stop"],
+        trust: .modified(events: ["Stop"])) == .untrusted)
+  }
+
+  /// A host too old for hooks at all still comes first. Neither re-installing
+  /// nor approving anything can make that copy run a hook.
+  @Test("nothing outranks a host that cannot run hooks")
+  func hostTooOldStaysFirst() {
+    #expect(
+      HookConfiguration.setupState(
+        missingEvents: [], expectedEvents: ["BeforeAgent"],
+        outdatedEvents: ["BeforeAgent"],
+        trust: .untrusted(events: ["BeforeAgent"]),
+        host: HostHookSupport.verdict(
+          copies: [HostCopy(path: "/usr/local/bin/gemini", version: HostVersion("0.1.22"))],
+          floor: HookFloor(executable: "gemini", since: HostVersion(0, 19, 0))))
+        == .hostTooOld)
+  }
+
   @Test("an untouched settings file is missing every event", arguments: AgentIntegration.all)
   func everythingMissingWhenAbsent(integration: AgentIntegration) {
     let missing = HookConfiguration.missingEvents(
