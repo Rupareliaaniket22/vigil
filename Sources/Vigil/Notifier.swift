@@ -65,9 +65,22 @@ enum Notifier {
   /// asks, so a user who said no is not asked again — macOS remembers that for
   /// us, which is the whole reason it is the one keeping the record.
   ///
-  /// Still asked no earlier than the first thing worth saying: a permission
-  /// prompt before the app has demonstrated any value is the fastest route to
-  /// being denied.
+  /// The moment of the asking is `Notifier.askToSpeakIfNeeded()`, called when
+  /// the panel first opens, and it is not where it used to be. The old rule was
+  /// to ask no earlier than the first thing worth saying, on the reasoning that
+  /// a prompt before the app has shown any value is the fastest route to being
+  /// denied. That reasoning holds for most apps and is exactly wrong for this
+  /// one: the first thing Vigil ever has to say is that a long run has
+  /// finished, and the person it is saying it to has, by definition, gone away.
+  /// macOS delivers the permission prompt as a Notification Center banner
+  /// rather than a modal, so nobody presses Allow, the banner expires, and the
+  /// notification that triggered it is discarded. Every time, on every machine.
+  /// Vigil had never delivered a single notification to anyone.
+  ///
+  /// The panel is the fix because it is the one moment that is both: the user
+  /// is present and looking at the app, and the app has already shown them
+  /// something — their agents, the ledger, what is holding the Mac awake. Value
+  /// demonstrated, person in the room.
   private static func isAllowedToSpeak() async -> Bool {
     var status = await authorizationStatus()
     if status == .notDetermined {
@@ -142,6 +155,15 @@ enum Notifier {
   /// decided there was anything to say. Working it out here would mean scoring
   /// one notification against the last one posted, in whatever order the
   /// notification centre got to them, using the only two facts this file has.
+  /// Ask for permission while somebody is looking.
+  ///
+  /// Safe to call on every panel open: `isAllowedToSpeak` only prompts on
+  /// `.notDetermined`, and macOS remembers a refusal so a user who said no is
+  /// never asked again.
+  static func askToSpeakIfNeeded() {
+    Task { _ = await isAllowedToSpeak() }
+  }
+
   static func notify(_ event: Event, sound: NotificationPolicy.Sound?) {
     Task { await send(event, sound: sound) }
   }

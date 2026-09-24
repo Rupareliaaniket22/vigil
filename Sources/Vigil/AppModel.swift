@@ -387,6 +387,9 @@ final class AppModel {
     // it is also the moment to put right anything that can be put right
     // without asking, because this is where the asking would otherwise happen.
     maintainHooks()
+    // And the one moment worth spending a system prompt on: the person is here
+    // and the panel has already shown them something. See `askToSpeakIfNeeded`.
+    Notifier.askToSpeakIfNeeded()
     clock?.invalidate()
     let clock = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
       Task { @MainActor in self?.now = .now }
