@@ -37,6 +37,24 @@ it is that a program which edits other programs' configuration unbidden is
 exactly the shape of thing a threat model exists to describe, so here is the
 description.
 
+**How to stop it.** Turn off **Set up and update agent hooks automatically** in
+Settings; Vigil then writes nothing until you press **Set up** on an agent. The
+switch is on by default, and the first launch has already happened by the time
+you can reach it — so to look before Vigil writes anything, start the app once
+with the switch already off:
+
+```sh
+make bundle
+dist/Vigil.app/Contents/MacOS/Vigil -managesAgentHooks '<false/>'
+```
+
+Run the binary directly: `make run` and a plain `open dist/Vigil.app` pass no
+arguments, so the switch never reaches the app. And spell it `'<false/>'` —
+`false`, `NO` and `0` arrive as strings, which is not the same as `false` and is
+ignored. `Scripts/uninstall.sh --dry-run` lists what a launch that already
+happened put on the machine; **Remove Vigil from This Mac…** in the Vigil menu
+takes the hooks and trust records back out.
+
 **Every write is bounded, in four separate ways:**
 
 - **Backups.** The original file is copied to `<file>.vigil-backup` before the

@@ -218,7 +218,12 @@ echo "next (the changelog section and the free tag name were both checked before
 echo "the build, so these three should run clean). The tag names $BUILT_AT — the"
 echo "commit this binary was built from — rather than wherever HEAD has got to:"
 echo
-echo "  git tag -s v$MARKETING_VERSION $BUILT_AT -m 'Vigil $MARKETING_VERSION' && git push --tags"
+# `-a`, not `-s`. A signed tag needs a GPG key, and this repository has none
+# configured — `git tag -s` fails with "No secret key" rather than falling back,
+# which is a poor thing to discover at the end of an hour of notarisation. An
+# annotated tag carries the same message and date; add `-s` yourself if you have
+# a key and want one.
+echo "  git tag -a v$MARKETING_VERSION $BUILT_AT -m 'Vigil $MARKETING_VERSION' && git push --tags"
 # dist/, not /tmp: /tmp is world-writable and the name is guessable, and the
 # notes end up beside the disk image they describe rather than in a directory
 # that is cleared out from under you.

@@ -6,6 +6,10 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.1.0] - 2026-09-27
+
 Vigil's first release. A menu bar app that holds your Mac awake while an AI
 coding agent is actually working, and lets it sleep again the moment that stops
 — so an overnight run does not die when the Mac does.

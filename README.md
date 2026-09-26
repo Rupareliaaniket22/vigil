@@ -15,28 +15,15 @@ Not a minute longer.
 [![Tests](https://img.shields.io/badge/tests-433-1C1C1E?style=flat-square)](Tests)
 [![License](https://img.shields.io/github/license/Rupareliaaniket22/vigil?style=flat-square&color=1C1C1E)](LICENSE)
 
-</div>
-
 <br>
 
-```
-  Keeping your Mac awake                      ▁▃▅ 67%
-  2 agents working
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/panel-dark.png">
+  <img src="docs/assets/panel-light.png" width="396"
+       alt="Vigil's menu bar panel. 'Keeping your Mac awake' in amber with '2 agents working' beneath it and 67% battery on the same line. Claude Code is working in ~/code/vigil and Codex in ~/code/api, each with a filled amber dot; Gemini CLI and Cursor sit idle with hollow ones. Below, 'Also holding your Mac awake' lists powerd and coreaudiod with how long each has held. A footer offers Always keep awake, two pause lengths, Settings and Quit.">
+</picture>
 
-  Agents
-  ●  Claude Code    ~/code/vigil                    4m
-  ●  Codex          ~/code/api                      1m
-  ○  Gemini CLI                                   idle
-  ○  Cursor                                       idle
-
-  Also holding your Mac awake
-     Your display is on     powerd              1h 38m
-
-  ───────────────────────────────────────────────────
-  Always keep awake                              ( ●)
-  Pause 30 minutes
-  Settings…                                       ⌘,
-```
+</div>
 
 <br>
 
@@ -44,6 +31,19 @@ Vigil is a menu bar app that holds your Mac awake while a coding agent is
 actually working, and lets it sleep again the moment that stops. It reads the
 lifecycle hooks your agents already expose, so it knows the difference between a
 run in progress and a terminal left open.
+
+<div align="center">
+<br>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hold-release-dark.gif">
+  <img src="docs/assets/hold-release-light.gif" width="396"
+       alt="One run, in Vigil's panel. Nothing is running and the Mac can sleep. Claude Code starts and the status line turns amber: keeping your Mac awake, one agent working. Codex joins it, both work, then each finishes in turn and the line returns to 'Your Mac can sleep'.">
+</picture>
+
+<sub>One run, start to finish. The hold appears when work does, and goes when it goes.</sub>
+
+</div>
 
 > [!NOTE]
 > Vigil is early. It works, and it's tested, but there's no signed release yet —
@@ -123,6 +123,22 @@ A keep-awake tool that never lets go is a fire hazard, so these come first:
 | **Mains only** | Optional: never hold on battery |
 | **Low Power Mode** | Respected |
 | **Crashed agents** | A session that stops reporting expires, so it can't pin your Mac awake |
+
+Every one of them is a switch, and every switch says what it will do rather than
+what it is called:
+
+<div align="center">
+<br>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/settings-dark.png">
+  <img src="docs/assets/settings-light.png" width="520"
+       alt="Vigil's settings window. Four agents — Claude Code, Codex, Gemini CLI and Cursor — each installed with a Remove button, Codex reading 'Installed, approved by Vigil'. Switches for setting hooks up automatically and for a sound when agents finish. Power: mains only, a battery floor of 20%, Low Power Mode, and a heat ceiling. Then working with the lid closed, and open at login.">
+</picture>
+
+</div>
+
+<br>
 
 ## Working with the lid closed
 
