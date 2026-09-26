@@ -149,7 +149,14 @@ single-digit stars and went quiet within days.
 ### Where we genuinely win
 
 - **The assertion ledger.** Checked against roughly twenty products, including
-  source-level reads of the two closest analogs. **Nothing else has it.**
+  source-level reads of the two closest analogs. ~~Nothing else has it.~~
+  **No longer true, and this was steering the launch.** `caffeine-bar` reads the
+  same `pmset -g assertions` data and, since 1.2.0, names the agent and the
+  folder; `awakebar` lists assertions too. One search surfaced nine directly
+  adjacent projects. A page whose implicit claim is "nobody else shows you this"
+  ends at the first commenter who knows the field, so the README argues the
+  *combination* instead — ledger plus guardrail completeness plus four agents
+  wired reversibly — and concedes what the others do better.
   Perked publishes a support page teaching users to run `pmset -g assertions`
   in Terminal rather than shipping the feature. This is the product's reason to
   exist, not a panel section.

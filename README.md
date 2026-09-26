@@ -16,9 +16,13 @@ Not a minute longer.
 
 <br>
 
-<!-- Top-of-page animation goes here, between the badges and the panel still
-     below. Keep the still: it is the only image on the page that shows the
-     ledger, and the caption under it is doing the work of naming it. -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/why-dark.gif">
+  <img src="docs/assets/why-light.gif" width="800"
+       alt="One run, played twice. Without Vigil: a row labelled You fills with four blocks of activity over the first nine minutes and then stops, while the row beneath it, Claude Code, keeps filling past them. Fifteen idle minutes later the work reaches a marked line reading sleep, the screen dims, and the bar stops square at 24 minutes with the remaining sixteen drawn as an empty dashed outline. With Vigil: the same run, with an amber bar labelled Vigil growing underneath the work. It crosses the sleep line, marked held, runs on to 40 minutes and finishes — and the amber goes out in the same instant. Then the Mac sleeps.">
+</picture>
+
+<br>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/panel-dark.png">
