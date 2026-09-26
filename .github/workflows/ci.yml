@@ -1,0 +1,78 @@
+# The gate CONTRIBUTING.md already promises.
+#
+# CONTRIBUTING.md tells contributors that `make test` must pass and `make lint`
+# must be clean before opening a pull request, and CODEOWNERS plus branch
+# protection invite pull requests from outside. Until this file existed, that
+# was a rule nothing enforced — the owner found out by running it by hand.
+#
+# What is deliberately NOT here:
+#
+#   * `make bundle` — it codesigns, even ad-hoc, and generates the icon. There
+#     is no reason for CI to do either.
+#   * Any signing identity. AGENTS.md: "CI never signs. Don't add one to make
+#     CI 'more realistic'." The private key stays on one machine.
+#   * `make integration` — it drives a real .app, takes real power assertions
+#     and kills any running Vigil. That is a thing you run on a Mac you own.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    # Not macos-14, despite that being the oldest macOS Vigil supports.
+    # `Package.swift` is `swift-tools-version: 6.1`, and the macos-14 image
+    # ships an Xcode whose Swift is older than that — the build fails before it
+    # compiles anything, with a tools-version error that reads like a repo bug.
+    # LSMinimumSystemVersion is still 14.0; what the runner needs is a new
+    # enough *compiler*, not a matching OS.
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Printed before anything uses it, and checked rather than assumed. When
+      # a runner image moves its default Xcode, this is the line that says so
+      # instead of a confusing failure three steps later.
+      - name: Toolchain
+        run: |
+          xcode-select -p
+          swift --version
+          swift package tools-version
+          required=6.1
+          have="$(swift --version 2>/dev/null \
+            | sed -n 's/.*Swift version \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1)"
+          if [ -z "$have" ]; then
+            echo "::error::could not determine the Swift version"; exit 1
+          fi
+          # Sort-based compare: "6.10" must not lose to "6.9".
+          if [ "$(printf '%s\n%s\n' "$required" "$have" | sort -V | head -1)" != "$required" ]; then
+            echo "::error::Swift $have is older than the $required this package requires."
+            echo "Pick a newer runner image, or select a newer Xcode with xcode-select."
+            exit 1
+          fi
+
+      - name: Build
+        run: make build
+
+      - name: Test
+        run: make test
+
+      - name: Lint
+        run: make lint
+
+      # Bash and python3, no app and no signing. It is slow by construction —
+      # one case watches a producer that keeps producing — but it is the only
+      # thing that covers hooks/vigil-hook.sh, which runs inside every agent
+      # session on a user's machine.
+      - name: Hook script
+        run: make hooktest

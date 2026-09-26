@@ -37,10 +37,9 @@ are what makes the rest of the script safe to ask people to run.
 
 Run `make format` to fix formatting automatically.
 
-The first three of those, along with `make hooktest`, are what a pull request is
-judged on. A GitHub Actions workflow to run them is written but not yet in the
-repository — pushing `.github/workflows/` needs a token with the `workflow`
-scope — so for now they are yours to run before you open one. CI never signs and never runs `make bundle` — there is no
+The first three of those run in CI on every pull request
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), along with
+`make hooktest`. CI never signs and never runs `make bundle` — there is no
 signing identity in the repository or in Actions, and there is not meant to be.
 
 ## Removing Vigil from your machine
