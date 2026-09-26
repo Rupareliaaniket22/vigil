@@ -9,19 +9,24 @@ Not a minute longer.
 
 <br>
 
-[![Platform](https://img.shields.io/badge/platform-macOS-1C1C1E?style=flat-square)](https://www.apple.com/macos/)
-[![Requirements](https://img.shields.io/badge/requires-macOS%2014%2B-FFB340?style=flat-square)](https://www.apple.com/macos/)
+[![Platform](https://img.shields.io/badge/macOS-14%2B-FFB340?style=flat-square)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-6-FFB340?style=flat-square)](https://swift.org)
 [![Tests](https://img.shields.io/badge/tests-433-1C1C1E?style=flat-square)](Tests)
 [![License](https://img.shields.io/github/license/Rupareliaaniket22/vigil?style=flat-square&color=1C1C1E)](LICENSE)
 
 <br>
 
+<!-- Top-of-page animation goes here, between the badges and the panel still
+     below. Keep the still: it is the only image on the page that shows the
+     ledger, and the caption under it is doing the work of naming it. -->
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/panel-dark.png">
   <img src="docs/assets/panel-light.png" width="396"
        alt="Vigil's menu bar panel. 'Keeping your Mac awake' in amber with '2 agents working' beneath it and 67% battery on the same line. Claude Code is working in ~/code/vigil and Codex in ~/code/api, each with a filled amber dot; Gemini CLI and Cursor sit idle with hollow ones. Below, 'Also holding your Mac awake' lists powerd and coreaudiod with how long each has held. A footer offers Always keep awake, two pause lengths, Settings and Quit.">
 </picture>
+
+<sub>Two agents working — and beneath them, everything <em>else</em> holding your Mac awake, named, with how long it has held.</sub>
 
 </div>
 
@@ -32,6 +37,13 @@ actually working, and lets it sleep again the moment that stops. It reads the
 lifecycle hooks your agents already expose, so it knows the difference between a
 run in progress and a terminal left open.
 
+It also tells you the truth about the rest of your Mac. Most keep-awake apps
+show you their own switch and nothing else, so when the icon says *off* and the
+machine still refuses to sleep, you are on your own with `pmset -g assertions`.
+Vigil reads the whole assertion list and says in plain words what each one is
+and how long it has been there — *Your display is on · powerd · 1h 38m*.
+Knowing **why** your Mac is awake turns out to be most of the problem.
+
 <div align="center">
 <br>
 
@@ -41,64 +53,14 @@ run in progress and a terminal left open.
        alt="One run, in Vigil's panel. Nothing is running and the Mac can sleep. Claude Code starts and the status line turns amber: keeping your Mac awake, one agent working. Codex joins it, both work, then each finishes in turn and the line returns to 'Your Mac can sleep'.">
 </picture>
 
-<sub>One run, start to finish. The hold appears when work does, and goes when it goes.</sub>
+<sub>One run, start to finish. The hold appears when the work does, and is gone before you are.</sub>
 
 </div>
 
 > [!NOTE]
 > Vigil is early. It works, and it's tested, but there's no signed release yet —
-> build it from source for now. See [Not done yet](#not-done-yet).
-
-## Install
-
-> [!IMPORTANT]
-> **Vigil wires your agents up the moment it launches, without asking** — and
-> the command below is that moment, not a later click. Read this first.
->
-> On launch, Vigil looks for Claude Code, Codex, Gemini CLI and Cursor and
-> writes a hook into the config of each one it finds:
-> `~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.gemini/settings.json`,
-> `~/.cursor/hooks.json`. Codex runs no hook it has not approved, so Vigil also
-> writes a trust record for its own entries into `~/.codex/config.toml`.
->
-> Every file is copied to `<file>.vigil-backup` before its first edit, nothing
-> else in it is changed, and a file Vigil cannot parse is left alone rather than
-> rewritten. The menu bar panel says which agents it set up and offers
-> **Undo**, which takes the hooks, the shared script and the trust record back
-> out.
->
-> To decide for yourself from then on, turn off **Set up and update agent hooks
-> automatically** in Settings. Nothing more is written until you press
-> **Set up** on an agent — but the first launch has already happened by the
-> time you can reach that switch, so it does not help you look before Vigil
-> writes.
->
-> To look first, build without launching and start the app with that switch
-> already off for this one run:
->
-> ```sh
-> make bundle
-> dist/Vigil.app/Contents/MacOS/Vigil -managesAgentHooks '<false/>'
-> ```
->
-> Vigil then writes nothing until you press **Set up**. Run the binary
-> directly: `make run` and a plain `open dist/Vigil.app` pass no arguments, so
-> the switch never reaches the app. And spell it `'<false/>'` — `false`, `NO`
-> and `0` arrive as strings, which is not the same as `false` and is ignored.
-
-```sh
-git clone https://github.com/Rupareliaaniket22/vigil
-cd vigil
-make run
-```
-
-Requires macOS 14 or later. No Xcode needed — Command Line Tools is enough.
-Budget about **1 GB of free disk** and two to three minutes: `make run` builds
-a release slice for each architecture and fuses them into one binary. (Measured
-from a clean clone: 2m08s, 503 MB of build output.)
-
-Open the menu bar icon and you should see your agents listed. [SECURITY.md](SECURITY.md#writing-into-other-programs-config-files)
-has the full account of what gets written and what bounds it.
+> you build it from source. Two commands, about three minutes: see
+> [Install](#install), and [Not done yet](#not-done-yet) for what that costs you.
 
 ## Features
 
@@ -132,7 +94,7 @@ what it is called:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/settings-dark.png">
-  <img src="docs/assets/settings-light.png" width="520"
+  <img src="docs/assets/settings-light.png" width="460"
        alt="Vigil's settings window. Four agents — Claude Code, Codex, Gemini CLI and Cursor — each installed with a Remove button, Codex reading 'Installed, approved by Vigil'. Switches for setting hooks up automatically and for a sound when agents finish. Power: mains only, a battery floor of 20%, Low Power Mode, and a heat ceiling. Then working with the lid closed, and open at login.">
 </picture>
 
@@ -140,14 +102,101 @@ what it is called:
 
 <br>
 
+## How it compares
+
+Keeping a Mac awake is a solved problem, and there are good tools for it.
+`caffeinate` ships with macOS. If what you want is a general keep-awake toggle
+— *stay up for two hours*, *stay up while this app is frontmost* —
+[Amphetamine](https://github.com/x74353/Amphetamine) is free, excellent, and
+better at that than Vigil intends to be.
+
+Since coding agents started running unattended, a crop of menu bar apps has
+appeared that hold the Mac awake while one works. Several are good. At least one
+— [caffeine-bar](https://github.com/anton-vinogradov/caffeine-bar) — also
+lists the other holds on your machine. Vigil is not first here and does not
+claim to be. What it claims is the combination:
+
+- **The ledger covers the whole system**, not only other keep-awake tools.
+  Every assertion macOS is holding — `powerd`, `coreaudiod`, a build, another
+  app — named in English, with a duration.
+- **The guardrails are the product, not a footnote.** Heat, battery floor,
+  mains-only and Low Power Mode, and the battery floor *asks your Mac to sleep*
+  instead of merely stopping the hold. Dropping an assertion does not wake a
+  sleepy Mac up to the fact that it may now sleep; that distinction is how
+  keep-awake tools flatten batteries while reporting themselves disarmed.
+- **Four agents, wired by the app and reversible** — not a config snippet in a
+  README you paste once and forget you pasted.
+- **macOS 14 and Command Line Tools**, rather than the current OS and Xcode.
+
+Where it loses: all of them get you to a running app faster, because they ship
+a signed download and Vigil does not yet.
+
+## Install
+
+> [!IMPORTANT]
+> **Vigil sets your agents up the moment it launches, without asking — and the
+> command below is that launch, not a later click.** An agent that hasn't been
+> wired to Vigil is invisible to it, so the app does the wiring rather than
+> handing you four files to edit. Here is exactly what it writes, where, and
+> how to take it back out.
+>
+> It looks for Claude Code, Codex, Gemini CLI and Cursor, and adds one hook to
+> the config of each one it finds: `~/.claude/settings.json`,
+> `~/.codex/hooks.json`, `~/.gemini/settings.json`, `~/.cursor/hooks.json`.
+> Codex runs no hook it has not approved, so Vigil also writes a trust record
+> for its own entries into `~/.codex/config.toml`.
+>
+> Every file is copied to `<file>.vigil-backup` before its first edit. Nothing
+> else in it is changed, and a file Vigil cannot parse is left alone rather than
+> rewritten. The panel then names the agents it set up and offers **Undo**,
+> which removes the hooks, the shared script and the trust record.
+>
+> **To decide for yourself instead**, turn off *Set up and update agent hooks
+> automatically* in Settings and nothing is written until you press **Set up**
+> on an agent. That switch lives inside the app, though, so reaching it means
+> launching — and launching is the write. To look before anything is written,
+> build without launching and start it once with the switch already off:
+>
+> ```sh
+> make bundle
+> dist/Vigil.app/Contents/MacOS/Vigil -managesAgentHooks '<false/>'
+> ```
+
+If you're happy for it to wire itself up, that's the whole install:
+
+```sh
+git clone https://github.com/Rupareliaaniket22/vigil
+cd vigil
+make run
+```
+
+Requires macOS 14 or later. No Xcode needed — Command Line Tools is enough.
+Budget about **1 GB of free disk** and two to three minutes: `make run` builds
+a release slice for each architecture and fuses them into one binary. (Measured
+from a clean clone: 2m08s, 503 MB of build output.)
+
+Vigil has no Dock icon and no window — open the menu bar icon and you should
+see your agents listed. [SECURITY.md](SECURITY.md#writing-into-other-programs-config-files)
+has the full account of what gets written and what bounds it.
+
+Two notes on the look-first command above, both of which have caught people.
+Run the binary directly: `make run` and a plain `open dist/Vigil.app` pass no
+arguments, so the switch never reaches the app. And spell it `'<false/>'` —
+`false`, `NO` and `0` arrive as strings, which is not the same as `false` and
+is ignored.
+
 ## Working with the lid closed
 
 Off by default. Turning it on asks for your password once, because changing
 lid-close behaviour needs root.
 
 Vigil installs a small root-owned helper that can change **that one setting and
-nothing else** — three fixed arguments, no shell, no wildcards. The installer
-refuses unless every directory on the path to it is root-owned.
+nothing else** — three fixed arguments, no shell, no wildcards — and a
+`/etc/sudoers.d/vigil-clamshell` rule that lets it run those three arguments
+without a password. The installer refuses unless every directory on the path to
+the helper is root-owned, and refuses a helper that is writable by anyone but
+root. Both the rule and the helper outlive dragging Vigil to the Trash, which is
+why [Uninstall](#uninstall) matters more here than it usually does.
 
 [SECURITY.md](SECURITY.md) has the full threat model.
 
@@ -171,6 +220,10 @@ every other user account on the machine.
   signature fixes this permanently; nothing else does
 - **No auto-update.** There is no update check at all. A new version means
   pulling and rebuilding, and nothing will tell you there is one
+- **Lid-closed has one untested edge.** Unplugging from mains while a
+  lid-closed hold is armed is a known-hard case in this category, and it has
+  not been tested here. The battery floor should still stop it; that is the
+  expectation, not a measurement
 - **OpenCode** uses a JavaScript plugin rather than shell hooks
 - **Desktop apps other than Cursor.** Claude and ChatGPT desktop publish no
   lifecycle events and hold no wake lock of their own, so Vigil cannot see
@@ -184,10 +237,10 @@ Scripts/uninstall.sh --dry-run   # say what would go, change nothing
 Scripts/uninstall.sh
 ```
 
-A copy ships inside the app, at
-`Vigil.app/Contents/Resources/uninstall.sh`, because the app is what most
-people will have. **Run it before you drag Vigil to the Trash** — some of what
-it removes can only be removed by the script that goes in the Trash with it.
+A copy ships inside the app at `Vigil.app/Contents/Resources/uninstall.sh`,
+because the app is what most people will have. **Run it before you drag Vigil
+to the Trash** — some of what it removes can only be removed by the script that
+would go in the Trash with it.
 
 Dragging Vigil to the Trash on its own leaves: hook entries in up to four
 config files, the shared hook script at `~/.vigil/hooks/vigil-hook.sh`, a
@@ -201,17 +254,15 @@ app that no longer exists.
 
 Two things the script deliberately does **not** do:
 
-- **It does not edit your agents' config files.** Taking a hook entry out means
-  rewriting your JSON or TOML around it without disturbing anything else, which
-  is what Vigil does in Swift, with tests, and what a shell script cannot do
-  safely. Remove the hooks from inside the app first — open **Settings…** from
-  the panel, then **Vigil → Remove Vigil from This Mac…** in the menu bar,
-  which takes them out of every agent at once and withdraws the Codex trust
-  records. (The menu bar only shows Vigil's own menu while its Settings window
-  is open; an accessory app has no menu of its own otherwise. **Settings → each
-  agent → Remove** does the same thing one agent at a time.) The script then
-  confirms the files are clean, and tells you which still have entries if you
-  skipped this.
+- **It does not edit your agents' config files.** Removing a hook entry means
+  rewriting your JSON or TOML around it without disturbing anything else — what
+  Vigil does in Swift, with tests, and what a shell script cannot do safely.
+  Take the hooks out from inside the app first: **Vigil → Remove Vigil from
+  This Mac…** in the menu bar does every agent at once and withdraws the Codex
+  trust records, and **Settings → each agent → Remove** does them one at a
+  time. (Vigil's menu bar menu only appears while its Settings window is open;
+  an accessory app has none otherwise.) The script then confirms the files are
+  clean, and names the ones that still have entries if you skipped this.
 - **It does not delete your backups.** The `.vigil-backup` files are copies of
   *your* config from before Vigil first touched it. It names them and leaves
   them; `--include-backups` deletes them too.
@@ -231,6 +282,17 @@ sets up no agents and touches none of your own config — and it checks that it
 did not, rather than assuming.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) · [AGENTS.md](AGENTS.md) · [DESIGN.md](DESIGN.md)
+
+## Getting in touch
+
+Vigil has been run on very few Macs, and most of them are the same one. The
+most useful thing you can send is the boring report — it installed, it held, it
+let go — or the interesting one, that it didn't.
+[Open an issue](https://github.com/Rupareliaaniket22/vigil/issues): the output
+of `pmset -g assertions` and what your agents were doing is usually enough.
+
+If it ever keeps your Mac awake in a closed bag, that is the bug that outranks
+everything else here. Say that one first.
 
 ## License
 

@@ -136,7 +136,37 @@ if [ ! -t 0 ]; then
 fi
 
 # plutil parses JSON safely and is on every Mac; jq is not.
-extract() { printf '%s' "$INPUT" | /usr/bin/plutil -extract "$1" raw -o - - 2>/dev/null || true; }
+# The exit status decides, not the silence of stderr.
+#
+# `2>/dev/null || true` was not enough, and CI on macOS 15 is what proved it:
+# where this machine's `plutil` writes "Could not extract value, error: No value
+# at that key path" to *stderr*, an older one writes it to *stdout*. Redirecting
+# stderr then hides nothing, the message is captured as the value, and every
+# caller below that tests `[ -z "$VAR" ]` before trying its next key sees a
+# non-empty string and stops looking. Cursor sends `conversation_id` and no
+# `session_id`, so on those releases every Cursor session was keyed on the text
+# of an error, and `cwd` was set to another one — on the two macOS versions this
+# app claims to support and the one it is developed on, silently, in opposite
+# directions.
+#
+# Assigning inside `if` keeps plutil's own status: `local out=$(…)` would report
+# `local`'s, which is always 0.
+# Two guards, because the CI log cannot distinguish the two ways this fails.
+# `|| true` masked plutil's status, so all that log proves is that the message
+# reached stdout — not whether the exit code was non-zero as well. The status
+# test catches the case where it is; the prefix test catches the case where it
+# is not. Every plutil diagnostic on a stdin document opens `<stdin>:`, and a
+# session id that genuinely began that way would only fall back to the pid key,
+# which is the same thing that happens when a payload has no id at all.
+extract() {
+  local out
+  if out=$(printf '%s' "$INPUT" | /usr/bin/plutil -extract "$1" raw -o - - 2>/dev/null); then
+    case "$out" in
+      '<stdin>:'*) return 0 ;;
+    esac
+    printf '%s' "$out"
+  fi
+}
 
 # The same question, asked of a payload that is no longer JSON.
 #
